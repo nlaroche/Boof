@@ -6,6 +6,17 @@ const DB_PATH = process.env.DB_PATH || './boof.db';
 
 let db: Database | null = null;
 
+function addColumnIfMissing(tableName: string, columnName: string, columnDef: string): void {
+  if (!db) return;
+  const cols = db.exec(`PRAGMA table_info(${tableName})`);
+  if (cols.length > 0) {
+    const names = cols[0].values.map((row: any) => row[1] as string);
+    if (!names.includes(columnName)) {
+      db.run(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnDef}`);
+    }
+  }
+}
+
 export async function initDb(): Promise<Database> {
   const SQL = await initSqlJs();
 
@@ -49,10 +60,25 @@ export async function initDb(): Promise<Database> {
       working_directory TEXT NOT NULL,
       status TEXT DEFAULT 'idle' CHECK (status IN ('idle', 'running', 'error', 'dead')),
       pid INTEGER,
+      profile_id TEXT DEFAULT 'robot',
+      instructions TEXT DEFAULT '',
+      skills TEXT DEFAULT '[]',
+      schedule TEXT DEFAULT NULL,
+      schedule_enabled INTEGER DEFAULT 0,
+      schedule_prompt TEXT DEFAULT '',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       last_activity DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Migrate existing agents table
+  addColumnIfMissing('agents', 'profile_id', "TEXT DEFAULT 'robot'");
+  addColumnIfMissing('agents', 'instructions', "TEXT DEFAULT ''");
+  addColumnIfMissing('agents', 'skills', "TEXT DEFAULT '[]'");
+  addColumnIfMissing('agents', 'schedule', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('agents', 'schedule_enabled', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('agents', 'schedule_prompt', "TEXT DEFAULT ''");
+  addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'claude'");
 
   db.run(`
     CREATE TABLE IF NOT EXISTS commands (
@@ -68,6 +94,9 @@ export async function initDb(): Promise<Database> {
       files_changed TEXT DEFAULT '[]'
     )
   `);
+
+  // Reset any agents stuck in 'running' from a previous server crash
+  db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 
   saveDb();
   return db;
