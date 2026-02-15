@@ -33,8 +33,53 @@ export interface Agent {
   schedule_enabled: number;
   schedule_prompt: string;
   agent_type: 'claude' | 'aider';
+  autopilot: number;
+  autopilot_interval: number;
+  autopilot_goal_id: string | null;
+  autopilot_last_run: string | null;
+  workflow_id: string | null;
   created_at: string;
   last_activity: string;
+}
+
+export interface Goal {
+  id: string;
+  name: string;
+  description: string;
+  status: 'active' | 'paused' | 'completed';
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowStep {
+  id: string;
+  name: string;
+  prompt: string;
+  on_fail: 'stop' | 'revert' | 'retry' | 'skip';
+  max_retries: number;
+}
+
+export interface Workflow {
+  id: string;
+  name: string;
+  description: string;
+  steps: WorkflowStep[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface GoalLogEntry {
+  id: string;
+  goal_id: string;
+  agent_id: string;
+  action: string;
+  summary: string;
+  diff_stats: string;
+  cost_usd: number;
+  duration_ms: number;
+  success: number;
+  created_at: string;
 }
 
 export interface Command {
@@ -62,19 +107,30 @@ export type WSClientMessage =
   | { type: 'folder:update'; folderId: string; fields: Partial<Folder> }
   | { type: 'folder:delete'; folderId: string }
   | { type: 'agent:create'; workingDirectory: string; name?: string; profileId?: string; agentType?: 'claude' | 'aider' }
-  | { type: 'agent:update'; agentId: string; fields: { name?: string; instructions?: string; skills?: string; profile_id?: string; agent_type?: 'claude' | 'aider' } }
+  | { type: 'agent:update'; agentId: string; fields: { name?: string; instructions?: string; skills?: string; profile_id?: string; agent_type?: 'claude' | 'aider'; workflow_id?: string | null } }
   | { type: 'agent:delete'; agentId: string }
   | { type: 'agent:schedule'; agentId: string; schedule: string | null; enabled: boolean; prompt: string }
+  | { type: 'agent:autopilot'; agentId: string; autopilot: boolean; interval: number; goalId: string | null }
+  | { type: 'agent:autopilot:trigger'; agentId: string }
   | { type: 'repos:list' }
   | { type: 'agent:kill'; agentId: string }
   | { type: 'agent:restart'; agentId: string }
   | { type: 'agent:send'; agentId: string; prompt: string; taskId?: string }
   | { type: 'agent:interrupt'; agentId: string }
   | { type: 'sync:request' }
-  | { type: 'agent:history'; agentId: string; limit?: number };
+  | { type: 'agent:history'; agentId: string; limit?: number }
+  | { type: 'goal:create'; name: string; description?: string }
+  | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
+  | { type: 'goal:delete'; goalId: string }
+  | { type: 'goal:list' }
+  | { type: 'goal:log'; goalId: string; limit?: number }
+  | { type: 'workflow:create'; name: string; description?: string; steps: WorkflowStep[] }
+  | { type: 'workflow:update'; workflowId: string; fields: Partial<Workflow> }
+  | { type: 'workflow:delete'; workflowId: string }
+  | { type: 'workflow:list' };
 
 export type WSServerMessage =
-  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[] }
+  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[] }
   | { type: 'agent:output'; agentId: string; chunk: string }
   | { type: 'agent:updated'; agent: Agent }
   | { type: 'agent:deleted'; agentId: string }
@@ -84,7 +140,15 @@ export type WSServerMessage =
   | { type: 'folder:updated'; folder: Folder }
   | { type: 'repos:list'; repos: RepoInfo[] }
   | { type: 'notify'; agentId: string; title: string; body: string }
-  | { type: 'agent:history'; agentId: string; commands: Command[] };
+  | { type: 'agent:history'; agentId: string; commands: Command[] }
+  | { type: 'goal:updated'; goal: Goal }
+  | { type: 'goal:deleted'; goalId: string }
+  | { type: 'goal:list'; goals: Goal[] }
+  | { type: 'goal:log'; goalId: string; entries: GoalLogEntry[] }
+  | { type: 'goal:log:entry'; entry: GoalLogEntry }
+  | { type: 'workflow:updated'; workflow: Workflow }
+  | { type: 'workflow:deleted'; workflowId: string }
+  | { type: 'workflow:list'; workflows: Workflow[] };
 
 export interface RepoInfo {
   name: string;

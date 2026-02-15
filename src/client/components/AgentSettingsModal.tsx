@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import type { Agent, WSClientMessage } from '../lib/types';
 import { ProfileSelector } from './ProfileSelector';
+import { useStore } from '../stores/store';
 
 const AVAILABLE_SKILLS = [
   { id: 'commit', label: 'Commit', desc: 'Auto-commit changes' },
@@ -32,6 +33,12 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
   const [schedulePrompt, setSchedulePrompt] = useState(agent.schedule_prompt || '');
   const [schedule, setSchedule] = useState(agent.schedule || '');
   const [scheduleEnabled, setScheduleEnabled] = useState(Boolean(agent.schedule_enabled));
+  const [autopilot, setAutopilot] = useState(Boolean(agent.autopilot));
+  const [autopilotInterval, setAutopilotInterval] = useState(agent.autopilot_interval || 600);
+  const [autopilotGoalId, setAutopilotGoalId] = useState(agent.autopilot_goal_id || '');
+  const [workflowId, setWorkflowId] = useState(agent.workflow_id || '');
+  const goals = useStore((s) => s.goals);
+  const workflows = useStore((s) => s.workflows);
 
   const toggleSkill = (id: string) => {
     setSkills((prev) =>
@@ -49,6 +56,7 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
         skills: JSON.stringify(skills),
         profile_id: profileId,
         agent_type: agentType,
+        workflow_id: workflowId || null,
       },
     });
 
@@ -58,6 +66,14 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
       schedule: schedule || null,
       enabled: scheduleEnabled,
       prompt: schedulePrompt,
+    });
+
+    onSend({
+      type: 'agent:autopilot',
+      agentId: agent.id,
+      autopilot,
+      interval: autopilotInterval,
+      goalId: autopilotGoalId || null,
     });
 
     onClose();
@@ -144,6 +160,89 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
             </button>
           ))}
         </div>
+
+        {/* Autopilot */}
+        <label className="text-xs text-[#6b6b80] mb-1.5 block">Autopilot</label>
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            onClick={() => setAutopilot(!autopilot)}
+            className={`w-10 h-5 rounded-full transition-colors relative ${
+              autopilot ? 'bg-[#22c55e]' : 'bg-[#1e1e2e]'
+            }`}
+          >
+            <span
+              className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
+                autopilot ? 'left-5' : 'left-0.5'
+              }`}
+            />
+          </button>
+          <span className="text-xs text-[#6b6b80]">
+            {autopilot ? 'Enabled' : 'Disabled'}
+          </span>
+        </div>
+
+        {autopilot && (
+          <>
+            <label className="text-xs text-[#6b6b80] mb-1.5 block">Interval</label>
+            <div className="flex gap-1.5 mb-3">
+              {[
+                { label: '5min', val: 300 },
+                { label: '10min', val: 600 },
+                { label: '30min', val: 1800 },
+                { label: '1hr', val: 3600 },
+              ].map((preset) => (
+                <button
+                  key={preset.val}
+                  onClick={() => setAutopilotInterval(preset.val)}
+                  className={`px-2 py-1 rounded text-xs ${
+                    autopilotInterval === preset.val
+                      ? 'bg-[#22c55e]/20 text-[#22c55e]'
+                      : 'bg-[#0a0a0f] text-[#6b6b80]'
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+
+            <label className="text-xs text-[#6b6b80] mb-1.5 block">Goal</label>
+            <select
+              value={autopilotGoalId}
+              onChange={(e) => setAutopilotGoalId(e.target.value)}
+              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-3 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]"
+            >
+              <option value="">No goal selected</option>
+              {goals.filter((g) => g.status === 'active').map((g) => (
+                <option key={g.id} value={g.id}>{g.name}</option>
+              ))}
+            </select>
+
+            <label className="text-xs text-[#6b6b80] mb-1.5 block">Workflow</label>
+            <select
+              value={workflowId}
+              onChange={(e) => setWorkflowId(e.target.value)}
+              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-3 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]"
+            >
+              <option value="">No workflow (simple mode)</option>
+              {workflows.map((w) => (
+                <option key={w.id} value={w.id}>{w.name} ({w.steps.length} steps)</option>
+              ))}
+            </select>
+
+            <button
+              onClick={() => onSend({ type: 'agent:autopilot:trigger', agentId: agent.id })}
+              className="w-full bg-[#22c55e]/20 text-[#22c55e] border border-[#22c55e]/40 py-2 rounded-lg text-sm font-medium mb-3 active:bg-[#22c55e]/30"
+            >
+              Run Now
+            </button>
+
+            {agent.autopilot_last_run && (
+              <p className="text-[10px] text-[#6b6b80] mb-3">
+                Last run: {new Date(agent.autopilot_last_run).toLocaleString()}
+              </p>
+            )}
+          </>
+        )}
 
         {/* Schedule */}
         <label className="text-xs text-[#6b6b80] mb-1.5 block">Schedule</label>

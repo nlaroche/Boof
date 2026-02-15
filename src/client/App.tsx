@@ -6,6 +6,7 @@ import { TasksScreen } from './screens/TasksScreen';
 import { AgentScreen } from './screens/AgentScreen';
 import { AgentsScreen } from './screens/AgentsScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
+import { GoalsScreen } from './screens/GoalsScreen';
 
 export function App() {
   const activeScreen = useStore((s) => s.ui.activeScreen);
@@ -26,6 +27,7 @@ export function App() {
 
       {/* Screen router */}
       {activeScreen === 'home' && <HomeScreen onSendToAgent={handleSendToAgent} />}
+      {activeScreen === 'goals' && <GoalsScreen onSend={send} />}
       {activeScreen === 'tasks' && <TasksScreen onSend={send} />}
       {activeScreen === 'agent' && <AgentScreen onSend={send} />}
       {activeScreen === 'agents' && <AgentsScreen onSend={send} />}

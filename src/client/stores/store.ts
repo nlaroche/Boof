@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow } from '../lib/types';
 
 interface UIState {
-  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent';
+  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
   selectedAgentId: string | null;
   selectedFolderId: string | null;
 }
@@ -13,6 +13,9 @@ interface StoreState {
   agents: Agent[];
   commands: Command[];
   repos: RepoInfo[];
+  goals: Goal[];
+  goalLogs: Record<string, GoalLogEntry[]>;
+  workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
 
@@ -21,6 +24,14 @@ interface StoreState {
   setAgents: (agents: Agent[]) => void;
   setCommands: (commands: Command[]) => void;
   setRepos: (repos: RepoInfo[]) => void;
+  setGoals: (goals: Goal[]) => void;
+  updateGoal: (goal: Goal) => void;
+  removeGoal: (goalId: string) => void;
+  setGoalLog: (goalId: string, entries: GoalLogEntry[]) => void;
+  addGoalLogEntry: (entry: GoalLogEntry) => void;
+  setWorkflows: (workflows: Workflow[]) => void;
+  updateWorkflow: (workflow: Workflow) => void;
+  removeWorkflow: (workflowId: string) => void;
   appendOutput: (agentId: string, chunk: string) => void;
   clearOutput: (agentId: string) => void;
   setAgentStatus: (agentId: string, status: AgentStatus) => void;
@@ -43,6 +54,9 @@ export const useStore = create<StoreState>((set) => ({
   agents: [],
   commands: [],
   repos: [],
+  goals: [],
+  goalLogs: {},
+  workflows: [],
   activeOutputs: {},
   ui: {
     activeScreen: 'home',
@@ -59,6 +73,55 @@ export const useStore = create<StoreState>((set) => ({
   setCommands: (commands) => set({ commands }),
 
   setRepos: (repos) => set({ repos }),
+
+  setGoals: (goals) => set({ goals }),
+
+  updateGoal: (goal) =>
+    set((state) => {
+      const index = state.goals.findIndex((g) => g.id === goal.id);
+      if (index >= 0) {
+        const updated = [...state.goals];
+        updated[index] = goal;
+        return { goals: updated };
+      }
+      return { goals: [...state.goals, goal] };
+    }),
+
+  removeGoal: (goalId) =>
+    set((state) => ({
+      goals: state.goals.filter((g) => g.id !== goalId),
+    })),
+
+  setGoalLog: (goalId, entries) =>
+    set((state) => ({
+      goalLogs: { ...state.goalLogs, [goalId]: entries },
+    })),
+
+  addGoalLogEntry: (entry) =>
+    set((state) => {
+      const existing = state.goalLogs[entry.goal_id] || [];
+      return {
+        goalLogs: { ...state.goalLogs, [entry.goal_id]: [entry, ...existing] },
+      };
+    }),
+
+  setWorkflows: (workflows) => set({ workflows }),
+
+  updateWorkflow: (workflow) =>
+    set((state) => {
+      const index = state.workflows.findIndex((w) => w.id === workflow.id);
+      if (index >= 0) {
+        const updated = [...state.workflows];
+        updated[index] = workflow;
+        return { workflows: updated };
+      }
+      return { workflows: [...state.workflows, workflow] };
+    }),
+
+  removeWorkflow: (workflowId) =>
+    set((state) => ({
+      workflows: state.workflows.filter((w) => w.id !== workflowId),
+    })),
 
   appendOutput: (agentId, chunk) =>
     set((state) => {

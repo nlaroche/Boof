@@ -95,6 +95,74 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
+  // Goals table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS goals (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      status TEXT DEFAULT 'active',
+      priority INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Goal activity log
+  db.run(`
+    CREATE TABLE IF NOT EXISTS goal_log (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      summary TEXT DEFAULT '',
+      diff_stats TEXT DEFAULT '',
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      success INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Workflows table — configurable step sequences for autopilot agents
+  db.run(`
+    CREATE TABLE IF NOT EXISTS workflows (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      steps TEXT NOT NULL DEFAULT '[]',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Seed default workflow if none exist
+  const wfCount = db.exec('SELECT COUNT(*) as c FROM workflows');
+  if (wfCount.length > 0 && (wfCount[0].values[0][0] as number) === 0) {
+    const defaultSteps = JSON.stringify([
+      { id: '1', name: 'Implement', prompt: 'Pick the highest-priority pending task and implement it. Make focused, testable changes.', on_fail: 'stop', max_retries: 0 },
+      { id: '2', name: 'Build', prompt: 'Run the build command (npm run build) and fix any errors.', on_fail: 'retry', max_retries: 2 },
+      { id: '3', name: 'Test', prompt: 'Run the test suite and fix any failures. If no tests exist for your changes, write them.', on_fail: 'retry', max_retries: 1 },
+      { id: '4', name: 'QA Review', prompt: 'Review your own changes critically. Check for bugs, edge cases, missing error handling, and code quality issues. Fix anything you find.', on_fail: 'skip', max_retries: 0 },
+    ]);
+    const now = new Date().toISOString();
+    db.run(
+      `INSERT INTO workflows (id, name, description, steps, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+      ['default-dev-qa', 'Dev & QA', 'Implement → Build → Test → QA Review', defaultSteps, now, now]
+    );
+  }
+
+  // Autopilot columns on agents
+  addColumnIfMissing('agents', 'autopilot', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('agents', 'autopilot_interval', 'INTEGER DEFAULT 600');
+  addColumnIfMissing('agents', 'autopilot_goal_id', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('agents', 'autopilot_last_run', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('agents', 'workflow_id', 'TEXT DEFAULT NULL');
+
+  // Goal linkage on tasks
+  addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
+
   // Reset any agents stuck in 'running' from a previous server crash
   db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 

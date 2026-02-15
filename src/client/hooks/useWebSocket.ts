@@ -33,6 +33,8 @@ export function useWebSocket() {
             s.setFolders(msg.folders);
             s.setTasks(msg.tasks);
             s.setAgents(msg.agents);
+            s.setGoals(msg.goals);
+            s.setWorkflows(msg.workflows);
             break;
           case 'agent:output':
             s.appendOutput(msg.agentId, msg.chunk);
@@ -67,6 +69,30 @@ export function useWebSocket() {
             break;
           case 'notify':
             // Could trigger browser notification here
+            break;
+          case 'goal:updated':
+            s.updateGoal(msg.goal);
+            break;
+          case 'goal:deleted':
+            s.removeGoal(msg.goalId);
+            break;
+          case 'goal:list':
+            s.setGoals(msg.goals);
+            break;
+          case 'goal:log':
+            s.setGoalLog(msg.goalId, msg.entries);
+            break;
+          case 'goal:log:entry':
+            s.addGoalLogEntry(msg.entry);
+            break;
+          case 'workflow:updated':
+            s.updateWorkflow(msg.workflow);
+            break;
+          case 'workflow:deleted':
+            s.removeWorkflow(msg.workflowId);
+            break;
+          case 'workflow:list':
+            s.setWorkflows(msg.workflows);
             break;
         }
       } catch {

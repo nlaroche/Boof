@@ -2,6 +2,7 @@ import { useStore } from '../stores/store';
 
 const tabs = [
   { id: 'home' as const, label: 'Home', icon: '\u2302' },
+  { id: 'goals' as const, label: 'Goals', icon: '\u25CE' },
   { id: 'tasks' as const, label: 'Tasks', icon: '\u2611' },
   { id: 'agents' as const, label: 'Agents', icon: '\u2699' },
   { id: 'history' as const, label: 'History', icon: '\u23F0' },

@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import path from 'path';
 import { initDb } from './db.js';
 import { setupWebSocket } from './ws-handler.js';
+import { startAutopilotLoop } from './autopilot.js';
 
 const PORT = process.env.PORT || 3456;
 
@@ -21,6 +22,7 @@ async function start() {
   try {
     await initDb();
     console.log('Database initialized');
+    startAutopilotLoop();
   } catch (error) {
     console.error('Failed to initialize database:', error);
   }

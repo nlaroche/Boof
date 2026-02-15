@@ -3,8 +3,9 @@ import type { Server } from 'http';
 import fs from 'fs';
 import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Command, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
 import { createAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
+import { triggerAutopilotRun } from './autopilot.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
 const MAX_OUTPUT_BUFFER = 200; // lines per agent
@@ -375,6 +376,10 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         updates.push('agent_type = ?');
         values.push(fields.agent_type);
       }
+      if (fields.workflow_id !== undefined) {
+        updates.push('workflow_id = ?');
+        values.push(fields.workflow_id);
+      }
 
       if (updates.length > 0) {
         updates.push('last_activity = ?');
@@ -434,11 +439,166 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       break;
     }
 
+    case 'goal:create': {
+      const id = generateId();
+      const now = new Date().toISOString();
+      runQuery(
+        `INSERT INTO goals (id, name, description, status, priority, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 0, ?, ?)`,
+        [id, message.name, message.description || '', now, now]
+      );
+      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
+      if (goal) {
+        broadcast({ type: 'goal:updated', goal });
+      }
+      break;
+    }
+
+    case 'goal:update': {
+      const { goalId, fields } = message;
+      const updates: string[] = [];
+      const values: unknown[] = [];
+
+      if (fields.name !== undefined) {
+        updates.push('name = ?');
+        values.push(fields.name);
+      }
+      if (fields.description !== undefined) {
+        updates.push('description = ?');
+        values.push(fields.description);
+      }
+      if (fields.status !== undefined) {
+        updates.push('status = ?');
+        values.push(fields.status);
+      }
+      if (fields.priority !== undefined) {
+        updates.push('priority = ?');
+        values.push(fields.priority);
+      }
+
+      if (updates.length > 0) {
+        updates.push('updated_at = ?');
+        values.push(new Date().toISOString());
+        values.push(goalId);
+        runQuery(`UPDATE goals SET ${updates.join(', ')} WHERE id = ?`, values);
+        const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+        if (goal) {
+          broadcast({ type: 'goal:updated', goal });
+        }
+      }
+      break;
+    }
+
+    case 'goal:delete': {
+      runQuery('DELETE FROM goal_log WHERE goal_id = ?', [message.goalId]);
+      runQuery('DELETE FROM goals WHERE id = ?', [message.goalId]);
+      broadcast({ type: 'goal:deleted', goalId: message.goalId });
+      break;
+    }
+
+    case 'goal:list': {
+      const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
+      send(ws, { type: 'goal:list', goals });
+      break;
+    }
+
+    case 'goal:log': {
+      const { goalId, limit = 50 } = message;
+      const entries = getAll<GoalLogEntry>(
+        'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT ?',
+        [goalId, limit]
+      );
+      send(ws, { type: 'goal:log', goalId, entries });
+      break;
+    }
+
+    case 'agent:autopilot': {
+      const { agentId, autopilot, interval, goalId } = message;
+      runQuery(
+        'UPDATE agents SET autopilot = ?, autopilot_interval = ?, autopilot_goal_id = ?, last_activity = ? WHERE id = ?',
+        [autopilot ? 1 : 0, interval, goalId, new Date().toISOString(), agentId]
+      );
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        broadcast({ type: 'agent:updated', agent });
+      }
+      break;
+    }
+
+    case 'agent:autopilot:trigger': {
+      triggerAutopilotRun(message.agentId);
+      break;
+    }
+
+    case 'workflow:create': {
+      const id = generateId();
+      const now = new Date().toISOString();
+      runQuery(
+        `INSERT INTO workflows (id, name, description, steps, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [id, message.name, message.description || '', JSON.stringify(message.steps), now, now]
+      );
+      const row = getOne<any>('SELECT * FROM workflows WHERE id = ?', [id]);
+      if (row) {
+        const workflow: Workflow = { ...row, steps: JSON.parse(row.steps) };
+        broadcast({ type: 'workflow:updated', workflow });
+      }
+      break;
+    }
+
+    case 'workflow:update': {
+      const { workflowId, fields } = message;
+      const updates: string[] = [];
+      const values: unknown[] = [];
+
+      if (fields.name !== undefined) {
+        updates.push('name = ?');
+        values.push(fields.name);
+      }
+      if (fields.description !== undefined) {
+        updates.push('description = ?');
+        values.push(fields.description);
+      }
+      if (fields.steps !== undefined) {
+        updates.push('steps = ?');
+        values.push(JSON.stringify(fields.steps));
+      }
+
+      if (updates.length > 0) {
+        updates.push('updated_at = ?');
+        values.push(new Date().toISOString());
+        values.push(workflowId);
+        runQuery(`UPDATE workflows SET ${updates.join(', ')} WHERE id = ?`, values);
+        const row = getOne<any>('SELECT * FROM workflows WHERE id = ?', [workflowId]);
+        if (row) {
+          const workflow: Workflow = { ...row, steps: JSON.parse(row.steps) };
+          broadcast({ type: 'workflow:updated', workflow });
+        }
+      }
+      break;
+    }
+
+    case 'workflow:delete': {
+      runQuery('DELETE FROM workflows WHERE id = ?', [message.workflowId]);
+      broadcast({ type: 'workflow:deleted', workflowId: message.workflowId });
+      break;
+    }
+
+    case 'workflow:list': {
+      const rows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
+      const workflows: Workflow[] = rows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
+      send(ws, { type: 'workflow:list', workflows });
+      break;
+    }
+
     case 'sync:request': {
       const folders = getAll<Folder>('SELECT * FROM folders ORDER BY sort_order');
       const tasks = getAll<Task>('SELECT * FROM tasks ORDER BY sort_order');
       const agents = getAll<Agent>('SELECT * FROM agents ORDER BY created_at');
-      send(ws, { type: 'sync:state', folders, tasks, agents });
+      const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
+      const workflowRows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
+      const workflows: Workflow[] = workflowRows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
+      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows });
 
       // Replay buffered output for all agents
       for (const agent of agents) {
