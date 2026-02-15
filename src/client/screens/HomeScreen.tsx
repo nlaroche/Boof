@@ -1,6 +1,5 @@
 import { useStore } from '../stores/store';
 import { AgentCard } from '../components/AgentCard';
-import { QuickActions } from '../components/QuickActions';
 import { SummaryCard } from '../components/SummaryCard';
 
 interface Props {
@@ -16,14 +15,6 @@ export function HomeScreen({ onSendToAgent }: Props) {
     .filter((c) => c.status === 'done' && c.summary)
     .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
     .slice(0, 5);
-
-  const firstAgent = agents[0];
-
-  const handleQuickAction = (prompt: string) => {
-    if (firstAgent) {
-      onSendToAgent(firstAgent.id, prompt);
-    }
-  };
 
   return (
     <div className="pb-20">
@@ -53,8 +44,6 @@ export function HomeScreen({ onSendToAgent }: Props) {
           <p className="text-sm mt-1">Create one from the Agents tab</p>
         </div>
       )}
-
-      <QuickActions onAction={handleQuickAction} disabled={!firstAgent} />
 
       {recentCommands.length > 0 && (
         <div className="p-3">
