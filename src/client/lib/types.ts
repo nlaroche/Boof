@@ -32,7 +32,7 @@ export interface Agent {
   schedule: string | null;
   schedule_enabled: number;
   schedule_prompt: string;
-  agent_type: 'claude' | 'aider';
+  agent_type: string;
   autopilot: number;
   autopilot_interval: number;
   autopilot_goal_id: string | null;
@@ -107,8 +107,8 @@ export type WSClientMessage =
   | { type: 'folder:create'; name: string; icon?: string }
   | { type: 'folder:update'; folderId: string; fields: Partial<Folder> }
   | { type: 'folder:delete'; folderId: string }
-  | { type: 'agent:create'; workingDirectory: string; name?: string; profileId?: string; agentType?: 'claude' | 'aider' }
-  | { type: 'agent:update'; agentId: string; fields: { name?: string; instructions?: string; skills?: string; profile_id?: string; agent_type?: 'claude' | 'aider'; workflow_id?: string | null } }
+  | { type: 'agent:create'; workingDirectory: string; name?: string; profileId?: string }
+  | { type: 'agent:update'; agentId: string; fields: { name?: string; instructions?: string; skills?: string; profile_id?: string; workflow_id?: string | null } }
   | { type: 'agent:delete'; agentId: string }
   | { type: 'agent:schedule'; agentId: string; schedule: string | null; enabled: boolean; prompt: string }
   | { type: 'agent:autopilot'; agentId: string; autopilot: boolean; interval: number; goalId: string | null }
