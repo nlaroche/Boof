@@ -48,6 +48,7 @@ export interface Goal {
   description: string;
   status: 'active' | 'paused' | 'completed';
   priority: number;
+  repo_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -119,7 +120,7 @@ export type WSClientMessage =
   | { type: 'agent:interrupt'; agentId: string }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
-  | { type: 'goal:create'; name: string; description?: string }
+  | { type: 'goal:create'; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
   | { type: 'goal:list' }
