@@ -1,0 +1,33 @@
+# Boof — Project Instructions
+
+This is a personal PWA + Node server for controlling Claude Code from a phone.
+
+## Stack
+- Server: Node.js, Express, ws, node-pty, better-sqlite3, tsx
+- Client: React 18, TypeScript, Vite, Tailwind CSS, Zustand, vite-plugin-pwa
+
+## Key Rules
+- This is a single-user personal tool. No auth, no multi-tenancy.
+- Dark theme only. Colors defined in tailwind.config.ts.
+- Mobile-first. Everything must be thumb-friendly.
+- Bottom navigation, not top.
+- All state flows through Zustand store, hydrated via WebSocket.
+- Terminal output must preserve ANSI colors.
+- Keep it simple. No over-engineering.
+
+## Running
+- `npm run dev` starts both server and client
+- Server on :3456, Vite dev on :5173 (proxied)
+- `npm run build && npm start` for production
+
+## Database
+- SQLite at ./boof.db
+- Schema in src/server/db.ts
+- Migrations are just CREATE IF NOT EXISTS (it's personal, keep it simple)
+
+## Aider Orchestration
+- `aider-task.ps1` — Send tasks to Aider with conventions prepended
+- `aider-fix.ps1` — Emergency build fixer (max 3 attempts)
+- `aider-iterate.ps1` — Autonomous build-fix loop (max 5 attempts)
+- `test.ps1` — Build validation (use -Quick for build-only)
+- `aider-conventions.md` — Rules Aider must follow

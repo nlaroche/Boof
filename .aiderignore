@@ -1,0 +1,43 @@
+# Build output
+dist/
+build/
+
+# Dependencies
+node_modules/
+
+# IDE/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Aider session artifacts
+.aider.tags.*
+.aider.chat.history.md
+.aider.input.history
+
+# Temp files from scripts
+.dev-stdout.tmp
+.dev-stderr.tmp
+
+# Git
+.git/
+
+# Package lock (read-only, don't edit)
+package-lock.json
+
+# Orchestration layer (Claude-only, not for Aider to edit)
+.claude/
+aider-task.ps1
+aider-fix.ps1
+aider-iterate.ps1
+aider-conventions.md
+validate-spec.ps1
+test.ps1
+BOOF_SPEC.md
+playwright.config.ts
+e2e/

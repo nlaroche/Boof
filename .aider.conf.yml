@@ -1,0 +1,17 @@
+# =============================================================
+# Aider Project-Level Configuration - Boof
+# =============================================================
+# React 18 + TypeScript + Vite PWA + Node.js Express server
+# =============================================================
+
+# --- Test ---
+# Build validation via PowerShell script (quick mode = build only)
+test-cmd: powershell -ExecutionPolicy Bypass -File test.ps1 -Quick
+
+# --- Lint ---
+# Disabled: same Windows cp1252 encoding issue as other projects
+# Build check via test-cmd is sufficient
+
+# --- Repo Map ---
+subtree-only: false
+map-tokens: 2048

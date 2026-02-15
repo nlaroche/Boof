@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.env
+boof.db
+.aider.tags.*
+.aider.chat.history.md
+.aider.input.history
+.dev-stdout.tmp
+.dev-stderr.tmp
+install.ps1
