@@ -118,9 +118,9 @@ export type WSClientMessage =
   | { type: 'agent:restart'; agentId: string }
   | { type: 'agent:send'; agentId: string; prompt: string; taskId?: string }
   | { type: 'agent:interrupt'; agentId: string }
+  | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
-  | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'goal:create'; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
@@ -148,7 +148,7 @@ export type WSServerMessage =
   | { type: 'goal:updated'; goal: Goal }
   | { type: 'goal:deleted'; goalId: string }
   | { type: 'goal:list'; goals: Goal[] }
-  | { type: 'goal:log'; goalId: string; entries: GoalLogEntry[] }
+  | {:log'; goal type: 'goalId: string; entries: GoalLogEntry[] }
   | { type: 'goal:log:entry'; entry: GoalLogEntry }
   | { type: 'workflow:updated'; workflow: Workflow }
   | { type: 'workflow:deleted'; workflowId: string }
