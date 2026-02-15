@@ -26,6 +26,11 @@ export function AgentCard({ agent }: { agent: Agent }) {
       <div className="flex items-center gap-2 mb-2">
         <span className={`w-2.5 h-2.5 rounded-full ${statusColors[agent.status]}`} />
         <span className="font-medium text-[#e2e2ef] truncate">{agent.name}</span>
+        {agent.agent_type === 'aider' && (
+          <span className="text-[10px] text-[#22c55e] bg-[#22c55e]/10 px-1.5 py-0.5 rounded shrink-0">
+            aider
+          </span>
+        )}
       </div>
       <div className="text-xs text-[#6b6b80] truncate">{agent.working_directory}</div>
       <div className="text-xs text-[#6b6b80] mt-1">

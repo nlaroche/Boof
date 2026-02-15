@@ -37,8 +37,20 @@ export function useWebSocket() {
           case 'agent:output':
             s.appendOutput(msg.agentId, msg.chunk);
             break;
+          case 'agent:updated':
+            s.updateAgent(msg.agent);
+            break;
+          case 'agent:deleted':
+            s.removeAgent(msg.agentId);
+            break;
           case 'agent:status':
             s.setAgentStatus(msg.agentId, msg.status);
+            break;
+          case 'repos:list':
+            s.setRepos(msg.repos);
+            break;
+          case 'agent:history':
+            s.setCommands(msg.commands);
             break;
           case 'task:updated':
             s.updateTask(msg.task);

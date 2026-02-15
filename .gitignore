@@ -8,3 +8,4 @@ boof.db
 .dev-stdout.tmp
 .dev-stderr.tmp
 install.ps1
+.aider*

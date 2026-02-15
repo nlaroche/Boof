@@ -26,6 +26,13 @@ export interface Agent {
   working_directory: string;
   status: 'idle' | 'running' | 'error' | 'dead';
   pid: number | null;
+  profile_id: string;
+  instructions: string;
+  skills: string;
+  schedule: string | null;
+  schedule_enabled: number;
+  schedule_prompt: string;
+  agent_type: 'claude' | 'aider';
   created_at: string;
   last_activity: string;
 }
@@ -54,7 +61,11 @@ export type WSClientMessage =
   | { type: 'folder:create'; name: string; icon?: string }
   | { type: 'folder:update'; folderId: string; fields: Partial<Folder> }
   | { type: 'folder:delete'; folderId: string }
-  | { type: 'agent:create'; workingDirectory: string; name?: string }
+  | { type: 'agent:create'; workingDirectory: string; name?: string; profileId?: string; agentType?: 'claude' | 'aider' }
+  | { type: 'agent:update'; agentId: string; fields: { name?: string; instructions?: string; skills?: string; profile_id?: string; agent_type?: 'claude' | 'aider' } }
+  | { type: 'agent:delete'; agentId: string }
+  | { type: 'agent:schedule'; agentId: string; schedule: string | null; enabled: boolean; prompt: string }
+  | { type: 'repos:list' }
   | { type: 'agent:kill'; agentId: string }
   | { type: 'agent:restart'; agentId: string }
   | { type: 'agent:send'; agentId: string; prompt: string; taskId?: string }
@@ -65,8 +76,18 @@ export type WSClientMessage =
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[] }
   | { type: 'agent:output'; agentId: string; chunk: string }
+  | { type: 'agent:updated'; agent: Agent }
+  | { type: 'agent:deleted'; agentId: string }
   | { type: 'agent:status'; agentId: string; status: AgentStatus }
   | { type: 'agent:summary'; agentId: string; commandId: string; summary: string; filesChanged: string[] }
   | { type: 'task:updated'; task: Task }
   | { type: 'folder:updated'; folder: Folder }
-  | { type: 'notify'; agentId: string; title: string; body: string };
+  | { type: 'repos:list'; repos: RepoInfo[] }
+  | { type: 'notify'; agentId: string; title: string; body: string }
+  | { type: 'agent:history'; agentId: string; commands: Command[] };
+
+export interface RepoInfo {
+  name: string;
+  path: string;
+  hasGit: boolean;
+}

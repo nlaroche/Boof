@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent';
@@ -12,6 +12,7 @@ interface StoreState {
   tasks: Task[];
   agents: Agent[];
   commands: Command[];
+  repos: RepoInfo[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
 
@@ -19,12 +20,14 @@ interface StoreState {
   setTasks: (tasks: Task[]) => void;
   setAgents: (agents: Agent[]) => void;
   setCommands: (commands: Command[]) => void;
+  setRepos: (repos: RepoInfo[]) => void;
   appendOutput: (agentId: string, chunk: string) => void;
   clearOutput: (agentId: string) => void;
   setAgentStatus: (agentId: string, status: AgentStatus) => void;
   updateTask: (task: Task) => void;
   updateFolder: (folder: Folder) => void;
   updateAgent: (agent: Agent) => void;
+  removeAgent: (agentId: string) => void;
   addCommand: (command: Command) => void;
   updateCommand: (commandId: string, fields: Partial<Command>) => void;
   setActiveScreen: (screen: UIState['activeScreen']) => void;
@@ -39,6 +42,7 @@ export const useStore = create<StoreState>((set) => ({
   tasks: [],
   agents: [],
   commands: [],
+  repos: [],
   activeOutputs: {},
   ui: {
     activeScreen: 'home',
@@ -53,6 +57,8 @@ export const useStore = create<StoreState>((set) => ({
   setAgents: (agents) => set({ agents }),
 
   setCommands: (commands) => set({ commands }),
+
+  setRepos: (repos) => set({ repos }),
 
   appendOutput: (agentId, chunk) =>
     set((state) => {
@@ -117,6 +123,11 @@ export const useStore = create<StoreState>((set) => ({
       }
       return { agents: [...state.agents, agent] };
     }),
+
+  removeAgent: (agentId) =>
+    set((state) => ({
+      agents: state.agents.filter((a) => a.id !== agentId),
+    })),
 
   addCommand: (command) =>
     set((state) => ({
