@@ -5,7 +5,7 @@ import type { WSClientMessage, WSServerMessage } from '../lib/types';
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const backoff = useRef(1000);
 
   const store = useStore();
