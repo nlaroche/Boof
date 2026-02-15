@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../stores/store';
 import { GoalCard } from '../components/GoalCard';
 import { GoalCreateModal } from '../components/GoalCreateModal';
-import type { WSClientMessage } from '../lib/types';
+import type { WSClientMessage, Goal } from '../lib/types';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -11,10 +11,21 @@ interface Props {
 export function GoalsScreen({ onSend }: Props) {
   const goals = useStore((s) => s.goals);
   const [showCreate, setShowCreate] = useState(false);
+  const [editGoal, setEditGoal] = useState<Goal | null>(null);
 
   const activeGoals = goals.filter((g) => g.status === 'active');
   const pausedGoals = goals.filter((g) => g.status === 'paused');
   const completedGoals = goals.filter((g) => g.status === 'completed');
+
+  const handleEdit = (goal: Goal) => {
+    setEditGoal(goal);
+    setShowCreate(true);
+  };
+
+  const handleClose = () => {
+    setShowCreate(false);
+    setEditGoal(null);
+  };
 
   return (
     <div className="min-h-full pb-20 px-4 pt-4">
@@ -37,14 +48,14 @@ export function GoalsScreen({ onSend }: Props) {
         <div className="space-y-3">
           {activeGoals.length > 0 && (
             <div className="space-y-2">
-              {activeGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} />)}
+              {activeGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} onEdit={handleEdit} />)}
             </div>
           )}
           {pausedGoals.length > 0 && (
             <>
               <h2 className="text-xs text-[#6b6b80] font-medium mt-4">Paused</h2>
               <div className="space-y-2">
-                {pausedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} />)}
+                {pausedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} onEdit={handleEdit} />)}
               </div>
             </>
           )}
@@ -52,14 +63,14 @@ export function GoalsScreen({ onSend }: Props) {
             <>
               <h2 className="text-xs text-[#6b6b80] font-medium mt-4">Completed</h2>
               <div className="space-y-2">
-                {completedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} />)}
+                {completedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} onEdit={handleEdit} />)}
               </div>
             </>
           )}
         </div>
       )}
 
-      {showCreate && <GoalCreateModal onSend={onSend} onClose={() => setShowCreate(false)} />}
+      {showCreate && <GoalCreateModal onSend={onSend} onClose={handleClose} editGoal={editGoal} />}
     </div>
   );
 }

@@ -5,6 +5,7 @@ import { useStore } from '../stores/store';
 interface Props {
   goal: Goal;
   onSend: (msg: WSClientMessage) => void;
+  onEdit: (goal: Goal) => void;
 }
 
 const STATUS_COLORS: Record<string, { bg: string; text: string; label: string }> = {
@@ -25,15 +26,17 @@ function formatTime(iso: string): string {
 
 const EMPTY_LOGS: GoalLogEntry[] = [];
 
-export function GoalCard({ goal, onSend }: Props) {
+export function GoalCard({ goal, onSend, onEdit }: Props) {
   const [expanded, setExpanded] = useState(false);
   const goalLogs = useStore((s) => s.goalLogs[goal.id] ?? EMPTY_LOGS);
   const agents = useStore((s) => s.agents);
   const tasks = useStore((s) => s.tasks);
+  const repos = useStore((s) => s.repos);
 
   const linkedAgents = agents.filter((a) => a.autopilot_goal_id === goal.id);
   const linkedTasks = tasks.filter((t: any) => t.goal_id === goal.id);
   const status = STATUS_COLORS[goal.status] || STATUS_COLORS.active;
+  const linkedRepo = repos.find((r) => r.path === goal.repo_id);
 
   const handleExpand = () => {
     if (!expanded) {
@@ -45,6 +48,35 @@ export function GoalCard({ goal, onSend }: Props) {
   const cycleStatus = () => {
     const next = goal.status === 'active' ? 'paused' : goal.status === 'paused' ? 'completed' : 'active';
     onSend({ type: 'goal:update', goalId: goal.id, fields: { status: next } });
+  };
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (confirm('Are you sure you want to delete this goal?')) {
+      onSend({ type: 'goal:delete', goalId: goal.id });
+    }
+  };
+
+  const handleEdit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onEdit(goal);
+  };
+
+  const handleAssignRepo = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (repos.length === 0) {
+      alert('No repos available. Add a repo first.');
+      return;
+    }
+    const currentRepoId = goal.repo_id || '';
+    const options = repos.map((r) => `${r.path}${r.path === currentRepoId ? ' (current)' : ''}`).join('\n');
+    const choice = prompt(`Select a repo (enter number):\n\n${repos.map((r, i) => `${i + 1}. ${r.path}`).join('\n')}`);
+    if (choice) {
+      const idx = parseInt(choice, 10) - 1;
+      if (idx >= 0 && idx < repos.length) {
+        onSend({ type: 'goal:update', goalId: goal.id, fields: { repo_id: repos[idx].path } });
+      }
+    }
   };
 
   return (
@@ -64,6 +96,7 @@ export function GoalCard({ goal, onSend }: Props) {
             <p className="text-xs text-[#6b6b80] line-clamp-2">{goal.description}</p>
           )}
           <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[#6b6b80]">
+            {linkedRepo && <span className="text-[#7c5bf5]">{linkedRepo.name}</span>}
             {linkedAgents.length > 0 && <span>{linkedAgents.length} agent{linkedAgents.length !== 1 ? 's' : ''}</span>}
             {linkedTasks.length > 0 && <span>{linkedTasks.length} task{linkedTasks.length !== 1 ? 's' : ''}</span>}
             <span>{formatTime(goal.updated_at)}</span>
@@ -76,12 +109,26 @@ export function GoalCard({ goal, onSend }: Props) {
         <div className="border-t border-[#1e1e2e] p-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-[#6b6b80]">Activity Log</span>
-            <button
-              onClick={() => onSend({ type: 'goal:delete', goalId: goal.id })}
-              className="text-[10px] text-red-400/60 hover:text-red-400"
-            >
-              Delete
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleAssignRepo}
+                className="text-[10px] text-[#7c5bf5] hover:text-[#9d7fff]"
+              >
+                Assign Repo
+              </button>
+              <button
+                onClick={handleEdit}
+                className="text-[10px] text-[#6b6b80] hover:text-[#e2e2ef]"
+              >
+                Edit
+              </button>
+              <button
+                onClick={handleDelete}
+                className="text-[10px] text-red-400/60 hover:text-red-400"
+              >
+                Delete
+              </button>
+            </div>
           </div>
           {goalLogs.length === 0 ? (
             <p className="text-xs text-[#6b6b80] italic">No activity yet</p>
