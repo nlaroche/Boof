@@ -112,6 +112,12 @@ export function AgentScreen({ onSend }: Props) {
     onSend({ type: 'agent:interrupt', agentId: agent.id });
   };
 
+  const handleNewChat = () => {
+    onSend({ type: 'agent:send', agentId: agent.id, prompt: '/new' });
+    setViewing('live');
+    userScrolledUp.current = false;
+  };
+
   const statusColors: Record<string, string> = {
     idle: 'text-[#22c55e]',
     running: 'text-[#f59e0b]',
@@ -186,6 +192,16 @@ export function AgentScreen({ onSend }: Props) {
           <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0a0f]">
             {historyTab === 'messages' ? (
               <>
+                {/* New Chat button */}
+                <button
+                  onClick={handleNewChat}
+                  className="w-full px-4 py-3 flex items-center gap-3 border-b border-[#1e1e2e] bg-[#7c5bf5]/10 active:bg-[#7c5bf5]/20"
+                >
+                  <span className="w-2 h-2 rounded-full shrink-0 bg-[#7c5bf5]" />
+                  <span className="text-sm text-[#e2e2ef] flex-1 text-left truncate">New Chat</span>
+                  <span className="text-xs text-[#6b6b80]">+</span>
+                </button>
+
                 {/* Live output entry */}
                 {(lines.length > 0 || isRunning) && (
                   <button
