@@ -148,7 +148,7 @@ export type WSServerMessage =
   | { type: 'goal:updated'; goal: Goal }
   | { type: 'goal:deleted'; goalId: string }
   | { type: 'goal:list'; goals: Goal[] }
-  | {:log'; goal type: 'goalId: string; entries: GoalLogEntry[] }
+  | { type: 'goal:log'; goalId: string; entries: GoalLogEntry[] }
   | { type: 'goal:log:entry'; entry: GoalLogEntry }
   | { type: 'workflow:updated'; workflow: Workflow }
   | { type: 'workflow:deleted'; workflowId: string }
