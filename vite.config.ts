@@ -10,7 +10,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['boof-icon-192.png', 'boof-icon-512.png'],
+      includeAssets: ['boof-icon-192.png', 'boof-icon-512.png', 'boof-icon-192.svg', 'boof-icon-512.svg'],
       manifest: {
         name: 'Boof - Claude Code Command Center',
         short_name: 'Boof',
@@ -21,6 +21,17 @@ export default defineConfig({
         orientation: 'portrait',
         start_url: '/',
         icons: [
+          {
+            src: 'boof-icon-192.svg',
+            sizes: '192x192',
+            type: 'image/svg+xml',
+          },
+          {
+            src: 'boof-icon-512.svg',
+            sizes: '512x512',
+            type: 'image/svg+xml',
+            purpose: 'any maskable',
+          },
           {
             src: 'boof-icon-192.png',
             sizes: '192x192',
