@@ -1,7 +1,8 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'http';
-import { runQuery, getOne, getAll, getDb } from './db.js';
+import { runQuery, getOne, getAll } from './db.js';
 import type { Folder, Task, Agent, Command, WSClientMessage, WSServerMessage } from '../client/lib/types.js';
+import { createAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
 
 interface ConnectedClient {
   ws: WebSocket;
@@ -176,32 +177,103 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'agent:create': {
-      console.log('agent:create - stubbed', message.workingDirectory, message.name);
+      const id = generateId();
+      const now = new Date().toISOString();
+      const name = message.name || 'Agent';
+
+      runQuery(
+        `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity)
+         VALUES (?, ?, ?, 'idle', ?, ?)`,
+        [id, name, message.workingDirectory, now, now]
+      );
+
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [id]);
+      if (agent) {
+        broadcast({ type: 'agent:status', agentId: id, status: 'idle' });
+      }
       break;
     }
 
     case 'agent:kill': {
-      console.log('agent:kill - stubbed', message.agentId);
+      const { agentId } = message;
+      killAgent(agentId);
+      runQuery(`UPDATE agents SET status = 'dead' WHERE id = ?`, [agentId]);
+      broadcast({ type: 'agent:status', agentId, status: 'dead' });
       break;
     }
 
     case 'agent:restart': {
-      console.log('agent:restart - stubbed', message.agentId);
+      const { agentId } = message;
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        const now = new Date().toISOString();
+        runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
+
+        const handleOutput = (id: string, chunk: string) => {
+          broadcast({ type: 'agent:output', agentId: id, chunk });
+        };
+
+        const handleExit = (id: string, code: number) => {
+          const exitStatus = code === 0 ? 'idle' : 'dead';
+          runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, new Date().toISOString(), id]);
+          broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
+        };
+
+        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
+        broadcast({ type: 'agent:status', agentId, status: 'running' });
+      }
       break;
     }
 
     case 'agent:send': {
-      console.log('agent:send - stubbed', message.agentId, message.prompt);
+      const { agentId, prompt, taskId } = message;
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+
+      if (agent) {
+        const commandId = generateId();
+        const now = new Date().toISOString();
+
+        runQuery(
+          `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
+           VALUES (?, ?, ?, ?, 'running', ?)`,
+          [commandId, agentId, taskId || null, prompt, now]
+        );
+
+        const existingPty = hasAgent(agentId);
+        if (!existingPty) {
+          const handleOutput = (id: string, chunk: string) => {
+            broadcast({ type: 'agent:output', agentId: id, chunk });
+          };
+
+          const handleExit = (id: string, code: number) => {
+            const exitStatus = code === 0 ? 'idle' : 'dead';
+            runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, new Date().toISOString(), id]);
+            broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
+          };
+
+          createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
+        }
+
+        runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
+        sendToAgent(agentId, prompt);
+        broadcast({ type: 'agent:status', agentId, status: 'running' });
+      }
       break;
     }
 
     case 'agent:interrupt': {
-      console.log('agent:interrupt - stubbed', message.agentId);
+      const { agentId } = message;
+      interruptAgent(agentId);
       break;
     }
 
     case 'agent:history': {
-      console.log('agent:history - stubbed', message.agentId, message.limit);
+      const { agentId, limit = 50 } = message;
+      const commands = getAll<Command>(
+        'SELECT * FROM commands WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?',
+        [agentId, limit]
+      );
+      console.log('agent:history - stubbed', agentId, commands.length);
       break;
     }
 
