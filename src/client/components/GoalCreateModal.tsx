@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Drawer } from 'vaul';
+import * as Select from '@radix-ui/react-select';
 import type { WSClientMessage, Goal } from '../lib/types';
 import { useStore } from '../stores/store';
 
@@ -7,6 +8,36 @@ interface Props {
   onSend: (msg: WSClientMessage) => void;
   onClose: () => void;
   editGoal?: Goal | null;
+}
+
+function RadixSelect({ value, onValueChange, placeholder, items }: {
+  value: string;
+  onValueChange: (v: string) => void;
+  placeholder: string;
+  items: { value: string; label: string }[];
+}) {
+  return (
+    <Select.Root value={value} onValueChange={onValueChange}>
+      <Select.Trigger className="w-full flex items-center justify-between bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]">
+        <Select.Value placeholder={placeholder} />
+        <Select.Icon className="text-[#6b6b80]">▾</Select.Icon>
+      </Select.Trigger>
+      <Select.Portal>
+        <Select.Content className="radix-select-content z-[60]" position="popper" sideOffset={4}>
+          <Select.Viewport>
+            <Select.Item value="" className="radix-select-item">
+              <Select.ItemText>{placeholder}</Select.ItemText>
+            </Select.Item>
+            {items.map((item) => (
+              <Select.Item key={item.value} value={item.value} className="radix-select-item">
+                <Select.ItemText>{item.label}</Select.ItemText>
+              </Select.Item>
+            ))}
+          </Select.Viewport>
+        </Select.Content>
+      </Select.Portal>
+    </Select.Root>
+  );
 }
 
 export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
@@ -88,18 +119,17 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
           />
 
           <label className="text-xs text-[#6b6b80] mb-1 block">Repo (optional)</label>
-          <select
-            value={repoId}
-            onChange={(e) => setRepoId(e.target.value)}
-            className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-4 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]"
-          >
-            <option value="">No repo assigned</option>
-            {repos.map((repo) => (
-              <option key={repo.path} value={repo.path}>
-                {repo.name}
-              </option>
-            ))}
-          </select>
+          <div className="mb-4">
+            <RadixSelect
+              value={repoId}
+              onValueChange={setRepoId}
+              placeholder="No repo assigned"
+              items={repos.map((repo) => ({
+                value: repo.path,
+                label: repo.name,
+              }))}
+            />
+          </div>
 
           <button
             onClick={isEdit ? handleUpdate : handleCreate}
