@@ -29,8 +29,9 @@ async function start() {
     res.sendFile(path.join(clientDir, 'index.html'));
   });
 
-  server.listen(PORT, () => {
-    console.log(`Boof server running on http://localhost:${PORT}`);
+  server.listen(Number(PORT), '0.0.0.0', () => {
+    console.log(`Boof server running on http://0.0.0.0:${PORT}`);
+    console.log(`Access via Tailscale at http://<tailscale-ip>:${PORT}`);
   });
 }
 

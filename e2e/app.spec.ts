@@ -1,4 +1,20 @@
 import { test, expect } from '@playwright/test';
+import fs from 'fs';
+import path from 'path';
+
+// Clean DB before test suite to ensure fresh state
+test.beforeAll(() => {
+  const dbPath = path.join(process.cwd(), 'boof.db');
+  if (fs.existsSync(dbPath)) {
+    fs.unlinkSync(dbPath);
+  }
+});
+
+async function waitForWsConnection(page: any) {
+  // Wait for the "Reconnecting..." banner to disappear, indicating WS is connected
+  await page.waitForTimeout(1000);
+  await expect(page.locator('text=Reconnecting...')).not.toBeVisible({ timeout: 5000 });
+}
 
 test.describe('Boof PWA', () => {
   test('loads the home screen', async ({ page }) => {
@@ -61,7 +77,6 @@ test.describe('Boof PWA', () => {
     await page.goto('/');
     const body = page.locator('body');
     const bgColor = await body.evaluate((el) => getComputedStyle(el).backgroundColor);
-    // Should be near-black (#0a0a0f = rgb(10, 10, 15))
     expect(bgColor).toContain('10');
   });
 
@@ -75,68 +90,64 @@ test.describe('Boof PWA', () => {
 
   test('has service worker registration', async ({ page }) => {
     await page.goto('/');
-    // Check that registerSW.js is loaded
     const swScript = await page.locator('script[src*="registerSW"]').count();
-    // The register script may be inline or linked
-    expect(swScript).toBeGreaterThanOrEqual(0); // Just verify page loads without errors
+    expect(swScript).toBeGreaterThanOrEqual(0);
   });
 });
 
 test.describe('Tasks Screen', () => {
   test('can create a folder', async ({ page }) => {
     await page.goto('/');
+    await waitForWsConnection(page);
     await page.locator('nav button', { hasText: 'Tasks' }).click();
 
-    // Click the + button to create a folder
+    // Click the + button in the Folders section to create a folder
     await page.locator('button', { hasText: '+' }).first().click();
 
     // Fill in folder name
+    const folderName = `TestFolder-${Date.now()}`;
     const input = page.locator('input[placeholder*="Folder name"]');
     await expect(input).toBeVisible();
-    await input.fill('Test Folder');
+    await input.fill(folderName);
     await page.locator('button', { hasText: 'Add' }).click();
 
-    // Folder should appear
-    await expect(page.locator('text=Test Folder')).toBeVisible({ timeout: 5000 });
+    // Folder should appear (wait for WS roundtrip)
+    await expect(page.getByText(folderName).first()).toBeVisible({ timeout: 10000 });
   });
 
   test('can create a task in a folder', async ({ page }) => {
     await page.goto('/');
+    await waitForWsConnection(page);
     await page.locator('nav button', { hasText: 'Tasks' }).click();
 
     // Create a folder first
+    const folderName = `WorkFolder-${Date.now()}`;
     await page.locator('button', { hasText: '+' }).first().click();
     const folderInput = page.locator('input[placeholder*="Folder name"]');
-    await folderInput.fill('Work Folder');
+    await folderInput.fill(folderName);
     await page.locator('button', { hasText: 'Add' }).click();
-    await expect(page.locator('text=Work Folder')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(folderName).first()).toBeVisible({ timeout: 10000 });
 
     // Click the folder to select it
-    await page.locator('text=Work Folder').click();
+    await page.getByText(folderName).first().click();
 
     // Add a task
+    const taskName = `Task-${Date.now()}`;
     const taskInput = page.locator('input[placeholder*="Add a task"]');
     await expect(taskInput).toBeVisible();
-    await taskInput.fill('My first task');
-    await page.locator('input[placeholder*="Add a task"] + button, button:has-text("+")').last().click();
+    await taskInput.fill(taskName);
+
+    // Click the + button next to the task input
+    await taskInput.press('Enter');
 
     // Task should appear
-    await expect(page.locator('text=My first task')).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(taskName).first()).toBeVisible({ timeout: 10000 });
   });
 });
 
 test.describe('WebSocket Connection', () => {
   test('connects to WebSocket and receives sync state', async ({ page }) => {
     await page.goto('/');
-
-    // Wait a bit for WebSocket to connect
-    await page.waitForTimeout(2000);
-
-    // If connected, the "Reconnecting..." banner should NOT be visible
-    // (or it may briefly appear then disappear)
-    const reconnecting = page.locator('text=Reconnecting...');
-    // Give it time to connect
-    await page.waitForTimeout(1000);
-    await expect(reconnecting).not.toBeVisible({ timeout: 5000 });
+    await waitForWsConnection(page);
   });
 });
