@@ -149,6 +149,12 @@ export function AgentScreen({ onSend }: Props) {
             {showHistory ? agent.working_directory : showLive ? 'Live' : 'History'}
           </div>
         </div>
+        <button
+          onClick={handleNewChat}
+          className="px-3 py-1.5 bg-[#1e1e2e] text-[#6b6b80] border border-[#1e1e2e] rounded-lg text-xs active:bg-[#2e2e3e]"
+        >
+          + New Chat
+        </button>
         <span className={`text-xs font-medium ${statusColors[agent.status]}`}>
           {agent.status}
         </span>
@@ -192,16 +198,6 @@ export function AgentScreen({ onSend }: Props) {
           <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0a0f]">
             {historyTab === 'messages' ? (
               <>
-                {/* New Chat button */}
-                <button
-                  onClick={handleNewChat}
-                  className="w-full px-4 py-3 flex items-center gap-3 border-b border-[#1e1e2e] bg-[#7c5bf5]/10 active:bg-[#7c5bf5]/20"
-                >
-                  <span className="w-2 h-2 rounded-full shrink-0 bg-[#7c5bf5]" />
-                  <span className="text-sm text-[#e2e2ef] flex-1 text-left truncate">New Chat</span>
-                  <span className="text-xs text-[#6b6b80]">+</span>
-                </button>
-
                 {/* Live output entry */}
                 {(lines.length > 0 || isRunning) && (
                   <button
