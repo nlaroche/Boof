@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../stores/store';
 import { GoalCard } from '../components/GoalCard';
 import { GoalCreateModal } from '../components/GoalCreateModal';
@@ -10,8 +10,15 @@ interface Props {
 
 export function GoalsScreen({ onSend }: Props) {
   const goals = useStore((s) => s.goals);
+  const repos = useStore((s) => s.repos);
   const [showCreate, setShowCreate] = useState(false);
   const [editGoal, setEditGoal] = useState<Goal | null>(null);
+
+  useEffect(() => {
+    if (repos.length === 0) {
+      onSend({ type: 'repos:list' });
+    }
+  }, [repos.length, onSend]);
 
   const activeGoals = goals.filter((g) => g.status === 'active');
   const pausedGoals = goals.filter((g) => g.status === 'paused');
