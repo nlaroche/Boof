@@ -23,9 +23,11 @@ function formatTime(iso: string): string {
   return d.toLocaleDateString();
 }
 
+const EMPTY_LOGS: GoalLogEntry[] = [];
+
 export function GoalCard({ goal, onSend }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const goalLogs = useStore((s) => s.goalLogs[goal.id] || []);
+  const goalLogs = useStore((s) => s.goalLogs[goal.id] ?? EMPTY_LOGS);
   const agents = useStore((s) => s.agents);
   const tasks = useStore((s) => s.tasks);
 

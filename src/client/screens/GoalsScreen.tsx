@@ -17,7 +17,7 @@ export function GoalsScreen({ onSend }: Props) {
   const completedGoals = goals.filter((g) => g.status === 'completed');
 
   return (
-    <div className="pb-20 px-4 pt-4">
+    <div className="min-h-full pb-20 px-4 pt-4">
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-xl font-bold text-[#e2e2ef]">Goals</h1>
         <button
