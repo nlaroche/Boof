@@ -1,3 +1,4 @@
+import { useEffect, Component, type ReactNode } from 'react';
 import { useStore } from './stores/store';
 import { useWebSocket } from './hooks/useWebSocket';
 import { BottomNav } from './components/BottomNav';
@@ -8,6 +9,24 @@ import { AgentsScreen } from './screens/AgentsScreen';
 import { HistoryScreen } from './screens/HistoryScreen';
 import { GoalsScreen } from './screens/GoalsScreen';
 
+class ErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(error: Error) {
+    return { error: `${error.message}\n${error.stack}` };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div style={{ color: 'red', padding: 20, whiteSpace: 'pre-wrap', fontSize: 12 }}>
+          <h2>Render Error</h2>
+          <pre>{this.state.error}</pre>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export function App() {
   const activeScreen = useStore((s) => s.ui.activeScreen);
   const { send, connected } = useWebSocket();
@@ -16,8 +35,20 @@ export function App() {
     send({ type: 'agent:send', agentId, prompt });
   };
 
+  // Track visual viewport for keyboard awareness
+  useEffect(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => {
+      document.documentElement.style.setProperty('--app-height', `${vv.height}px`);
+    };
+    update();
+    vv.addEventListener('resize', update);
+    return () => vv.removeEventListener('resize', update);
+  }, []);
+
   return (
-    <div className="min-h-screen bg-[#0a0a0f] text-[#e2e2ef] font-[Inter,sans-serif]">
+    <div className="h-[100dvh] flex flex-col bg-[#0a0a0f] text-[#e2e2ef] font-[Inter,sans-serif]">
       {/* Connection banner */}
       {!connected && (
         <div className="fixed top-0 left-0 right-0 bg-[#f59e0b]/20 text-[#f59e0b] text-center text-sm py-2 z-50">
@@ -26,12 +57,16 @@ export function App() {
       )}
 
       {/* Screen router */}
-      {activeScreen === 'home' && <HomeScreen onSendToAgent={handleSendToAgent} />}
-      {activeScreen === 'goals' && <GoalsScreen onSend={send} />}
-      {activeScreen === 'tasks' && <TasksScreen onSend={send} />}
-      {activeScreen === 'agent' && <AgentScreen onSend={send} />}
-      {activeScreen === 'agents' && <AgentsScreen onSend={send} />}
-      {activeScreen === 'history' && <HistoryScreen />}
+      <div className="flex-1 overflow-y-auto">
+        <ErrorBoundary>
+          {activeScreen === 'home' && <HomeScreen onSendToAgent={handleSendToAgent} />}
+          {activeScreen === 'goals' && <GoalsScreen onSend={send} />}
+          {activeScreen === 'tasks' && <TasksScreen onSend={send} />}
+          {activeScreen === 'agent' && <AgentScreen onSend={send} />}
+          {activeScreen === 'agents' && <AgentsScreen onSend={send} />}
+          {activeScreen === 'history' && <HistoryScreen />}
+        </ErrorBoundary>
+      </div>
 
       {/* Bottom nav (hide on agent detail screen) */}
       {activeScreen !== 'agent' && <BottomNav />}
