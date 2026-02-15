@@ -1,0 +1,34 @@
+import { useStore } from '../stores/store';
+
+const tabs = [
+  { id: 'home' as const, label: 'Home', icon: '\u2302' },
+  { id: 'tasks' as const, label: 'Tasks', icon: '\u2611' },
+  { id: 'agents' as const, label: 'Agents', icon: '\u2699' },
+  { id: 'history' as const, label: 'History', icon: '\u23F0' },
+];
+
+export function BottomNav() {
+  const activeScreen = useStore((s) => s.ui.activeScreen);
+  const setActiveScreen = useStore((s) => s.setActiveScreen);
+
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-[#14141f] border-t border-[#1e1e2e] pb-[env(safe-area-inset-bottom)] z-50">
+      <div className="flex justify-around items-center h-16">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveScreen(tab.id)}
+            className={`flex flex-col items-center justify-center min-w-[64px] min-h-[48px] rounded-lg transition-colors ${
+              activeScreen === tab.id
+                ? 'text-[#7c5bf5]'
+                : 'text-[#6b6b80] active:text-[#e2e2ef]'
+            }`}
+          >
+            <span className="text-xl">{tab.icon}</span>
+            <span className="text-xs mt-0.5">{tab.label}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}

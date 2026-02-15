@@ -16,6 +16,10 @@ export function setupWebSocket(server: Server): void {
     console.log('Client connected');
     clients.push({ ws });
 
+    ws.on('message', (data) => {
+      handleWsMessage(ws, data.toString());
+    });
+
     ws.on('close', () => {
       console.log('Client disconnected');
       const index = clients.findIndex((c) => c.ws === ws);
