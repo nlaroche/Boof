@@ -51,7 +51,7 @@ export function App() {
     <div className="h-[100dvh] flex flex-col bg-[#0a0a0f] text-[#e2e2ef] font-[Inter,sans-serif]">
       {/* Connection banner */}
       {!connected && (
-        <div className="fixed top-0 left-0 right-0 bg-[#f59e0b]/20 text-[#f59e0b] text-center text-sm py-2 z-50">
+        <div className="bg-[#f59e0b]/20 text-[#f59e0b] text-center text-sm py-2 shrink-0">
           Reconnecting...
         </div>
       )}
