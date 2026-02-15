@@ -120,6 +120,7 @@ export type WSClientMessage =
   | { type: 'agent:interrupt'; agentId: string }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
+  | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'goal:create'; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
@@ -131,17 +132,19 @@ export type WSClientMessage =
   | { type: 'workflow:list' };
 
 export type WSServerMessage =
-  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[] }
+  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
   | { type: 'agent:output'; agentId: string; chunk: string }
   | { type: 'agent:updated'; agent: Agent }
   | { type: 'agent:deleted'; agentId: string }
   | { type: 'agent:status'; agentId: string; status: AgentStatus }
   | { type: 'agent:summary'; agentId: string; commandId: string; summary: string; filesChanged: string[] }
+  | { type: 'command:updated'; command: Command }
   | { type: 'task:updated'; task: Task }
   | { type: 'folder:updated'; folder: Folder }
   | { type: 'repos:list'; repos: RepoInfo[] }
   | { type: 'notify'; agentId: string; title: string; body: string }
   | { type: 'agent:history'; agentId: string; commands: Command[] }
+  | { type: 'agent:activity'; agentId: string; entries: GoalLogEntry[] }
   | { type: 'goal:updated'; goal: Goal }
   | { type: 'goal:deleted'; goalId: string }
   | { type: 'goal:list'; goals: Goal[] }
