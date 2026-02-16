@@ -27,7 +27,7 @@ export function BottomNav() {
           >
             <span className="text-base font-mono leading-none">{tab.icon}</span>
             {activeScreen === tab.id && (
-              <span className="absolute bottom-1 w-1 h-1 rounded-full bg-[#7c5bf5]" />
+              <span className="absolute -bottom-1 w-6 h-0.5 rounded-full bg-[#7c5bf5]" />
             )}
             <span className="text-xs mt-0.5">{tab.label}</span>
           </button>
