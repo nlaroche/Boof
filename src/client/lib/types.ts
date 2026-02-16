@@ -42,6 +42,7 @@ export interface Agent {
   autopilot_goal_id: string | null;
   autopilot_last_run: string | null;
   workflow_id: string | null;
+  worktree_path: string | null;
   created_at: string;
   last_activity: string;
 }

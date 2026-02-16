@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
@@ -20,6 +20,9 @@ interface StoreState {
   agentAssessments: Record<string, Assessment[]>;
   agentBranches: Record<string, string[]>;
   agentXpEvents: Record<string, XpEvent[]>;
+  agentDashboard: Record<string, DashboardData>;
+  agentSkillsList: Record<string, Skill[]>;
+  agentExperiments: Record<string, Experiment[]>;
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
@@ -42,6 +45,9 @@ interface StoreState {
   setAgentBranches: (agentId: string, branches: string[]) => void;
   setAgentXpEvents: (agentId: string, events: XpEvent[]) => void;
   addXpEvent: (agentId: string, event: XpEvent) => void;
+  setAgentDashboard: (agentId: string, data: DashboardData) => void;
+  setAgentSkillsList: (agentId: string, skills: Skill[]) => void;
+  setAgentExperiments: (agentId: string, experiments: Experiment[]) => void;
   setWorkflows: (workflows: Workflow[]) => void;
   updateWorkflow: (workflow: Workflow) => void;
   removeWorkflow: (workflowId: string) => void;
@@ -77,6 +83,9 @@ export const useStore = create<StoreState>((set) => ({
   agentAssessments: {},
   agentBranches: {},
   agentXpEvents: {},
+  agentDashboard: {},
+  agentSkillsList: {},
+  agentExperiments: {},
   workflows: [],
   activeOutputs: {},
   ui: {
@@ -174,6 +183,21 @@ export const useStore = create<StoreState>((set) => ({
         ...state.agentXpEvents,
         [agentId]: [event, ...(state.agentXpEvents[agentId] || [])],
       },
+    })),
+
+  setAgentDashboard: (agentId, data) =>
+    set((state) => ({
+      agentDashboard: { ...state.agentDashboard, [agentId]: data },
+    })),
+
+  setAgentSkillsList: (agentId, skills) =>
+    set((state) => ({
+      agentSkillsList: { ...state.agentSkillsList, [agentId]: skills },
+    })),
+
+  setAgentExperiments: (agentId, experiments) =>
+    set((state) => ({
+      agentExperiments: { ...state.agentExperiments, [agentId]: experiments },
     })),
 
   setWorkflows: (workflows) => set({ workflows }),

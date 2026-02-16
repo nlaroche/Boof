@@ -81,6 +81,7 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'minimax'");
   addColumnIfMissing('agents', 'xp', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'self_improve', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('agents', 'worktree_path', 'TEXT DEFAULT NULL');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS assessments (
