@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { Drawer } from 'vaul';
-import * as Select from '@radix-ui/react-select';
 import type { WSClientMessage, Goal } from '../lib/types';
 import { useStore } from '../stores/store';
 
@@ -10,40 +9,11 @@ interface Props {
   editGoal?: Goal | null;
 }
 
-function RadixSelect({ value, onValueChange, placeholder, items }: {
-  value: string;
-  onValueChange: (v: string) => void;
-  placeholder: string;
-  items: { value: string; label: string }[];
-}) {
-  return (
-    <Select.Root value={value} onValueChange={onValueChange}>
-      <Select.Trigger className="w-full flex items-center justify-between bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]">
-        <Select.Value placeholder={placeholder} />
-        <Select.Icon className="text-[#6b6b80]">▾</Select.Icon>
-      </Select.Trigger>
-      <Select.Portal>
-        <Select.Content className="radix-select-content z-[60]" position="popper" sideOffset={4}>
-          <Select.Viewport>
-            <Select.Item value="" className="radix-select-item">
-              <Select.ItemText>{placeholder}</Select.ItemText>
-            </Select.Item>
-            {items.map((item) => (
-              <Select.Item key={item.value} value={item.value} className="radix-select-item">
-                <Select.ItemText>{item.label}</Select.ItemText>
-              </Select.Item>
-            ))}
-          </Select.Viewport>
-        </Select.Content>
-      </Select.Portal>
-    </Select.Root>
-  );
-}
-
 export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [repoId, setRepoId] = useState('');
+  const [search, setSearch] = useState('');
   const repos = useStore((s) => s.repos);
 
   const isEdit = !!editGoal;
@@ -59,6 +29,12 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       setRepoId('');
     }
   }, [editGoal]);
+
+  const filteredRepos = search.trim()
+    ? repos.filter((r) => r.name.toLowerCase().includes(search.toLowerCase()))
+    : repos;
+
+  const selectedRepo = repos.find((r) => r.path === repoId);
 
   const handleCreate = () => {
     if (!name.trim()) return;
@@ -83,6 +59,14 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       },
     });
     onClose();
+  };
+
+  const handleSelectRepo = (path: string) => {
+    setRepoId(path === repoId ? '' : path);
+  };
+
+  const handleClearRepo = () => {
+    setRepoId('');
   };
 
   return (
@@ -119,17 +103,54 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
           />
 
           <label className="text-xs text-[#6b6b80] mb-1 block">Repo (optional)</label>
-          <div className="mb-4">
-            <RadixSelect
-              value={repoId}
-              onValueChange={setRepoId}
-              placeholder="No repo assigned"
-              items={repos.map((repo) => ({
-                value: repo.path,
-                label: repo.name,
-              }))}
+          <div className="mb-2">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search repos..."
+              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5]"
             />
           </div>
+          
+          <div className="max-h-40 overflow-y-auto space-y-1 mb-3">
+            {filteredRepos.length === 0 ? (
+              <p className="text-center text-[#6b6b80] text-sm py-2">
+                {repos.length === 0 ? 'No repos available' : 'No matching repos'}
+              </p>
+            ) : (
+              filteredRepos.map((repo) => (
+                <button
+                  key={repo.path}
+                  onClick={() => handleSelectRepo(repo.path)}
+                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors flex items-center justify-between ${
+                    repoId === repo.path
+                      ? 'bg-[#7c5bf5]/20 border border-[#7c5bf5]/40'
+                      : 'bg-[#0a0a0f] border border-[#1e1e2e] hover:bg-[#1e1e2e] active:bg-[#1e1e2e]'
+                  }`}
+                >
+                  <span className="text-sm text-[#e2e2ef] truncate">{repo.name}</span>
+                  {repo.hasGit && (
+                    <span className="text-[10px] text-[#6b6b80] bg-[#1e1e2e] px-1.5 py-0.5 rounded ml-2 shrink-0">
+                      git
+                    </span>
+                  )}
+                </button>
+              ))
+            )}
+          </div>
+
+          {selectedRepo && (
+            <div className="flex items-center gap-2 mb-4">
+              <span className="text-xs text-[#6b6b80]">Selected:</span>
+              <span className="text-xs text-[#e2e2ef]">{selectedRepo.name}</span>
+              <button
+                onClick={handleClearRepo}
+                className="text-xs text-[#ef4444] hover:text-[#f87171]"
+              >
+                Clear
+              </button>
+            </div>
+          )}
 
           <button
             onClick={isEdit ? handleUpdate : handleCreate}
