@@ -515,16 +515,20 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             const reviewState = reviewPending.get(id);
             if (succeeded && agent && !reviewState) {
               try {
-                const diff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
-                const diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
-                if (diff && diffContent && diffContent.length < 8000) {
+                const diffStat = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                if (diffStat) {
+                  // Keep diff short to avoid Windows CMD length limits (~8191 chars)
+                  let diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                  if (diffContent.length > 3000) {
+                    diffContent = diffContent.slice(0, 3000) + '\n...(truncated)';
+                  }
                   reviewPending.set(id, true);
                   const reviewMsg = '\n=== Self-review: checking changes for bugs ===\n';
                   appendAgentOutput(id, reviewMsg);
                   broadcast({ type: 'agent:output', agentId: id, chunk: reviewMsg });
 
                   // Re-use the same command ID — no new command row
-                  const reviewPrompt = `Review the changes you just made for the task: "${prompt}"\n\nHere is the diff:\n\n${diffContent}\n\nCheck for:\n1. Logic bugs (wrong conditions, off-by-one, stale closures in React hooks)\n2. Missing imports or exports\n3. Does this actually accomplish what was asked? Did you edit the RIGHT file?\n4. Did you accidentally create a NEW file instead of editing an existing one?\n\nIf you find issues, fix them. If the changes look correct, do not edit any files.`;
+                  const reviewPrompt = `Review these changes for the task: "${prompt.slice(0, 100)}"\n\nFiles changed:\n${diffStat}\n\nDiff:\n${diffContent}\n\nCheck: logic bugs, missing imports, wrong file edited, new files created accidentally. Fix issues or do nothing if correct.`;
                   sendToAgent(id, reviewPrompt);
                   return; // Don't finalize yet, wait for review to complete
                 }

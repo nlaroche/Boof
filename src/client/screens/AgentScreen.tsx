@@ -121,10 +121,17 @@ export function AgentScreen({ onSend }: Props) {
   };
 
   const statusColors: Record<string, string> = {
-    idle: 'text-[#22c55e]',
-    running: 'text-[#f59e0b]',
-    error: 'text-[#ef4444]',
-    dead: 'text-[#6b6b80]',
+    idle: 'bg-[#22c55e]/20 text-[#22c55e]',
+    running: 'bg-[#f59e0b]/20 text-[#f59e0b]',
+    error: 'bg-[#ef4444]/20 text-[#ef4444]',
+    dead: 'bg-[#6b6b80]/20 text-[#6b6b80]',
+  };
+
+  const statusLabels: Record<string, string> = {
+    idle: 'Idle',
+    running: 'Working...',
+    error: 'Error',
+    dead: 'Offline',
   };
 
   const showHistory = viewing === null;
@@ -151,8 +158,8 @@ export function AgentScreen({ onSend }: Props) {
             {showHistory ? agent.working_directory : showLive ? 'Live' : 'History'}
           </div>
         </div>
-        <span className={`text-xs font-medium ${statusColors[agent.status]}`}>
-          {agent.status}
+        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${statusColors[agent.status]}`}>
+          {statusLabels[agent.status]}
         </span>
         {isRunning && (
           <button

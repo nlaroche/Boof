@@ -189,12 +189,19 @@ function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): s
   const mentionedFiles = extractFilePaths(prompt, cwd);
   for (const f of mentionedFiles) hitFiles.add(f);
 
-  // If it's a UI task, include all client screens and components (they're small)
+  // If it's a UI task, include screens first (they have the main views), then components
   if (isUI) {
+    // Screens first — they contain the page-level JSX
     for (const f of allFiles) {
-      if (f.includes('src/client/screens/') || f.includes('src/client/components/')) {
-        hitFiles.add(f);
-      }
+      if (f.includes('src/client/screens/')) hitFiles.add(f);
+    }
+    // Then components
+    for (const f of allFiles) {
+      if (f.includes('src/client/components/')) hitFiles.add(f);
+    }
+    // Then hooks and lib
+    for (const f of allFiles) {
+      if (f.includes('src/client/hooks/') || f.includes('src/client/lib/')) hitFiles.add(f);
     }
   }
 
@@ -224,8 +231,8 @@ function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): s
     for (const f of guessed) hitFiles.add(f);
   }
 
-  // Cap at 12 files (screens + components is usually ~10-12 files)
-  return [...hitFiles].slice(0, 12);
+  // Cap at 15 files (6 screens + 8 components + types/store)
+  return [...hitFiles].slice(0, 15);
 }
 
 /** Enrich a vague user prompt with specific file paths, line numbers, and grep results.
