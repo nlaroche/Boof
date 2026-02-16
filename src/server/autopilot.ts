@@ -4,6 +4,7 @@ import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern } from './agent-memory.js';
+import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage } from '../client/lib/types.js';
 
 const execAsync = promisify(exec);
@@ -26,15 +27,15 @@ function generateId(): string {
 // ── Branch-based isolation ──────────────────────────────────────────────
 
 async function getCurrentBranch(workingDirectory: string): Promise<string> {
-  try {
-    const { stdout } = await execAsync('git branch --show-current', {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    });
-    return stdout.trim();
-  } catch {
-    return 'main';
+  const { stdout } = await execAsync('git branch --show-current', {
+    cwd: workingDirectory,
+    timeout: 10_000,
+  });
+  const branch = stdout.trim();
+  if (!branch) {
+    throw new Error('Could not determine current branch (detached HEAD or git failure)');
   }
+  return branch;
 }
 
 function slugify(text: string): string {
@@ -56,6 +57,15 @@ async function createAgentBranch(
     cwd: workingDirectory,
     timeout: 30_000,
   });
+  // Verify we're actually on the new branch
+  const { stdout } = await execAsync('git branch --show-current', {
+    cwd: workingDirectory,
+    timeout: 10_000,
+  });
+  const actual = stdout.trim();
+  if (actual !== branchName) {
+    throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
+  }
   console.log(`[autopilot] Created branch: ${branchName}`);
   return branchName;
 }
@@ -216,6 +226,20 @@ async function runBuildCheck(workingDirectory: string): Promise<{ success: boole
 
 async function autoCommit(workingDirectory: string, goalSlug: string, summary: string): Promise<string> {
   try {
+    // Guard: refuse to commit on protected or non-agent branches
+    const { stdout: branchOut } = await execAsync('git branch --show-current', {
+      cwd: workingDirectory,
+      timeout: 10_000,
+    });
+    const currentBranch = branchOut.trim();
+    if (isProtectedBranch(currentBranch)) {
+      console.error(`[autopilot] Refusing to commit on protected branch: ${currentBranch}`);
+      return '';
+    }
+    if (!currentBranch.startsWith('agent/')) {
+      console.error(`[autopilot] Refusing to commit on non-agent branch: ${currentBranch}`);
+      return '';
+    }
     await execAsync('git add -A', { cwd: workingDirectory, timeout: 30_000 });
     const msg = `agent(${goalSlug}): ${summary.slice(0, 150)}`.replace(/"/g, '\\"');
     await execAsync(`git commit -m "${msg}"`, {
@@ -453,8 +477,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
   try {
     // ── Branch Isolation ──
-    if (selfImprovement) {
-      originalBranch = await getCurrentBranch(agent.working_directory);
+    // Always isolate on protected branches, even for non-self-improvement
+    originalBranch = await getCurrentBranch(agent.working_directory);
+    const needsBranchIsolation = selfImprovement || isProtectedBranch(originalBranch);
+    if (needsBranchIsolation) {
       agentBranch = await createAgentBranch(agent.working_directory, agent.name, goalSlug);
       broadcast({
         type: 'agent:output',
@@ -484,7 +510,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
 
       // Clean up branch (planning doesn't produce code changes)
-      if (selfImprovement && agentBranch) {
+      if (needsBranchIsolation && agentBranch) {
         await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
         agentBranch = '';
       }
@@ -519,7 +545,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       success = result.success;
       summary = result.summary;
 
-      if (selfImprovement) {
+      if (needsBranchIsolation) {
         const buildResult = await runBuildCheck(agent.working_directory);
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed after workflow, discarding branch`);
@@ -553,8 +579,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       success = code === 0;
       summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${code})`;
 
-      // Safety gate for self-improvement
-      if (selfImprovement && success) {
+      // Safety gate: build check + commit on agent branches
+      if (needsBranchIsolation && success) {
         const buildResult = await runBuildCheck(agent.working_directory);
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed, discarding branch`);
@@ -585,7 +611,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success);
 
     // Switch back to original branch (leave agent branch for merge/discard via UI)
-    if (selfImprovement && agentBranch && originalBranch) {
+    if (needsBranchIsolation && agentBranch && originalBranch) {
       await switchBack(agent.working_directory, originalBranch);
     }
 
@@ -594,7 +620,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     logToGoal(goalId, agentId, 'autopilot_run', `Error: ${err.message || err}`, '', Date.now() - startTime, false);
 
     // Clean up: switch back to original branch on error
-    if (selfImprovement && agentBranch && originalBranch) {
+    if (agentBranch && originalBranch) {
       await switchBack(agent.working_directory, originalBranch).catch(() => {});
     }
   } finally {

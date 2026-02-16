@@ -3,6 +3,7 @@
  * Extracts git-related functions from ws-handler.ts.
  */
 import { execSync } from 'child_process';
+import { isProtectedBranch } from './branch-guard.js';
 
 /** Strip all ANSI escape codes from text */
 export function stripAnsi(str: string): string {
@@ -81,6 +82,13 @@ export function generateSummary(rawOutput: string, prompt: string): string {
 /** Commit agent changes — only stages files the agent actually touched */
 export function commitAgentChanges(workingDirectory: string, prompt: string, agentOutput: string): boolean {
   try {
+    // Guard: refuse to commit on protected branches
+    const currentBranch = execSync('git branch --show-current', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (isProtectedBranch(currentBranch)) {
+      console.error(`[git-utils] Refusing to commit on protected branch: ${currentBranch}`);
+      return false;
+    }
+
     // Get all modified/untracked files in the repo
     const statusOutput = execSync('git status --porcelain', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
     if (!statusOutput) return false;
