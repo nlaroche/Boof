@@ -324,6 +324,25 @@ export function AgentScreen({ onSend }: Props) {
                   <XpBar xp={agent.xp || 0} size="lg" />
                 </div>
 
+                {/* XP History */}
+                {xpEvents.length > 0 && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">XP History</div>
+                    {xpEvents.map((evt) => (
+                      <div key={evt.id} className="px-4 py-2 border-t border-[#1e1e2e]/50 flex items-center gap-2">
+                        <span className="text-sm font-bold text-[#7c5bf5] shrink-0 w-8 text-right">+{evt.amount}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-[#e2e2ef] break-words">{evt.reason}</div>
+                          <div className="flex items-center gap-2 mt-0.5">
+                            <span className="text-[9px] px-1.5 py-0.5 rounded bg-[#1e1e2e] text-[#6b6b80]">{evt.source}</span>
+                            <span className="text-[9px] text-[#6b6b80]">{timeAgo(evt.created_at)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 {/* Improvements List */}
                 {improvements.length > 0 && (
                   <div className="border-b border-[#1e1e2e]">
@@ -385,7 +404,7 @@ export function AgentScreen({ onSend }: Props) {
                       </div>
                     ))}
                   </div>
-                ) : improvements.length === 0 && (
+                ) : improvements.length === 0 && xpEvents.length === 0 && (
                   <div className="text-center text-[#6b6b80] py-12">
                     <div className="text-lg font-mono mb-2">---</div>
                     <p>No experience yet</p>
