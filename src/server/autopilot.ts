@@ -565,7 +565,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed after workflow, discarding branch`);
           const errSnippet = buildResult.output.slice(-500).trim();
-          recordMistake(agent.working_directory, `Build failed after workflow: ${errSnippet.slice(0, 200)}`, '');
+          const tsError = errSnippet.match(/(TS\d+:[^\n]+)/)?.[1] || '';
+          recordMistake(
+            agent.working_directory,
+            `Build failed after workflow "${workflowObj.name}" for goal "${goal.name}"${tsError ? `: ${tsError}` : ''}: ${errSnippet.slice(0, 150)}`,
+            tsError ? 'Check types and imports before committing' : ''
+          );
           if (agentBranch) {
             await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
             agentBranch = '';
@@ -575,7 +580,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         } else if (success) {
           diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
           summary += ' (committed on branch)';
-          recordPattern(agent.working_directory, `Workflow "${workflowObj.name}" succeeded for goal "${goal.name}"`, 'autopilot');
+          const wfFiles = diffStats.split('\n').filter(l => l.includes('|')).map(l => l.trim().split(/\s+/)[0]).filter(Boolean);
+          recordPattern(
+            agent.working_directory,
+            `Workflow "${workflowObj.name}" succeeded for goal "${goal.name}"${wfFiles.length ? ` — modified ${wfFiles.join(', ')}` : ''}`,
+            'autopilot'
+          );
         }
       }
     } else {
@@ -600,7 +610,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed, discarding branch`);
           const errSnippet = buildResult.output.slice(-500).trim();
-          recordMistake(agent.working_directory, `Build failed: ${errSnippet.slice(0, 200)}`, '');
+          const tsErr = errSnippet.match(/(TS\d+:[^\n]+)/)?.[1] || '';
+          recordMistake(
+            agent.working_directory,
+            `Build failed while working on "${currentTask.title}"${tsErr ? `: ${tsErr}` : ''}: ${errSnippet.slice(0, 150)}`,
+            tsErr ? 'Validate types before committing' : ''
+          );
           if (agentBranch) {
             await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
             agentBranch = '';
@@ -610,7 +625,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         } else {
           diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
           summary += ' (committed on branch)';
-          recordPattern(agent.working_directory, `Task "${currentTask.title}" succeeded`, 'autopilot');
+          const taskFiles = diffStats.split('\n').filter(l => l.includes('|')).map(l => l.trim().split(/\s+/)[0]).filter(Boolean);
+          recordPattern(
+            agent.working_directory,
+            `Completed: "${currentTask.title}"${taskFiles.length ? ` — modified ${taskFiles.join(', ')}` : ''}`,
+            'autopilot'
+          );
         }
       }
     }
