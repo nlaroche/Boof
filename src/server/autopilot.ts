@@ -508,6 +508,13 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   const startTime = Date.now();
   const goalSlug = slugify(goal.name);
 
+  // Performance tracking
+  const perf = {
+    planningMs: 0,
+    implementationMs: 0,
+    buildMs: 0,
+  };
+
   runningAutopilots.add(agentId);
 
   // Update last run time
@@ -566,10 +573,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         console.log(`[perf:planning] Task parsing: ${parseMs}ms (${taskCount} tasks)`);
 
         const planPhaseMs = Date.now() - planPhaseStart;
+        perf.planningMs = planPhaseMs;
         console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (prompt:${promptBuildMs}ms, agent:${agentStepMs}ms, parse:${parseMs}ms)`);
         logToGoal(goalId, agentId, 'planning', `Decomposed goal into ${taskCount} tasks`, '', Date.now() - startTime, true);
       } else {
         const planPhaseMs = Date.now() - planPhaseStart;
+        perf.planningMs = planPhaseMs;
         console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (FAILED)`);
         logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
       }
@@ -640,6 +649,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           summary = `Build failed after workflow — branch abandoned.\nBuild error:\n${errSnippet}`;
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
+          perf.buildMs = buildPhaseMs;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else if (success) {
           const commitStart = Date.now();
@@ -659,6 +669,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] Record pattern: ${Date.now() - recordPatternStart}ms`);
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
+          perf.buildMs = buildPhaseMs;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (check:${buildCheckMs}ms, commit:${commitMs}ms)`);
         }
       }
@@ -692,6 +703,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${runResult.code})`;
 
       const implPhaseMs = Date.now() - implPhaseStart;
+      perf.implementationMs = implPhaseMs;
       console.log(`[perf:implementation] TOTAL: ${implPhaseMs}ms (db:${dbQueryMs}ms, prompt:${promptBuildMs}ms, agent:${agentStepMs}ms)`)
 
       // Safety gate: build check + commit on agent branch
@@ -725,6 +737,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           summary = `Build failed — branch abandoned.\nBuild error:\n${errSnippet}`;
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
+          perf.buildMs = buildPhaseMs;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else {
           const commitStart = Date.now();
@@ -744,6 +757,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] Record pattern: ${Date.now() - recordPatternStart}ms`);
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
+          perf.buildMs = buildPhaseMs;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (check:${buildCheckMs}ms, commit:${commitMs}ms)`);
         }
       }
@@ -812,6 +826,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       abandonBranch(agentBranch, `error: ${err.message || err}`);
     }
   } finally {
+    const totalMs = Date.now() - startTime;
+    const otherMs = totalMs - (perf.planningMs + perf.implementationMs + perf.buildMs);
+    console.log(`[perf:summary] Total autopilot run: ${totalMs}ms | Planning: ${perf.planningMs}ms (${Math.round(perf.planningMs/totalMs*100)}%) | Implementation: ${perf.implementationMs}ms (${Math.round(perf.implementationMs/totalMs*100)}%) | Build: ${perf.buildMs}ms (${Math.round(perf.buildMs/totalMs*100)}%) | Other: ${otherMs}ms (${Math.round(otherMs/totalMs*100)}%)`);
+
     const finishedAt = new Date().toISOString();
     runQuery("UPDATE agents SET status = 'idle', last_activity = ? WHERE id = ?", [finishedAt, agentId]);
     broadcast({ type: 'agent:status', agentId, status: 'idle' });
