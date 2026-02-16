@@ -6,7 +6,7 @@ import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import { assessPerformance, identifyImprovements, awardXp } from './self-improve.js';
-import type { Agent, Goal, GoalLogEntry, Improvement, Workflow, WSServerMessage } from '../client/lib/types.js';
+import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement } from '../client/lib/types.js';
 
 const execAsync = promisify(exec);
 
@@ -149,13 +149,27 @@ function buildAutopilotPrompt(
   goal: Goal,
   recentLogs: GoalLogEntry[],
   pendingTasks: { title: string; description: string }[],
-  memoryContext: string
+  memoryContext: string,
+  agentId: string
 ): string {
   let prompt = '';
 
   // Memory context first
   if (memoryContext) {
     prompt += memoryContext;
+  }
+
+  // Pending improvements from self-improve system
+  const pendingImprovements = getAll<Improvement>(
+    "SELECT * FROM improvements WHERE agent_id = ? AND status = 'pending' LIMIT 3",
+    [agentId]
+  );
+  if (pendingImprovements.length > 0) {
+    prompt += 'AREAS TO IMPROVE:\n';
+    for (const imp of pendingImprovements) {
+      prompt += `- [${imp.category}] ${imp.description}\n`;
+    }
+    prompt += '\n';
   }
 
   prompt += `You are working autonomously on this goal: "${goal.name}"\n`;
@@ -572,7 +586,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       );
 
       // Build a task-focused prompt
-      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext);
+      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId);
       prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
       if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
 
@@ -610,6 +624,27 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     // Log with branch info
     const branchInfo = agentBranch ? ` [branch: ${agentBranch}]` : '';
     logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success);
+
+    // Self-improve: assess performance and award XP / identify improvements
+    try {
+      const filesTouched = diffStats ? diffStats.split('\n').filter(l => l.includes('|')).length : 0;
+      const assessment = assessPerformance(agentId, goalId, {
+        retries: 0,
+        buildFailures: success ? 0 : 1,
+        reviewIssues: 0,
+        filesTouched,
+        durationMs,
+        completedFully: success,
+      });
+      if (success) {
+        const newXp = awardXp(agentId, assessment.score >= 90 ? 3 : 1);
+        broadcast({ type: 'agent:xp', agentId, xp: newXp });
+      } else {
+        identifyImprovements(agentId, assessment.id, summary, goalSlug, assessment.score, 0);
+      }
+    } catch (err) {
+      console.error('[autopilot] Self-improve error:', err);
+    }
 
     // Switch back to original branch (leave agent branch for merge/discard via UI)
     if (needsBranchIsolation && agentBranch && originalBranch) {
