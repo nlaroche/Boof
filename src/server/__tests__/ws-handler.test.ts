@@ -1,0 +1,637 @@
+import { describe, it, beforeEach, before } from 'node:test';
+import assert from 'node:assert/strict';
+import { handleWsMessage, getBroadcast } from '../ws-handler.js';
+import { initDb } from '../db.js';
+import type { WSClientMessage } from '../../client/lib/types.js';
+
+// Initialize database before all tests
+before(async () => {
+  await initDb();
+});
+
+// Mock WebSocket interface
+interface MockWebSocket {
+  readyState: number;
+  send: (data: string) => void;
+  sentMessages: string[];
+}
+
+function createMockWebSocket(): MockWebSocket {
+  const ws: MockWebSocket = {
+    readyState: 1, // OPEN
+    sentMessages: [],
+    send: function(data: string) {
+      this.sentMessages.push(data);
+    }
+  };
+  return ws;
+}
+
+describe('handleWsMessage', () => {
+  it('parses valid JSON message', () => {
+    const ws = createMockWebSocket();
+    const message: WSClientMessage = { type: 'sync:request' };
+
+    // Should not throw
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles invalid JSON gracefully', () => {
+    const ws = createMockWebSocket();
+
+    // Should not throw, just log error
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, 'not valid json{');
+    });
+  });
+
+  it('handles malformed message object gracefully', () => {
+    const ws = createMockWebSocket();
+
+    // Should not throw
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, '{"invalid": true}');
+    });
+  });
+});
+
+describe('sync:request message', () => {
+  it('sends sync:state response with all data', async () => {
+    const ws = createMockWebSocket();
+    const message: WSClientMessage = { type: 'sync:request' };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    // Should have sent at least one message
+    assert.ok(ws.sentMessages.length > 0, 'Should send sync:state');
+
+    const firstMessage = JSON.parse(ws.sentMessages[0]);
+    assert.equal(firstMessage.type, 'sync:state');
+    assert.ok(Array.isArray(firstMessage.folders), 'Should include folders array');
+    assert.ok(Array.isArray(firstMessage.tasks), 'Should include tasks array');
+    assert.ok(Array.isArray(firstMessage.agents), 'Should include agents array');
+    assert.ok(Array.isArray(firstMessage.goals), 'Should include goals array');
+    assert.ok(Array.isArray(firstMessage.workflows), 'Should include workflows array');
+  });
+});
+
+describe('task message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles task:create message', () => {
+    const message: WSClientMessage = {
+      type: 'task:create',
+      folderId: 'folder-1',
+      title: 'Test task',
+      description: 'Test description'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles task:update message', () => {
+    const message: WSClientMessage = {
+      type: 'task:update',
+      taskId: 'task-1',
+      fields: { title: 'Updated title', status: 'done' }
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles task:delete message', () => {
+    const message: WSClientMessage = {
+      type: 'task:delete',
+      taskId: 'task-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles task:reorder message', () => {
+    const message: WSClientMessage = {
+      type: 'task:reorder',
+      taskId: 'task-1',
+      sortOrder: 5
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+});
+
+describe('folder message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles folder:create message', () => {
+    const message: WSClientMessage = {
+      type: 'folder:create',
+      name: 'New Folder',
+      icon: '📁'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles folder:update message', () => {
+    const message: WSClientMessage = {
+      type: 'folder:update',
+      folderId: 'folder-1',
+      fields: { name: 'Updated Folder' }
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles folder:delete message', () => {
+    const message: WSClientMessage = {
+      type: 'folder:delete',
+      folderId: 'folder-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+});
+
+describe('agent message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles agent:create message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:create',
+      workingDirectory: 'D:\\repos\\test',
+      name: 'Test Agent',
+      profileId: 'robot'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:update message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:update',
+      agentId: 'agent-1',
+      fields: { name: 'Updated Agent', instructions: 'New instructions' }
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:delete message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:delete',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:kill message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:kill',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:schedule message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:schedule',
+      agentId: 'agent-1',
+      schedule: '0 9 * * *',
+      enabled: true,
+      prompt: 'Daily task'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:autopilot message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:autopilot',
+      agentId: 'agent-1',
+      autopilot: true,
+      interval: 300,
+      goalId: 'goal-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:autopilot:trigger message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:autopilot:trigger',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:history message', async () => {
+    const message: WSClientMessage = {
+      type: 'agent:history',
+      agentId: 'agent-1',
+      limit: 50
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    // Should send response with commands
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'agent:history');
+    assert.equal(response.agentId, 'agent-1');
+    assert.ok(Array.isArray(response.commands));
+  });
+
+  it('handles agent:activity message', async () => {
+    const message: WSClientMessage = {
+      type: 'agent:activity',
+      agentId: 'agent-1',
+      limit: 50
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'agent:activity');
+    assert.equal(response.agentId, 'agent-1');
+    assert.ok(Array.isArray(response.entries));
+  });
+
+  it('handles agent:self-improve message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:self-improve',
+      agentId: 'agent-1',
+      enabled: true
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:improvements message', async () => {
+    const message: WSClientMessage = {
+      type: 'agent:improvements',
+      agentId: 'agent-1'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'agent:improvements');
+    assert.equal(response.agentId, 'agent-1');
+  });
+
+  it('handles agent:assessments message', async () => {
+    const message: WSClientMessage = {
+      type: 'agent:assessments',
+      agentId: 'agent-1'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'agent:assessments');
+    assert.equal(response.agentId, 'agent-1');
+  });
+
+  it('handles agent:interrupt message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:interrupt',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:restart message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:restart',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:branches message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:branches',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:merge-branch message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:merge-branch',
+      agentId: 'agent-1',
+      branchName: 'feature/test'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles agent:discard-branch message', () => {
+    const message: WSClientMessage = {
+      type: 'agent:discard-branch',
+      agentId: 'agent-1',
+      branchName: 'feature/test'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+});
+
+describe('goal message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles goal:create message', () => {
+    const message: WSClientMessage = {
+      type: 'goal:create',
+      name: 'Test Goal',
+      description: 'Goal description',
+      repoId: 'repo-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles goal:propose message', () => {
+    const message: WSClientMessage = {
+      type: 'goal:propose',
+      agentId: 'agent-1',
+      name: 'Proposed Goal',
+      description: 'Agent proposed this',
+      repoId: 'repo-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles goal:update message', () => {
+    const message: WSClientMessage = {
+      type: 'goal:update',
+      goalId: 'goal-1',
+      fields: { status: 'completed', priority: 5 }
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles goal:delete message', () => {
+    const message: WSClientMessage = {
+      type: 'goal:delete',
+      goalId: 'goal-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles goal:list message', async () => {
+    const message: WSClientMessage = {
+      type: 'goal:list'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'goal:list');
+    assert.ok(Array.isArray(response.goals));
+  });
+
+  it('handles goal:log message', async () => {
+    const message: WSClientMessage = {
+      type: 'goal:log',
+      goalId: 'goal-1',
+      limit: 50
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'goal:log');
+    assert.equal(response.goalId, 'goal-1');
+    assert.ok(Array.isArray(response.entries));
+  });
+});
+
+describe('workflow message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles workflow:create message', () => {
+    const message: WSClientMessage = {
+      type: 'workflow:create',
+      name: 'Test Workflow',
+      description: 'Workflow description',
+      steps: [
+        { id: '1', name: 'Step 1', prompt: 'Do task 1', on_fail: 'stop', max_retries: 2 }
+      ]
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles workflow:update message', () => {
+    const message: WSClientMessage = {
+      type: 'workflow:update',
+      workflowId: 'workflow-1',
+      fields: { name: 'Updated Workflow' }
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles workflow:delete message', () => {
+    const message: WSClientMessage = {
+      type: 'workflow:delete',
+      workflowId: 'workflow-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles workflow:list message', async () => {
+    const message: WSClientMessage = {
+      type: 'workflow:list'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'workflow:list');
+    assert.ok(Array.isArray(response.workflows));
+  });
+});
+
+describe('improvement message routing', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles improvement:skip message', () => {
+    const message: WSClientMessage = {
+      type: 'improvement:skip',
+      improvementId: 'improvement-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+
+  it('handles improvement:execute message', () => {
+    const message: WSClientMessage = {
+      type: 'improvement:execute',
+      improvementId: 'improvement-1',
+      agentId: 'agent-1'
+    };
+
+    assert.doesNotThrow(() => {
+      handleWsMessage(ws as any, JSON.stringify(message));
+    });
+  });
+});
+
+describe('repos message routing', () => {
+  it('handles repos:list message', async () => {
+    const ws = createMockWebSocket();
+    const message: WSClientMessage = {
+      type: 'repos:list'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    // Give a small delay for synchronous processing
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0);
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'repos:list');
+    assert.ok(Array.isArray(response.repos));
+  });
+});
+
+describe('getBroadcast', () => {
+  it('returns a function', () => {
+    const broadcast = getBroadcast();
+    assert.equal(typeof broadcast, 'function');
+  });
+
+  it('broadcast function accepts server message', () => {
+    const broadcast = getBroadcast();
+
+    // Should not throw
+    assert.doesNotThrow(() => {
+      broadcast({ type: 'notify', agentId: 'test', title: 'Test', body: 'Test message' });
+    });
+  });
+});
