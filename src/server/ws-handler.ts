@@ -96,12 +96,12 @@ function extractEditedFiles(rawOutput: string): string[] {
     // Our parsed output format: "✏️ Write src/foo.ts" or "✏️ Edit src/foo.ts"
     const writeMatch = trimmed.match(/(?:✏️\s*(?:Write|Edit)|✅)\s+(\S+)/);
     if (writeMatch) {
-      files.push(writeMatch[1]);
+      files.push(writeMatch[1].replace(/[,;]+$/, ''));
     }
     // Also match "Wrote to" / "Applied edit to" from raw Claude output
     const rawMatch = trimmed.match(/(?:Wrote to|Applied edit to|Updated|Created|Edited)\s+(\S+)/);
     if (rawMatch) {
-      files.push(rawMatch[1]);
+      files.push(rawMatch[1].replace(/[,;]+$/, ''));
     }
   }
   return [...new Set(files)];
