@@ -5,7 +5,7 @@ import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
 import { ansiToHtml } from '../lib/ansi';
 import { timeAgo } from '../lib/format';
-import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent } from '../lib/types';
+import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent, DashboardData, Skill, Experiment } from '../lib/types';
 import { getLevel, xpForLevel, XpBar, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from '../components/AgentWidget';
 
 const categoryColors: Record<string, string> = {
@@ -41,6 +41,9 @@ export function AgentScreen({ onSend }: Props) {
   const agentAssessments = useStore((s) => s.agentAssessments);
   const agentBranches = useStore((s) => s.agentBranches);
   const agentXpEvents = useStore((s) => s.agentXpEvents);
+  const agentDashboard = useStore((s) => s.agentDashboard);
+  const agentSkillsList = useStore((s) => s.agentSkillsList);
+  const agentExperiments = useStore((s) => s.agentExperiments);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
@@ -60,6 +63,9 @@ export function AgentScreen({ onSend }: Props) {
   const assessments = selectedAgentId ? (agentAssessments[selectedAgentId] || []) : [];
   const branches = selectedAgentId ? (agentBranches[selectedAgentId] || []) : [];
   const xpEvents = selectedAgentId ? (agentXpEvents[selectedAgentId] || []) : [];
+  const dashboard = selectedAgentId ? agentDashboard[selectedAgentId] : undefined;
+  const skillsList = selectedAgentId ? (agentSkillsList[selectedAgentId] || []) : [];
+  const experiments = selectedAgentId ? (agentExperiments[selectedAgentId] || []) : [];
 
   // null = history list, 'live' = live output, string = viewing a past command
   const [viewing, setViewing] = useState<string | null>(null);
@@ -82,6 +88,9 @@ export function AgentScreen({ onSend }: Props) {
       onSend({ type: 'agent:assessments', agentId: selectedAgentId });
       onSend({ type: 'agent:branches', agentId: selectedAgentId });
       onSend({ type: 'agent:xp-events', agentId: selectedAgentId });
+      onSend({ type: 'agent:dashboard', agentId: selectedAgentId });
+      onSend({ type: 'agent:skills', agentId: selectedAgentId });
+      onSend({ type: 'agent:experiments', agentId: selectedAgentId });
     }
   }, [selectedAgentId, onSend]);
 
@@ -407,11 +416,97 @@ export function AgentScreen({ onSend }: Props) {
                       </div>
                     ))}
                   </div>
-                ) : improvements.length === 0 && xpEvents.length === 0 && (
+                ) : improvements.length === 0 && xpEvents.length === 0 && !dashboard && skillsList.length === 0 && (
                   <div className="text-center text-[#6b6b80] py-12">
                     <div className="text-lg font-mono mb-2">---</div>
                     <p>No experience yet</p>
                     <p className="text-sm mt-1">Complete tasks to earn XP</p>
+                  </div>
+                )}
+
+                {/* Dashboard Stats */}
+                {dashboard && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Dashboard</div>
+                    <div className="px-4 py-3 grid grid-cols-3 gap-3">
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-[#22c55e]">{dashboard.success_rate_10}%</div>
+                        <div className="text-[9px] text-[#6b6b80]">Last 10</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-[#f59e0b]">{dashboard.success_rate_50}%</div>
+                        <div className="text-[9px] text-[#6b6b80]">Last 50</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-[#3b82f6]">{dashboard.success_rate_all}%</div>
+                        <div className="text-[9px] text-[#6b6b80]">All time</div>
+                      </div>
+                    </div>
+                    <div className="px-4 pb-3 flex items-center gap-4 text-[10px] text-[#6b6b80]">
+                      <span>{dashboard.skills_count} skills</span>
+                      <span>{(dashboard.total_tokens / 1000).toFixed(0)}k tokens</span>
+                    </div>
+                    {dashboard.top_errors.length > 0 && (
+                      <div className="px-4 pb-3">
+                        <div className="text-[9px] text-[#6b6b80] mb-1">Top errors</div>
+                        {dashboard.top_errors.map((e, i) => (
+                          <div key={i} className="text-[10px] text-[#ef4444] flex justify-between">
+                            <span className="truncate">{e.type}</span>
+                            <span className="shrink-0 ml-2">{e.count}x</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {dashboard.recent_reflections.length > 0 && (
+                      <div className="px-4 pb-3">
+                        <div className="text-[9px] text-[#6b6b80] mb-1">Recent reflections</div>
+                        {dashboard.recent_reflections.map((r) => (
+                          <div key={r.id} className="text-[10px] text-[#e2e2ef] mb-1">
+                            {r.pattern && <span className="text-[#7c5bf5]">{r.pattern}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Skills Library */}
+                {skillsList.length > 0 && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Skills ({skillsList.length})</div>
+                    {skillsList.map((skill) => (
+                      <div key={skill.id} className="px-4 py-2 border-t border-[#1e1e2e]/50">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-[#e2e2ef] font-medium">{skill.name}</span>
+                          <span className="text-[9px] text-[#6b6b80]">
+                            {skill.times_used}x used, {Math.round(skill.avg_score)}avg
+                          </span>
+                        </div>
+                        <div className="text-[10px] text-[#6b6b80] mt-0.5 break-words">{skill.description}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Experiments */}
+                {experiments.length > 0 && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Experiments ({experiments.length})</div>
+                    {experiments.map((exp) => (
+                      <div key={exp.id} className="px-4 py-2.5 border-t border-[#1e1e2e]/50">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs text-[#e2e2ef]">{exp.name}</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                            exp.status === 'running' ? 'bg-[#f59e0b]/20 text-[#f59e0b]' : 'bg-[#22c55e]/20 text-[#22c55e]'
+                          }`}>{exp.status}{exp.winner ? ` (${exp.winner})` : ''}</span>
+                        </div>
+                        <div className="text-[10px] text-[#6b6b80] mt-0.5">{exp.hypothesis}</div>
+                        <div className="flex gap-4 mt-1 text-[10px]">
+                          <span className="text-[#3b82f6]">A: {exp.avg_metric_a.toFixed(1)} ({exp.runs_a})</span>
+                          <span className="text-[#f59e0b]">B: {exp.avg_metric_b.toFixed(1)} ({exp.runs_b})</span>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

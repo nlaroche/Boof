@@ -22,6 +22,13 @@ const execAsync = promisify(exec);
 let loopInterval: ReturnType<typeof setInterval> | null = null;
 const LOOP_INTERVAL_MS = 30_000;
 
+// ── Worktree helpers ────────────────────────────────────────────────────
+
+/** Return the effective working directory for an agent (worktree or fallback) */
+export function getAgentCwd(agent: Agent): string {
+  return agent.worktree_path || agent.working_directory;
+}
+
 // Track running autopilot agents to avoid double-triggering
 const runningAutopilots = new Set<string>();
 
@@ -74,38 +81,27 @@ function slugify(text: string): string {
 }
 
 async function createAgentBranch(
-  workingDirectory: string,
+  worktreePath: string,
   agentName: string,
   goalSlug: string
 ): Promise<string> {
-  // If there are uncommitted changes (e.g. from a failed previous run),
-  // stash them so the checkout doesn't fail or carry them over
-  const dirty = await hasUncommittedChanges(workingDirectory);
-  if (dirty) {
-    console.log('[autopilot] Stashing uncommitted changes before branching');
-    await execAsync('git stash --include-untracked', {
-      cwd: workingDirectory,
-      timeout: 30_000,
-    }).catch(() => {});
-  }
-
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  // Always branch from main, regardless of current HEAD
+  // In the worktree, create a new branch from main — no stash needed, it's the agent's private space
   await execAsync(`git checkout -b "${branchName}" main`, {
-    cwd: workingDirectory,
+    cwd: worktreePath,
     timeout: 30_000,
   });
   // Verify we're actually on the new branch
   const { stdout } = await execAsync('git branch --show-current', {
-    cwd: workingDirectory,
+    cwd: worktreePath,
     timeout: 10_000,
   });
   const actual = stdout.trim();
   if (actual !== branchName) {
     throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
   }
-  console.log(`[autopilot] Created branch: ${branchName} (from main)`);
+  console.log(`[autopilot] Created branch: ${branchName} (from main) in worktree ${worktreePath}`);
   return branchName;
 }
 
@@ -116,45 +112,44 @@ function abandonBranch(branchName: string, reason: string): void {
 }
 
 /**
- * Merge an agent branch into main, then return to the agent branch.
- * This is the ONLY function that briefly touches main.
- * If anything goes wrong, we abort and stay safe.
+ * Merge an agent branch into main.
+ * Commits in the worktree, merges from the main repo dir.
+ * The worktree returns to main after merge.
  */
 async function mergeToMain(
-  workingDirectory: string,
+  mainRepoDir: string,
+  worktreePath: string,
   branchName: string
 ): Promise<{ success: boolean; output: string }> {
   try {
-    // Commit any uncommitted agent work first so checkout is safe
+    // Commit any uncommitted agent work in the worktree
     await execAsync('git add -A && git diff --cached --quiet || git commit -m "WIP: uncommitted agent work"', {
-      cwd: workingDirectory,
+      cwd: worktreePath,
       timeout: 30_000,
     }).catch(() => {}); // ignore if nothing to commit
 
-    // Briefly checkout main for the merge
-    await execAsync('git checkout main', {
-      cwd: workingDirectory,
-      timeout: 30_000,
-    });
-
+    // Merge from the main repo dir (main stays checked out there)
     const { stdout, stderr } = await execAsync(
       `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
-      { cwd: workingDirectory, timeout: 60_000 }
+      { cwd: mainRepoDir, timeout: 60_000 }
     );
 
     // Delete the merged branch
     await execAsync(`git branch -d "${branchName}"`, {
-      cwd: workingDirectory,
+      cwd: mainRepoDir,
       timeout: 10_000,
     }).catch(() => {});
 
-    // Stay on main after successful merge — next run creates a fresh branch from here
+    // Return worktree to main
+    await execAsync('git checkout main', {
+      cwd: worktreePath,
+      timeout: 30_000,
+    }).catch(() => {});
+
     return { success: true, output: stdout + stderr };
   } catch (err: any) {
-    // Abort failed merge
-    await execAsync('git merge --abort', { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
-    // Go back to the agent branch — don't leave the repo on main with a broken merge
-    await execAsync(`git checkout "${branchName}"`, { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
+    // Abort failed merge in the main repo
+    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: 10_000 }).catch(() => {});
     return { success: false, output: err.stderr || err.stdout || String(err) };
   }
 }
@@ -177,10 +172,11 @@ export async function listAgentBranches(workingDirectory: string): Promise<strin
 
 /** Merge an agent branch into main (called from UI) */
 export async function mergeAgentBranch(
-  workingDirectory: string,
+  mainRepoDir: string,
+  worktreePath: string,
   branchName: string
 ): Promise<{ success: boolean; output: string }> {
-  return mergeToMain(workingDirectory, branchName);
+  return mergeToMain(mainRepoDir, worktreePath, branchName);
 }
 
 // ── Prompts & Build ─────────────────────────────────────────────────────
@@ -435,7 +431,7 @@ function runAgentStep(
       resolve({ code, output });
     };
 
-    createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
+    createAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
     sendToAgent(agentId, prompt, { skipWrap: options?.skipWrap });
   });
 }
@@ -636,17 +632,18 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     broadcast({ type: 'agent:updated', agent: updatedAgent });
   }
 
-  // Initialize memory directory
-  initBoofDir(agent.working_directory);
-  const memoryContext = getMemoryContext(agent.working_directory);
+  // Initialize memory directory (in the worktree if available)
+  const agentCwd = getAgentCwd(agent);
+  initBoofDir(agentCwd);
+  const memoryContext = getMemoryContext(agentCwd);
 
   let agentBranch = '';
 
   try {
     // ── Always create a feature branch from main ──
     // The autopilot NEVER works directly on main. Every run gets its own branch.
-    // This makes it impossible for the autopilot to corrupt main or lose work.
-    agentBranch = await createAgentBranch(agent.working_directory, agent.name, goalSlug);
+    // With worktrees, this happens in the agent's isolated directory.
+    agentBranch = await createAgentBranch(agentCwd, agent.name, goalSlug);
     broadcast({
       type: 'agent:output',
       agentId,
@@ -771,7 +768,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         console.log(`[perf:build] Starting build validation phase (workflow mode)`);
 
         const buildCheckStart = Date.now();
-        const buildResult = await runBuildCheck(agent.working_directory);
+        const buildResult = await runBuildCheck(agentCwd);
         const buildCheckMs = Date.now() - buildCheckStart;
         console.log(`[perf:build] Build check: ${buildCheckMs}ms (success: ${buildResult.success})`);
 
@@ -782,7 +779,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
           const recordMistakeStart = Date.now();
           recordMistake(
-            agent.working_directory,
+            agentCwd,
             `Build failed after workflow "${workflowObj.name}" for goal "${goal.name}"${tsError ? `: ${tsError}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsError ? 'Check types and imports before committing' : ''
           );
@@ -800,7 +797,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else if (success) {
           const commitStart = Date.now();
-          diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          diffStats = await autoCommit(agentCwd, goalSlug, summary);
           const commitMs = Date.now() - commitStart;
           console.log(`[perf:build] Auto-commit: ${commitMs}ms`);
 
@@ -809,7 +806,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
           const recordPatternStart = Date.now();
           recordPattern(
-            agent.working_directory,
+            agentCwd,
             `Workflow "${workflowObj.name}" succeeded for goal "${goal.name}"${wfFiles.length ? ` — modified ${wfFiles.join(', ')}` : ''}`,
             'autopilot'
           );
@@ -865,7 +862,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         console.log(`[perf:build] Starting build validation phase`);
 
         const buildCheckStart = Date.now();
-        const buildResult = await runBuildCheck(agent.working_directory);
+        const buildResult = await runBuildCheck(agentCwd);
         const buildCheckMs = Date.now() - buildCheckStart;
         console.log(`[perf:build] Build check: ${buildCheckMs}ms (success: ${buildResult.success})`);
 
@@ -876,7 +873,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
           const recordMistakeStart = Date.now();
           recordMistake(
-            agent.working_directory,
+            agentCwd,
             `Build failed while working on "${currentTask.title}"${tsErr ? `: ${tsErr}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsErr ? 'Validate types before committing' : ''
           );
@@ -894,7 +891,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else {
           const commitStart = Date.now();
-          diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          diffStats = await autoCommit(agentCwd, goalSlug, summary);
           const commitMs = Date.now() - commitStart;
           console.log(`[perf:build] Auto-commit: ${commitMs}ms`);
 
@@ -903,7 +900,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
           const recordPatternStart = Date.now();
           recordPattern(
-            agent.working_directory,
+            agentCwd,
             `Completed: "${currentTask.title}"${taskFiles.length ? ` — modified ${taskFiles.join(', ')}` : ''}`,
             'autopilot'
           );
@@ -1048,7 +1045,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     if (agentBranch) {
       if (success && diffStats) {
         // Build passed, code committed — merge into main
-        const mergeResult = await mergeToMain(agent.working_directory, agentBranch);
+        const mergeResult = await mergeToMain(agent.working_directory, agentCwd, agentBranch);
         if (mergeResult.success) {
           console.log(`[autopilot] Auto-merged ${agentBranch} into main`);
           logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch}`, '', 0, true);

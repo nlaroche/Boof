@@ -22,6 +22,9 @@ interface GoalLogEntry {
   cost_usd: number;
   duration_ms: number;
   success: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
   created_at: string;
 }
 

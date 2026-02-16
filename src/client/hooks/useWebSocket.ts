@@ -144,6 +144,15 @@ export function useWebSocket() {
               s.setAgentBranches(msg.agentId, cur.filter(b => b !== msg.branchName));
             }
             break;
+          case 'agent:dashboard':
+            s.setAgentDashboard(msg.agentId, msg.data);
+            break;
+          case 'agent:skills':
+            s.setAgentSkillsList(msg.agentId, msg.skills);
+            break;
+          case 'agent:experiments':
+            s.setAgentExperiments(msg.agentId, msg.experiments);
+            break;
         }
       } catch {
         // ignore parse errors

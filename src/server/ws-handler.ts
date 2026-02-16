@@ -24,7 +24,7 @@ import {
   getDashboardData, getAgentSkills, getAllExperiments,
 } from './self-improve.js';
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
-import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch } from './autopilot.js';
+import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd } from './autopilot.js';
 import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary, getRecentCommits } from './git-utils.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
@@ -247,12 +247,32 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const name = message.name || 'Agent';
       const profileId = message.profileId || 'robot';
       const agentType = 'minimax';
+      const workDir = message.workingDirectory;
 
       runQuery(
         `INSERT INTO agents (id, name, working_directory, profile_id, agent_type, status, created_at, last_activity)
          VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)`,
-        [id, name, message.workingDirectory, profileId, agentType, now, now]
+        [id, name, workDir, profileId, agentType, now, now]
       );
+
+      // Create a git worktree for this agent so it has an isolated working directory
+      try {
+        const safeName = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
+        const worktreePath = path.join(workDir + '-agents', `${safeName}-${id.slice(0, 8)}`);
+        fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+        execSync(`git worktree add "${worktreePath}" main`, { cwd: workDir, timeout: 30_000 });
+        // Create node_modules junction so the agent can build
+        const srcModules = path.join(workDir, 'node_modules');
+        const dstModules = path.join(worktreePath, 'node_modules');
+        if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
+          execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+        }
+        runQuery('UPDATE agents SET worktree_path = ? WHERE id = ?', [worktreePath, id]);
+        console.log(`[agent:create] Worktree created at ${worktreePath}`);
+      } catch (wtErr: any) {
+        console.error(`[agent:create] Failed to create worktree:`, wtErr.message || wtErr);
+        // Agent still works, just without isolation (falls back to working_directory)
+      }
 
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [id]);
       if (agent) {
@@ -313,7 +333,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
           broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
         };
 
-        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
+        restartAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
         broadcast({ type: 'agent:status', agentId, status: 'running' });
       }
       break;
@@ -428,10 +448,11 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             // Claude Code may auto-commit, so we check git log too
             if (succeeded && agent) {
               try {
-                const noopDiff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
-                const stagedDiff = execSync('git diff --cached --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                const agentDir = getAgentCwd(agent);
+                const noopDiff = execSync('git diff --stat', { cwd: agentDir, encoding: 'utf-8', timeout: 5000 }).trim();
+                const stagedDiff = execSync('git diff --cached --stat', { cwd: agentDir, encoding: 'utf-8', timeout: 5000 }).trim();
                 // Check if any commits were made in the last 10 minutes (agent's work)
-                const recentCommits = getRecentCommits(agent.working_directory, '10 minutes ago', 5);
+                const recentCommits = getRecentCommits(agentDir, '10 minutes ago', 5);
                 if (!noopDiff && !stagedDiff && !recentCommits) {
                   succeeded = false;
                   const noopMsg = '\n--- No changes made — agent did not edit any files ---\n';
@@ -445,18 +466,19 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             const reviewState = reviewPending.get(id);
             if (succeeded && agent && !reviewState) {
               try {
-                let diffStat = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                const reviewDir = getAgentCwd(agent);
+                let diffStat = execSync('git diff --stat', { cwd: reviewDir, encoding: 'utf-8', timeout: 5000 }).trim();
                 let diffContent = '';
 
                 if (diffStat) {
                   // Uncommitted changes — diff them
-                  diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                  diffContent = execSync('git diff', { cwd: reviewDir, encoding: 'utf-8', timeout: 10000 }).trim();
                 } else {
                   // Maybe agent auto-committed — check last commit's diff
-                  const recentCommits = getRecentCommits(agent.working_directory, '10 minutes ago', 1);
+                  const recentCommits = getRecentCommits(reviewDir, '10 minutes ago', 1);
                   if (recentCommits) {
-                    diffStat = execSync('git diff HEAD~1 --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
-                    diffContent = execSync('git diff HEAD~1', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                    diffStat = execSync('git diff HEAD~1 --stat', { cwd: reviewDir, encoding: 'utf-8', timeout: 5000 }).trim();
+                    diffContent = execSync('git diff HEAD~1', { cwd: reviewDir, encoding: 'utf-8', timeout: 10000 }).trim();
                   }
                 }
 
@@ -496,7 +518,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             if (succeeded && agent) {
               const buf3 = agentOutputBuffers.get(id);
               const fullOutput = buf3 ? buf3.join('\n') : '';
-              const committed = commitAgentChanges(agent.working_directory, prompt, fullOutput);
+              const committed = commitAgentChanges(getAgentCwd(agent), prompt, fullOutput);
               if (committed) {
                 const commitMsg = '\n─── Changes committed ───\n';
                 appendAgentOutput(id, commitMsg);
@@ -511,7 +533,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
                   const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: (process.env.LOCALAPPDATA || '') + '\\ms-playwright' };
                   const verifyOutput = execSync(
                     'powershell -ExecutionPolicy Bypass -File verify-ui.ps1',
-                    { cwd: agent.working_directory, encoding: 'utf-8', timeout: 30000, env }
+                    { cwd: getAgentCwd(agent), encoding: 'utf-8', timeout: 30000, env }
                   );
                   appendAgentOutput(id, `\n${verifyOutput}\n`);
                   broadcast({ type: 'agent:output', agentId: id, chunk: `\n${verifyOutput}\n` });
@@ -575,7 +597,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             });
           };
 
-          ptyCreateAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
+          ptyCreateAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
         }
 
         runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
@@ -608,7 +630,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         try {
           const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.LOCALAPPDATA + '\\ms-playwright' };
           const output = execSync(`powershell ${args.join(' ')}`, {
-            cwd: agent.working_directory,
+            cwd: getAgentCwd(agent),
             encoding: 'utf-8',
             timeout: 30000,
             env,
@@ -628,6 +650,19 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId } = message;
       if (hasAgent(agentId)) {
         killAgent(agentId);
+      }
+      // Remove git worktree if this agent had one
+      const delAgent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (delAgent?.worktree_path) {
+        try {
+          execSync(`git worktree remove "${delAgent.worktree_path}" --force`, {
+            cwd: delAgent.working_directory,
+            timeout: 30_000,
+          });
+          console.log(`[agent:delete] Worktree removed: ${delAgent.worktree_path}`);
+        } catch (wtErr: any) {
+          console.error(`[agent:delete] Failed to remove worktree:`, wtErr.message || wtErr);
+        }
       }
       clearAgentOutput(agentId);
       currentCommandIds.delete(agentId);
@@ -959,6 +994,24 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       break;
     }
 
+    case 'agent:dashboard': {
+      const data = getDashboardData(message.agentId);
+      send(ws, { type: 'agent:dashboard', agentId: message.agentId, data });
+      break;
+    }
+
+    case 'agent:skills': {
+      const skills = getAgentSkills(message.agentId);
+      send(ws, { type: 'agent:skills', agentId: message.agentId, skills });
+      break;
+    }
+
+    case 'agent:experiments': {
+      const experiments = getAllExperiments(message.agentId);
+      send(ws, { type: 'agent:experiments', agentId: message.agentId, experiments });
+      break;
+    }
+
     case 'agent:branches': {
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [message.agentId]);
       if (agent) {
@@ -973,7 +1026,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId, branchName } = message;
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
-        mergeAgentBranch(agent.working_directory, branchName).then(result => {
+        mergeAgentBranch(agent.working_directory, getAgentCwd(agent), branchName).then(result => {
           broadcast({ type: 'agent:branch-merged', agentId, branchName, success: result.success, output: result.output });
         });
       }
@@ -984,7 +1037,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId, branchName } = message;
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
-        execAsync(`git branch -D "${branchName}"`, { cwd: agent.working_directory, timeout: 30_000 })
+        execAsync(`git branch -D "${branchName}"`, { cwd: getAgentCwd(agent), timeout: 30_000 })
           .then(() => {
             broadcast({ type: 'agent:branch-discarded', agentId, branchName });
           })
