@@ -682,9 +682,25 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.error('[autopilot] Self-improve error:', err);
     }
 
-    // Switch back to original branch (leave agent branch for merge/discard via UI)
+    // Auto-merge successful branches back to main
     if (needsBranchIsolation && agentBranch && originalBranch) {
-      await switchBack(agent.working_directory, originalBranch);
+      if (success && diffStats) {
+        // Build passed, code committed — merge it
+        const mergeResult = await mergeAgentBranch(agent.working_directory, agentBranch);
+        if (mergeResult.success) {
+          console.log(`[autopilot] Auto-merged ${agentBranch} into ${originalBranch}`);
+          logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch}`, '', 0, true);
+          agentBranch = ''; // Already deleted by mergeAgentBranch
+        } else {
+          console.log(`[autopilot] Merge failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);
+          logToGoal(goalId, agentId, 'merge_failed', `Merge conflict: ${mergeResult.output.slice(0, 150)}`, '', 0, false);
+          await switchBack(agent.working_directory, originalBranch);
+        }
+      } else {
+        // Failed or no changes — discard and switch back
+        await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+        agentBranch = '';
+      }
     }
 
   } catch (err: any) {
