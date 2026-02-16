@@ -230,7 +230,19 @@ export function updateAgent(agentId: string, fields: AgentUpdateInput, broadcast
   if (fields.profile_id !== undefined) { updates.push('profile_id = ?'); values.push(fields.profile_id); }
   if (fields.workflow_id !== undefined) { updates.push('workflow_id = ?'); values.push(fields.workflow_id); }
 
-  return updateAndFetch<Agent>('agents', agentId, updates, values, broadcast);
+  if (updates.length === 0) return null;
+
+  // Agents use last_activity instead of updated_at
+  updates.push('last_activity = ?');
+  values.push(getNow());
+  values.push(agentId);
+
+  runQuery(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`, values);
+  const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+  if (agent) {
+    broadcast(agent);
+  }
+  return agent;
 }
 
 export function updateAgentStatus(agentId: string, status: string, broadcast: (agent: Agent) => void): void {
