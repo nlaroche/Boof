@@ -16,7 +16,7 @@ export function TaskItem({ task, subtaskCount = 0, doneSubtasks = 0, onToggle }:
       className="flex items-center gap-3 w-full p-3 text-left hover:bg-[#1e1e2e] active:bg-[#1e1e2e] transition-colors rounded-lg"
     >
       <span
-        className={`w-8 h-8 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+        className={`w-10 h-10 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
           isDone ? 'border-[#22c55e] bg-[#22c55e]' : 'border-[#6b6b80]'
         }`}
       >
