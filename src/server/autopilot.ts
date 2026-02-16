@@ -309,6 +309,11 @@ async function autoCommit(workingDirectory: string, goalSlug: string, summary: s
   }
 }
 
+// Simple token estimator (4 chars ≈ 1 token for English text)
+function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 function logToGoal(
   goalId: string,
   agentId: string,
@@ -316,15 +321,20 @@ function logToGoal(
   summary: string,
   diffStats: string,
   durationMs: number,
-  success: boolean
+  success: boolean,
+  tokens?: { prompt: number; completion: number; total: number }
 ): void {
   const broadcast = getBroadcast();
   const logId = generateId();
   const now = new Date().toISOString();
+  const promptTokens = tokens?.prompt || 0;
+  const completionTokens = tokens?.completion || 0;
+  const totalTokens = tokens?.total || 0;
+
   runQuery(
-    `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, diff_stats, cost_usd, duration_ms, success, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, now]
+    `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, diff_stats, cost_usd, duration_ms, success, prompt_tokens, completion_tokens, total_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, promptTokens, completionTokens, totalTokens, now]
   );
 
   // Invalidate cache for this goal since we just added a new entry
@@ -569,6 +579,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const agentStepMs = Date.now() - agentStepStart;
       console.log(`[perf:planning] Agent execution: ${agentStepMs}ms`);
 
+      // Track token usage for planning phase
+      const planPromptTokens = estimateTokens(planPrompt);
+      const planCompletionTokens = estimateTokens(planResult.output);
+      const planTotalTokens = planPromptTokens + planCompletionTokens;
+      console.log(`[tokens:planning] Prompt: ${planPromptTokens}, Completion: ${planCompletionTokens}, Total: ${planTotalTokens}`);
+
       if (planResult.code === 0) {
         console.log(`[autopilot] Planning output (${planResult.output.length} chars):\n${planResult.output.slice(0, 2000)}`);
         const parseStart = Date.now();
@@ -579,12 +595,30 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         const planPhaseMs = Date.now() - planPhaseStart;
         perf.planningMs = planPhaseMs;
         console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (prompt:${promptBuildMs}ms, agent:${agentStepMs}ms, parse:${parseMs}ms)`);
-        logToGoal(goalId, agentId, 'planning', `Decomposed goal into ${taskCount} tasks`, '', Date.now() - startTime, true);
+        logToGoal(
+          goalId,
+          agentId,
+          'planning',
+          `Decomposed goal into ${taskCount} tasks`,
+          '',
+          Date.now() - startTime,
+          true,
+          { prompt: planPromptTokens, completion: planCompletionTokens, total: planTotalTokens }
+        );
       } else {
         const planPhaseMs = Date.now() - planPhaseStart;
         perf.planningMs = planPhaseMs;
         console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (FAILED)`);
-        logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
+        logToGoal(
+          goalId,
+          agentId,
+          'planning',
+          'Planning failed',
+          '',
+          Date.now() - startTime,
+          false,
+          { prompt: planPromptTokens, completion: planCompletionTokens, total: planTotalTokens }
+        );
       }
 
       // Planning doesn't produce code changes — abandon the branch
@@ -614,6 +648,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     let success: boolean;
     let summary: string;
     let diffStats = '';
+    let implPromptTokens = 0;
+    let implCompletionTokens = 0;
+    let implTotalTokens = 0;
 
     if (workflowObj && workflowObj.steps.length > 0) {
       // Workflow mode
@@ -700,6 +737,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const agentStepMs = Date.now() - agentStepStart;
       console.log(`[perf:implementation] Agent execution: ${agentStepMs}ms (exit code: ${runResult.code})`);
 
+      // Track token usage for implementation phase
+      implPromptTokens = estimateTokens(prompt);
+      implCompletionTokens = estimateTokens(runResult.output);
+      implTotalTokens = implPromptTokens + implCompletionTokens;
+      console.log(`[tokens:implementation] Prompt: ${implPromptTokens}, Completion: ${implCompletionTokens}, Total: ${implTotalTokens}`);
+
       success = runResult.code === 0;
       summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${runResult.code})`;
 
@@ -770,9 +813,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
     const durationMs = Date.now() - startTime;
 
-    // Log with branch info
+    // Log with branch info and token usage
     const branchInfo = agentBranch ? ` [branch: ${agentBranch}]` : '';
-    logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success);
+    const tokenData = workflowObj
+      ? undefined // Workflow mode doesn't track single prompt/completion
+      : { prompt: implPromptTokens, completion: implCompletionTokens, total: implTotalTokens };
+    logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success, tokenData);
 
     // Self-improve: assess performance and award XP / identify improvements
     try {

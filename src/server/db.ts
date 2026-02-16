@@ -208,6 +208,11 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('goals', 'proposed_by', 'TEXT DEFAULT NULL');
   addColumnIfMissing('goals', 'proposal_status', 'TEXT DEFAULT NULL');
 
+  // Goal log token tracking
+  addColumnIfMissing('goal_log', 'prompt_tokens', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('goal_log', 'completion_tokens', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('goal_log', 'total_tokens', 'INTEGER DEFAULT 0');
+
   // Goal linkage on tasks
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
