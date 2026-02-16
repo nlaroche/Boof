@@ -56,7 +56,9 @@ You are working on a React 19 + TypeScript + Vite PWA with a Node.js Express 5 b
 
 ## Build & Validation
 - After making changes, run: `powershell -ExecutionPolicy Bypass -File test.ps1 -Quick`
-- This runs vite build AND TypeScript type checking
+- This runs vite build, TypeScript type checking, AND ESLint
+- ESLint catches React hooks bugs (missing deps, closure issues) — fix ALL errors
+- Pay special attention to `react-hooks/exhaustive-deps` warnings — they often indicate real bugs
 - Fix ALL errors before finishing — do not leave broken code
 - Do not introduce unused imports or variables
 

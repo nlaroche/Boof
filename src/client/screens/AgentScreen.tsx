@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/store';
 import { CommandInput } from '../components/CommandInput';
 import { useSpeech } from '../hooks/useSpeech';
@@ -22,7 +22,7 @@ export function AgentScreen({ onSend }: Props) {
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
-  const lines = selectedAgentId ? (activeOutputs[selectedAgentId] || []) : [];
+  const lines = useMemo(() => selectedAgentId ? (activeOutputs[selectedAgentId] || []) : [], [selectedAgentId, activeOutputs]);
 
   const agentCommands = selectedAgentId
     ? commands.filter((c) => c.agent_id === selectedAgentId)

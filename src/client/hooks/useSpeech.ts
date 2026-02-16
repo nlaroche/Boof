@@ -1,97 +1,63 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useRef, useCallback } from 'react';
 
-interface UseSpeechReturn {
-  transcript: string;
-  isListening: boolean;
-  startListening: () => void;
-  stopListening: () => void;
-  resetTranscript: () => void;
-  supported: boolean;
+interface SpeechRecognitionEvent {
+  results: SpeechRecognitionResultList;
+  resultIndex: number;
 }
 
-interface UseSpeechOptions {
-  onEnd?: (transcript: string) => void;
-}
-
-export function useSpeech(options?: UseSpeechOptions): UseSpeechReturn {
+export function useSpeech() {
   const [transcript, setTranscript] = useState('');
   const [isListening, setIsListening] = useState(false);
-  const [supported] = useState(() => {
-    return typeof window !== 'undefined' && ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window);
-  });
   const recognitionRef = useRef<any>(null);
-  const onEndRef = useRef(options?.onEnd);
 
-  useEffect(() => {
-    onEndRef.current = options?.onEnd;
-  }, [options?.onEnd]);
+  const SpeechRecognition =
+    typeof window !== 'undefined'
+      ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
+      : null;
+
+  // Speech API requires secure context (HTTPS or localhost)
+  const isSecure = typeof window !== 'undefined' && (window.isSecureContext || window.location.hostname === 'localhost');
+  const supported = !!SpeechRecognition && isSecure;
 
   const startListening = useCallback(() => {
-    if (!supported) return;
-    
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
     const recognition = new SpeechRecognition();
-    
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = 'en-US';
-    
-    recognition.onstart = () => {
-      setIsListening(true);
-      setTranscript('');
-    };
-    
-    recognition.onresult = (event: any) => {
-      let finalTranscript = '';
-      let interimTranscript = '';
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let text = '';
       for (let i = 0; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          finalTranscript += event.results[i][0].transcript;
-        } else {
-          interimTranscript += event.results[i][0].transcript;
-        }
+        text += event.results[i][0].transcript;
       }
-      if (finalTranscript) {
-        setTranscript((prev) => prev + finalTranscript);
-      } else if (interimTranscript) {
-        setTranscript(interimTranscript);
-      }
+      setTranscript(text);
     };
-    
-    recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      setIsListening(false);
-    };
-    
+
     recognition.onend = () => {
       setIsListening(false);
-      // Get the final transcript and call onEnd
-      if (onEndRef.current && transcript) {
-        onEndRef.current(transcript);
-      }
     };
-    
+
+    recognition.onerror = () => {
+      setIsListening(false);
+    };
+
     recognitionRef.current = recognition;
     recognition.start();
-  }, [supported, transcript]);
+    setIsListening(true);
+  }, [SpeechRecognition]);
 
   const stopListening = useCallback(() => {
     if (recognitionRef.current) {
       recognitionRef.current.stop();
+      setIsListening(false);
     }
-    setIsListening(false);
   }, []);
 
   const resetTranscript = useCallback(() => {
     setTranscript('');
   }, []);
 
-  return {
-    transcript,
-    isListening,
-    startListening,
-    stopListening,
-    resetTranscript,
-    supported,
-  };
+  return { transcript, isListening, startListening, stopListening, resetTranscript, supported };
 }

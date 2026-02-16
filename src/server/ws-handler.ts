@@ -129,6 +129,8 @@ const currentCommandIds: Map<string, string> = new Map();
 
 // Track retry attempts per agent to avoid infinite loops (agentId → { count, originalPrompt })
 const retryState: Map<string, { count: number; maxRetries: number; originalPrompt: string }> = new Map();
+// Track whether a self-review pass is pending (agentId → true)
+const reviewPending: Map<string, boolean> = new Map();
 
 function appendAgentOutput(agentId: string, chunk: string): void {
   let buf = agentOutputBuffers.get(agentId);
@@ -495,6 +497,39 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             // Done (success or exhausted retries)
             retryState.delete(id);
             const succeeded = code === 0 && !hasTestFailure;
+
+            // Self-review pass: if successful and there are changes, ask MiniMax to review its own diff
+            const reviewState = reviewPending.get(id);
+            if (succeeded && agent && !reviewState) {
+              try {
+                const diff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                const diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                if (diff && diffContent && diffContent.length < 8000) {
+                  reviewPending.set(id, true);
+                  const reviewMsg = '\n=== Self-review: checking changes for bugs ===\n';
+                  appendAgentOutput(id, reviewMsg);
+                  broadcast({ type: 'agent:output', agentId: id, chunk: reviewMsg });
+
+                  const reviewCmdId = generateId();
+                  const reviewNow = new Date().toISOString();
+                  runQuery(
+                    `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
+                     VALUES (?, ?, ?, ?, 'running', ?)`,
+                    [reviewCmdId, agentId, taskId || null, '[Review] Self-review changes', reviewNow]
+                  );
+                  currentCommandIds.set(id, reviewCmdId);
+                  const reviewCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [reviewCmdId]);
+                  if (reviewCmd) broadcast({ type: 'command:updated', command: parseCommand(reviewCmd) });
+
+                  const reviewPrompt = `Review the changes you just made. Here is the diff:\n\n${diffContent}\n\nCheck for:\n1. Logic bugs (wrong conditions, off-by-one, stale closures in React hooks)\n2. Missing imports or exports\n3. Type mismatches that tsc might miss\n4. React hooks dependency issues\n5. Does this actually accomplish what was asked?\n\nIf you find issues, fix them. If the changes look correct, just say "LGTM" and do not edit any files.`;
+                  sendToAgent(id, reviewPrompt);
+                  return; // Don't finalize yet, wait for review to complete
+                }
+              } catch {
+                // Diff failed, skip review
+              }
+            }
+            reviewPending.delete(id);
 
             // Commit changes if successful (auto-commits is off, orchestrator handles it)
             if (succeeded && agent) {

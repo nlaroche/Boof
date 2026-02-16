@@ -86,6 +86,27 @@ if (Test-Path $tscPath) {
     Write-Step "TypeCheck" "SKIP" "tsc not found"
 }
 
+# --------------------------------------------------
+# Step 2c: ESLint (catch React hooks bugs, closure issues)
+# --------------------------------------------------
+Write-Host ""
+Write-Host "--- ESLINT ---"
+$eslintPath = Join-Path $ProjectRoot "node_modules\eslint\bin\eslint.js"
+if (Test-Path $eslintPath) {
+    $eslintOutput = node $eslintPath "src/**/*.ts" "src/**/*.tsx" --no-warn-ignored --max-warnings 0 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        Write-Step "ESLint" "FAIL" "ESLint errors found"
+        Write-Host "ESLINT_ERROR_START"
+        Write-Host $eslintOutput.Trim()
+        Write-Host "ESLINT_ERROR_END"
+        $exitCode = 1
+    } else {
+        Write-Step "ESLint" "PASS" "No lint errors"
+    }
+} else {
+    Write-Step "ESLint" "SKIP" "eslint not found"
+}
+
 if ($Quick) {
     Write-Host ""
     Write-Host "--- SUMMARY (quick mode) ---"

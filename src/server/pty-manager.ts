@@ -320,8 +320,8 @@ function spawnAider(id: string, state: AgentState, text: string): void {
     }
     clean = deduped.join('\n');
 
-    // Suppress near-duplicate flushes (ConPTY re-renders same content)
-    if (recentlySent.some(prev => stripped === prev || prev.includes(stripped) || stripped.includes(prev))) {
+    // Suppress exact duplicate flushes (ConPTY re-renders same content)
+    if (recentlySent.includes(stripped)) {
       aiderBuffer = '';
       return;
     }
