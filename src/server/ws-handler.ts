@@ -10,24 +10,54 @@ import { triggerAutopilotRun } from './autopilot.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
 
-/** Commit any uncommitted changes in the agent's working directory */
-function commitAgentChanges(workingDirectory: string, prompt: string): boolean {
+/** Commit agent changes — only stages files the agent actually touched */
+function commitAgentChanges(workingDirectory: string, prompt: string, agentOutput: string): boolean {
   try {
-    const diff = execSync('git diff --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-    const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-    if (!diff && !staged) return false; // nothing to commit
+    // Get all modified/untracked files in the repo
+    const statusOutput = execSync('git status --porcelain', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (!statusOutput) return false;
 
-    // Only stage tracked files that have been modified — don't blindly add untracked files
-    execSync('git add -u', { cwd: workingDirectory, timeout: 5000 });
-    // Also add new files the agent likely created (src/ and public/ only)
-    try {
-      const untracked = execSync('git ls-files --others --exclude-standard -- src/ public/', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-      if (untracked) {
-        for (const file of untracked.split('\n').filter(f => f.trim())) {
-          execSync(`git add "${file}"`, { cwd: workingDirectory, timeout: 5000 });
+    // Extract files the agent touched from the output
+    const agentFiles = extractEditedFiles(agentOutput);
+
+    // Also get files from git diff that are in src/client or public (likely agent work)
+    // but exclude src/server (likely our infrastructure changes)
+    const allModified = statusOutput.split('\n')
+      .map(line => line.slice(3).trim())
+      .filter(f => f);
+
+    // If we detected specific agent files, only stage those + any new files in src/client/public
+    const filesToStage: string[] = [];
+    if (agentFiles.length > 0) {
+      for (const f of allModified) {
+        // Stage if it matches an agent-edited file
+        const isAgentFile = agentFiles.some(af => f.endsWith(af) || af.endsWith(f) || f.includes(af) || af.includes(f));
+        // Or if it's a new untracked file in src/client or public (agent likely created it)
+        const statusLine = statusOutput.split('\n').find(l => l.includes(f));
+        const isNewClientFile = statusLine?.startsWith('??') && (f.startsWith('src/client') || f.startsWith('public/'));
+        if (isAgentFile || isNewClientFile) {
+          filesToStage.push(f);
         }
       }
-    } catch {}
+    } else {
+      // Fallback: no detected files, stage everything except src/server
+      for (const f of allModified) {
+        if (!f.startsWith('src/server/')) {
+          filesToStage.push(f);
+        }
+      }
+    }
+
+    if (filesToStage.length === 0) return false;
+
+    for (const f of filesToStage) {
+      execSync(`git add "${f}"`, { cwd: workingDirectory, timeout: 5000 });
+    }
+
+    // Check if anything was actually staged
+    const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (!staged) return false;
+
     const msg = prompt.slice(0, 72).replace(/"/g, "'");
     execSync(`git commit -m "agent: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
     return true;
@@ -574,7 +604,9 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
             // Commit changes if successful (auto-commits is off, orchestrator handles it)
             if (succeeded && agent) {
-              const committed = commitAgentChanges(agent.working_directory, prompt);
+              const buf3 = agentOutputBuffers.get(id);
+              const fullOutput = buf3 ? buf3.join('\n') : '';
+              const committed = commitAgentChanges(agent.working_directory, prompt, fullOutput);
               if (committed) {
                 const commitMsg = '\n--- Changes committed ---\n';
                 appendAgentOutput(id, commitMsg);

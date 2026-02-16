@@ -30,11 +30,11 @@ function getCleanEnv(): Record<string, string> {
   env['DISABLE_AUTO_MIGRATE_TO_NATIVE'] = '1';
   env['DISABLE_INSTALLATION_CHECKS'] = '1';
   env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
-  env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5';
-  env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5';
-  env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'MiniMax-M2.5';
-  env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = 'MiniMax-M2.5';
-  env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = 'MiniMax-M2.5';
+  env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5-lightning';
+  env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5-lightning';
+  env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'MiniMax-M2.5-lightning';
+  env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = 'MiniMax-M2.5-lightning';
+  env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = 'MiniMax-M2.5-lightning';
   env['API_TIMEOUT_MS'] = '3000000';
   env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1';
 
@@ -101,7 +101,10 @@ function shortPath(filePath: string): string {
  */
 function parseStreamJsonLine(line: string): string | null {
   try {
-    const obj = JSON.parse(line);
+    // ConPTY inserts raw \n (line wraps) inside JSON strings, which breaks JSON.parse.
+    // Remove all raw newlines — the actual newlines in JSON string values are escaped as \\n.
+    const cleaned = line.replace(/\n/g, '');
+    const obj = JSON.parse(cleaned);
 
     // --- Assistant messages ---
     if (obj.type === 'assistant' && obj.message?.content) {
@@ -285,11 +288,16 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
 
   state.activePty = proc;
 
-  let lineBuffer = '';
+  // JSON object extraction using brace counting instead of line splitting,
+  // because ConPTY can inject newlines inside JSON objects (especially Write/Edit
+  // tool_use blocks that contain multi-line file content).
+  let rawBuffer = '';      // Accumulates raw cleaned data
+  let braceDepth = 0;
+  let inString = false;
+  let escapeNext = false;
+
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingOutput = '';
-  const recentlySent: string[] = [];
-  const MAX_RECENT = 5;
 
   const flushOutput = () => {
     flushTimer = null;
@@ -300,12 +308,6 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
       pendingOutput = '';
       return;
     }
-    if (recentlySent.includes(stripped)) {
-      pendingOutput = '';
-      return;
-    }
-    recentlySent.push(stripped);
-    if (recentlySent.length > MAX_RECENT) recentlySent.shift();
 
     let output = pendingOutput;
     if (output.length > 8000) {
@@ -316,18 +318,109 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
     pendingOutput = '';
   };
 
+  /**
+   * Feed new data into the brace-counting parser.
+   * Returns an array of complete top-level JSON objects found.
+   * Leftover partial data stays in rawBuffer for next call.
+   */
+  function feedData(newData: string): string[] {
+    rawBuffer += newData;
+    const objects: string[] = [];
+    let objectStart = -1;
+
+    // Find where to start scanning — if we're mid-object, scan from the
+    // beginning of rawBuffer. Otherwise, find the first '{'.
+    let scanFrom = 0;
+    if (braceDepth === 0) {
+      // Not in an object — find the first '{'
+      const firstBrace = rawBuffer.indexOf('{');
+      if (firstBrace < 0) {
+        // No objects starting, discard non-JSON noise
+        rawBuffer = '';
+        return objects;
+      }
+      scanFrom = firstBrace;
+    }
+
+    for (let i = scanFrom; i < rawBuffer.length; i++) {
+      const ch = rawBuffer[i];
+
+      if (escapeNext) {
+        escapeNext = false;
+        continue;
+      }
+
+      if (inString) {
+        if (ch === '\\') {
+          escapeNext = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      // Outside string
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (ch === '{') {
+        if (braceDepth === 0) {
+          objectStart = i;
+        }
+        braceDepth++;
+      } else if (ch === '}') {
+        braceDepth--;
+        if (braceDepth === 0 && objectStart >= 0) {
+          objects.push(rawBuffer.slice(objectStart, i + 1));
+          objectStart = -1;
+        }
+        // Guard against negative depth from noise
+        if (braceDepth < 0) braceDepth = 0;
+      }
+    }
+
+    // Trim processed data from buffer
+    if (objects.length > 0) {
+      // Find the end of the last extracted object
+      const lastObj = objects[objects.length - 1];
+      const lastEnd = rawBuffer.lastIndexOf(lastObj) + lastObj.length;
+      rawBuffer = rawBuffer.slice(lastEnd);
+      // Reset string state for fresh buffer (we're between objects)
+      if (braceDepth === 0) {
+        inString = false;
+        escapeNext = false;
+      }
+    } else if (braceDepth === 0) {
+      // No objects found and not mid-object — discard noise
+      const nextBrace = rawBuffer.indexOf('{');
+      if (nextBrace < 0) {
+        rawBuffer = '';
+      } else {
+        rawBuffer = rawBuffer.slice(nextBrace);
+      }
+    }
+    // If braceDepth > 0 and no objects extracted, keep entire rawBuffer
+
+    // Safety: prevent unbounded buffer growth (>512KB = something is wrong)
+    if (rawBuffer.length > 512 * 1024) {
+      console.log(`[agent ${id.slice(0,6)}] WARNING: rawBuffer exceeded 512KB, resetting parser`);
+      rawBuffer = '';
+      braceDepth = 0;
+      inString = false;
+      escapeNext = false;
+    }
+
+    return objects;
+  }
+
   proc.onData((data) => {
     const clean = stripPtyNoise(data);
-    lineBuffer += clean;
+    const objects = feedData(clean);
 
-    const lines = lineBuffer.split('\n');
-    lineBuffer = lines.pop() || '';
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      const text = parseStreamJsonLine(trimmed);
+    for (const jsonStr of objects) {
+      const text = parseStreamJsonLine(jsonStr);
       if (text) {
         pendingOutput += text;
       }
@@ -338,8 +431,9 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
   });
 
   proc.onExit(({ exitCode }) => {
-    if (lineBuffer.trim()) {
-      const text = parseStreamJsonLine(lineBuffer.trim());
+    // Try to parse any remaining buffer
+    if (rawBuffer.trim()) {
+      const text = parseStreamJsonLine(rawBuffer.trim());
       if (text) pendingOutput += text;
     }
 
