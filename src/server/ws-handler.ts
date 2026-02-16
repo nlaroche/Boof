@@ -122,10 +122,13 @@ function generateSummary(rawOutput: string, prompt: string): string {
       toolLines.push(line);
       continue;
     }
-    // Skip noise
+    // Skip noise and self-review markers
     if (/^[─━═\-]{3,}$/.test(line)) continue;
     if (/^---/.test(line)) continue;
+    if (/^===/.test(line)) continue;
     if (line.startsWith('→')) continue;
+    if (line.includes('Self-review')) continue;
+    if (line.includes('Changes committed')) continue;
     // Collect meaningful text lines
     if (line.length > 10) {
       descriptionLines.push(line);
@@ -588,11 +591,11 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
                   const reviewCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [reviewCmdId]);
                   if (reviewCmd) broadcast({ type: 'command:updated', command: parseCommand(reviewCmd) });
 
-                  const reviewMsg = '\n=== Self-review: checking changes for bugs ===\n';
+                  const reviewMsg = '\n\n─── Self-review ───\n';
                   appendAgentOutput(id, reviewMsg);
                   broadcast({ type: 'agent:output', agentId: id, chunk: reviewMsg });
 
-                  const reviewPrompt = `Review these changes for the task: "${prompt.slice(0, 100)}"\n\nFiles changed:\n${diffStat}\n\nDiff:\n${diffContent}\n\nCheck for: logic bugs, missing imports, wrong file edited, broken types, accidentally created files. If you find issues, fix them. If everything looks correct, just say "Changes look good."`;
+                  const reviewPrompt = `Review these changes for the task: "${prompt.slice(0, 100)}"\n\nFiles changed:\n${diffStat}\n\nDiff:\n${diffContent}\n\nOnly review the files relevant to the task (src/client/, public/, etc). Ignore any server infrastructure files (src/server/). Check for: logic bugs, missing imports, wrong file edited, broken types, accidentally created files. If you find issues, fix them. If everything looks correct, just say "Changes look good." Be brief.`;
                   sendToAgent(id, reviewPrompt);
                   return; // Don't finalize yet, wait for review to complete
                 }
@@ -608,7 +611,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               const fullOutput = buf3 ? buf3.join('\n') : '';
               const committed = commitAgentChanges(agent.working_directory, prompt, fullOutput);
               if (committed) {
-                const commitMsg = '\n--- Changes committed ---\n';
+                const commitMsg = '\n─── Changes committed ───\n';
                 appendAgentOutput(id, commitMsg);
                 broadcast({ type: 'agent:output', agentId: id, chunk: commitMsg });
               }

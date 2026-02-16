@@ -281,7 +281,7 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
 
   const proc = pty.spawn(MINIMAX_CMD, args, {
     cwd: state.workingDirectory,
-    cols: 200,
+    cols: 1000,
     rows: 50,
     env: getCleanEnv(),
   } as any);
