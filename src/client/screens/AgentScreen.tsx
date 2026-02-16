@@ -5,7 +5,7 @@ import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
 import { ansiToHtml } from '../lib/ansi';
 import { timeAgo } from '../lib/format';
-import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment } from '../lib/types';
+import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent } from '../lib/types';
 import { getLevel, xpForLevel, XpBar, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from '../components/AgentWidget';
 
 const categoryColors: Record<string, string> = {
@@ -40,6 +40,7 @@ export function AgentScreen({ onSend }: Props) {
   const agentImprovements = useStore((s) => s.agentImprovements);
   const agentAssessments = useStore((s) => s.agentAssessments);
   const agentBranches = useStore((s) => s.agentBranches);
+  const agentXpEvents = useStore((s) => s.agentXpEvents);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
@@ -58,6 +59,7 @@ export function AgentScreen({ onSend }: Props) {
   const improvements = selectedAgentId ? (agentImprovements[selectedAgentId] || []) : [];
   const assessments = selectedAgentId ? (agentAssessments[selectedAgentId] || []) : [];
   const branches = selectedAgentId ? (agentBranches[selectedAgentId] || []) : [];
+  const xpEvents = selectedAgentId ? (agentXpEvents[selectedAgentId] || []) : [];
 
   // null = history list, 'live' = live output, string = viewing a past command
   const [viewing, setViewing] = useState<string | null>(null);
@@ -79,6 +81,7 @@ export function AgentScreen({ onSend }: Props) {
       onSend({ type: 'agent:improvements', agentId: selectedAgentId });
       onSend({ type: 'agent:assessments', agentId: selectedAgentId });
       onSend({ type: 'agent:branches', agentId: selectedAgentId });
+      onSend({ type: 'agent:xp-events', agentId: selectedAgentId });
     }
   }, [selectedAgentId, onSend]);
 

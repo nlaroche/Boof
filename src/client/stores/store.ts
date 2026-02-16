@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
@@ -19,6 +19,7 @@ interface StoreState {
   agentImprovements: Record<string, Improvement[]>;
   agentAssessments: Record<string, Assessment[]>;
   agentBranches: Record<string, string[]>;
+  agentXpEvents: Record<string, XpEvent[]>;
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
@@ -39,6 +40,8 @@ interface StoreState {
   updateImprovement: (improvement: Improvement) => void;
   setAgentAssessments: (agentId: string, assessments: Assessment[]) => void;
   setAgentBranches: (agentId: string, branches: string[]) => void;
+  setAgentXpEvents: (agentId: string, events: XpEvent[]) => void;
+  addXpEvent: (agentId: string, event: XpEvent) => void;
   setWorkflows: (workflows: Workflow[]) => void;
   updateWorkflow: (workflow: Workflow) => void;
   removeWorkflow: (workflowId: string) => void;
@@ -73,6 +76,7 @@ export const useStore = create<StoreState>((set) => ({
   agentImprovements: {},
   agentAssessments: {},
   agentBranches: {},
+  agentXpEvents: {},
   workflows: [],
   activeOutputs: {},
   ui: {
@@ -159,6 +163,17 @@ export const useStore = create<StoreState>((set) => ({
   setAgentBranches: (agentId, branches) =>
     set((state) => ({
       agentBranches: { ...state.agentBranches, [agentId]: branches },
+    })),
+  setAgentXpEvents: (agentId, events) =>
+    set((state) => ({
+      agentXpEvents: { ...state.agentXpEvents, [agentId]: events },
+    })),
+  addXpEvent: (agentId, event) =>
+    set((state) => ({
+      agentXpEvents: {
+        ...state.agentXpEvents,
+        [agentId]: [event, ...(state.agentXpEvents[agentId] || [])],
+      },
     })),
 
   setWorkflows: (workflows) => set({ workflows }),

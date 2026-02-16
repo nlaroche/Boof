@@ -27,6 +27,23 @@ function generateId(): string {
 
 // ── Branch-based isolation ──────────────────────────────────────────────
 
+async function hasUncommittedChanges(workingDirectory: string): Promise<boolean> {
+  try {
+    const { stdout } = await execAsync('git status --porcelain', {
+      cwd: workingDirectory,
+      timeout: 10_000,
+    });
+    // Filter out untracked files in .boof/ — those are ours and safe to ignore
+    const significant = stdout
+      .split('\n')
+      .filter((line) => line.trim() && !line.includes('.boof/'))
+      .filter((line) => line.trim() && !line.includes('boof.db'));
+    return significant.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 async function getCurrentBranch(workingDirectory: string): Promise<string> {
   const { stdout } = await execAsync('git branch --show-current', {
     cwd: workingDirectory,
@@ -52,6 +69,9 @@ async function createAgentBranch(
   agentName: string,
   goalSlug: string
 ): Promise<string> {
+  if (await hasUncommittedChanges(workingDirectory)) {
+    throw new Error('SAFETY: Cannot create agent branch — uncommitted changes would be lost');
+  }
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
   await execAsync(`git checkout -b "${branchName}"`, {
@@ -73,6 +93,10 @@ async function createAgentBranch(
 
 async function switchBack(workingDirectory: string, originalBranch: string): Promise<void> {
   try {
+    if (await hasUncommittedChanges(workingDirectory)) {
+      console.error('[autopilot] SAFETY: switchBack blocked — uncommitted changes would be lost. Staying on current branch.');
+      return;
+    }
     await execAsync(`git checkout "${originalBranch}"`, {
       cwd: workingDirectory,
       timeout: 30_000,
@@ -89,6 +113,10 @@ async function discardAgentBranch(
   originalBranch: string
 ): Promise<void> {
   try {
+    if (await hasUncommittedChanges(workingDirectory)) {
+      console.error('[autopilot] SAFETY: discardAgentBranch blocked — uncommitted changes would be lost. Leaving branch intact.');
+      return;
+    }
     // Make sure we're on the original branch before deleting
     await execAsync(`git checkout "${originalBranch}"`, {
       cwd: workingDirectory,
@@ -507,6 +535,17 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   let agentBranch = '';
 
   try {
+    // ── Safety: refuse to run if working tree has uncommitted changes ──
+    // This prevents the autopilot's branch switching from destroying manual work
+    if (await hasUncommittedChanges(agent.working_directory)) {
+      console.log(`[autopilot] Working tree has uncommitted changes — skipping run to avoid data loss`);
+      logToGoal(goalId, agentId, 'autopilot_skipped', 'Skipped: uncommitted changes in working tree', '', 0, false);
+      runQuery("UPDATE agents SET status = 'idle', last_activity = ? WHERE id = ?", [new Date().toISOString(), agentId]);
+      broadcast({ type: 'agent:status', agentId, status: 'idle' });
+      runningAutopilots.delete(agentId);
+      return;
+    }
+
     // ── Branch Isolation ──
     // Always isolate on protected branches, even for non-self-improvement
     originalBranch = await getCurrentBranch(agent.working_directory);
@@ -758,8 +797,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         completedFully: success,
       });
       if (success) {
-        const newXp = awardXp(agentId, assessment.score >= 90 ? 3 : 1);
-        broadcast({ type: 'agent:xp', agentId, xp: newXp });
+        const xpAmount = assessment.score >= 90 ? 3 : 1;
+        const reason = `Autopilot: ${currentTask?.title || goalSlug} (score ${assessment.score})`;
+        const { newXp, event } = awardXp(agentId, xpAmount, reason, 'autopilot');
+        broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
       } else {
         identifyImprovements(agentId, assessment.id, summary, goalSlug, assessment.score, 0);
       }

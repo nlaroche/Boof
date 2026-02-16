@@ -129,6 +129,15 @@ export interface Improvement {
   completed_at: string | null;
 }
 
+export interface XpEvent {
+  id: string;
+  agent_id: string;
+  amount: number;
+  reason: string;
+  source: string;
+  created_at: string;
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types
@@ -172,7 +181,8 @@ export type WSClientMessage =
   | { type: 'improvement:execute'; improvementId: string; agentId: string }
   | { type: 'agent:branches'; agentId: string }
   | { type: 'agent:merge-branch'; agentId: string; branchName: string }
-  | { type: 'agent:discard-branch'; agentId: string; branchName: string };
+  | { type: 'agent:discard-branch'; agentId: string; branchName: string }
+  | { type: 'agent:xp-events'; agentId: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -202,7 +212,8 @@ export type WSServerMessage =
   | { type: 'agent:improvements'; agentId: string; improvements: Improvement[] }
   | { type: 'agent:assessments'; agentId: string; assessments: Assessment[] }
   | { type: 'improvement:updated'; improvement: Improvement }
-  | { type: 'agent:xp'; agentId: string; xp: number }
+  | { type: 'agent:xp'; agentId: string; xp: number; event?: XpEvent }
+  | { type: 'agent:xp-events'; agentId: string; events: XpEvent[] }
   | { type: 'agent:branches'; agentId: string; branches: string[] }
   | { type: 'agent:branch-merged'; agentId: string; branchName: string; success: boolean; output: string }
   | { type: 'agent:branch-discarded'; agentId: string; branchName: string };

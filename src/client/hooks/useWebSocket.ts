@@ -123,6 +123,10 @@ export function useWebSocket() {
             break;
           case 'agent:xp':
             s.updateAgent({ ...s.agents.find((a) => a.id === msg.agentId)!, xp: msg.xp });
+            if (msg.event) s.addXpEvent(msg.agentId, msg.event);
+            break;
+          case 'agent:xp-events':
+            s.setAgentXpEvents(msg.agentId, msg.events);
             break;
           case 'agent:branches':
             s.setAgentBranches(msg.agentId, msg.branches);
