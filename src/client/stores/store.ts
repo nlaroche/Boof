@@ -40,6 +40,7 @@ interface StoreState {
   setAgentStatus: (agentId: string, status: AgentStatus) => void;
   updateTask: (task: Task) => void;
   updateFolder: (folder: Folder) => void;
+  removeFolder: (folderId: string) => void;
   updateAgent: (agent: Agent) => void;
   removeAgent: (agentId: string) => void;
   addCommand: (command: Command) => void;
@@ -192,6 +193,15 @@ export const useStore = create<StoreState>((set) => ({
       }
       return { folders: [...state.folders, folder] };
     }),
+
+  removeFolder: (folderId) =>
+    set((state) => ({
+      folders: state.folders.filter((f) => f.id !== folderId),
+      ui: {
+        ...state.ui,
+        selectedFolderId: state.ui.selectedFolderId === folderId ? null : state.ui.selectedFolderId,
+      },
+    })),
 
   updateAgent: (agent) =>
     set((state) => {

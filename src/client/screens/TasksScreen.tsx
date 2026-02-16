@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../stores/store';
 import { FolderList } from '../components/FolderList';
 import { TaskItem } from '../components/TaskItem';
-import type { WSClientMessage } from '../lib/types';
+import type { WSClientMessage, Folder } from '../lib/types';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -49,6 +49,14 @@ export function TasksScreen({ onSend }: Props) {
     setShowNewFolder(false);
   };
 
+  const handleUpdateFolder = (folderId: string, fields: Partial<Folder>) => {
+    onSend({ type: 'folder:update', folderId, fields });
+  };
+
+  const handleDeleteFolder = (folderId: string) => {
+    onSend({ type: 'folder:delete', folderId });
+  };
+
   return (
     <div className="min-h-full pb-20">
       <div className="p-4">
@@ -80,6 +88,8 @@ export function TasksScreen({ onSend }: Props) {
         selectedFolderId={selectedFolderId}
         onSelectFolder={setSelectedFolderId}
         onCreateFolder={() => setShowNewFolder(true)}
+        onUpdateFolder={handleUpdateFolder}
+        onDeleteFolder={handleDeleteFolder}
       />
 
       {selectedFolderId && (

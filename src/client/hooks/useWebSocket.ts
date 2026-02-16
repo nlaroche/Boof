@@ -63,6 +63,9 @@ export function useWebSocket() {
           case 'folder:updated':
             s.updateFolder(msg.folder);
             break;
+          case 'folder:deleted':
+            s.removeFolder(msg.folderId);
+            break;
           case 'command:updated':
             s.upsertCommand(msg.command);
             break;

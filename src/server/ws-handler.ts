@@ -17,7 +17,17 @@ function commitAgentChanges(workingDirectory: string, prompt: string): boolean {
     const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
     if (!diff && !staged) return false; // nothing to commit
 
-    execSync('git add -A', { cwd: workingDirectory, timeout: 5000 });
+    // Only stage tracked files that have been modified — don't blindly add untracked files
+    execSync('git add -u', { cwd: workingDirectory, timeout: 5000 });
+    // Also add new files the agent likely created (src/ and public/ only)
+    try {
+      const untracked = execSync('git ls-files --others --exclude-standard -- src/ public/', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+      if (untracked) {
+        for (const file of untracked.split('\n').filter(f => f.trim())) {
+          execSync(`git add "${file}"`, { cwd: workingDirectory, timeout: 5000 });
+        }
+      }
+    } catch {}
     const msg = prompt.slice(0, 72).replace(/"/g, "'");
     execSync(`git commit -m "agent: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
     return true;
@@ -47,31 +57,27 @@ function stripAnsi(str: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
-/** Extract edited files from Claude Code output */
+/** Extract edited files from Claude Code stream-json parsed output */
 function extractEditedFiles(rawOutput: string): string[] {
   const clean = stripAnsi(rawOutput);
   const files: string[] = [];
   for (const line of clean.split('\n')) {
     const trimmed = line.trim();
-    // Claude Code tool use patterns
-    if (trimmed.startsWith('[Tool: Write]') || trimmed.startsWith('[Tool: Edit]')) {
-      // Try to find the file path on nearby lines
-      continue;
-    }
-    // Match file paths in tool output (e.g., "Wrote to src/foo.ts")
-    const writeMatch = trimmed.match(/(?:Wrote to|Updated|Created|Edited)\s+(\S+)/);
+    // Our parsed output format: "✏️ Write src/foo.ts" or "✏️ Edit src/foo.ts"
+    const writeMatch = trimmed.match(/(?:✏️\s*(?:Write|Edit)|✅)\s+(\S+)/);
     if (writeMatch) {
       files.push(writeMatch[1]);
     }
-    // Also match "Applied edit to" for backwards compat
-    if (trimmed.startsWith('Applied edit to ')) {
-      files.push(trimmed.replace('Applied edit to ', '').trim());
+    // Also match "Wrote to" / "Applied edit to" from raw Claude output
+    const rawMatch = trimmed.match(/(?:Wrote to|Applied edit to|Updated|Created|Edited)\s+(\S+)/);
+    if (rawMatch) {
+      files.push(rawMatch[1]);
     }
   }
   return [...new Set(files)];
 }
 
-/** Generate a summary from Claude Code output */
+/** Generate a summary from Claude Code stream-json parsed output */
 function generateSummary(rawOutput: string, prompt: string): string {
   const clean = stripAnsi(rawOutput);
   const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
@@ -81,15 +87,16 @@ function generateSummary(rawOutput: string, prompt: string): string {
   const descriptionLines: string[] = [];
 
   for (const line of tail) {
-    // Track tool usage
-    if (line.startsWith('[Tool:')) {
+    // Track tool usage (our emoji format from parsed stream-json)
+    if (/^[📖✏️🔍💻🤖🔧📋❌✅]/.test(line)) {
       toolLines.push(line);
       continue;
     }
     // Skip noise
     if (/^[─━═\-]{3,}$/.test(line)) continue;
-    if (/^\[.*\]$/.test(line) && line.length < 30) continue;
-    // Collect meaningful lines
+    if (/^---/.test(line)) continue;
+    if (line.startsWith('→')) continue;
+    // Collect meaningful text lines
     if (line.length > 10) {
       descriptionLines.push(line);
     }
@@ -103,7 +110,7 @@ function generateSummary(rawOutput: string, prompt: string): string {
 
   if (toolLines.length > 0) {
     const uniqueTools = [...new Set(toolLines)];
-    parts.push(`Tools: ${uniqueTools.slice(-5).join(', ')}`);
+    parts.push(uniqueTools.slice(-5).join(', '));
   }
 
   if (parts.length > 0) return parts.join('\n').slice(0, 400);
@@ -308,7 +315,9 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'folder:delete': {
+      runQuery('DELETE FROM tasks WHERE folder_id = ?', [message.folderId]);
       runQuery('DELETE FROM folders WHERE id = ?', [message.folderId]);
+      broadcast({ type: 'folder:deleted', folderId: message.folderId });
       break;
     }
 
@@ -495,11 +504,15 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             retryState.delete(id);
             let succeeded = code === 0 && !hasTestFailure;
 
-            // No-op detection: if agent exited 0 but made no changes, it failed to do the task
+            // No-op detection: check both uncommitted diff AND recent commits
+            // Claude Code may auto-commit, so we check git log too
             if (succeeded && agent) {
               try {
                 const noopDiff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
-                if (!noopDiff) {
+                const stagedDiff = execSync('git diff --cached --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                // Check if any commits were made in the last 10 minutes (agent's work)
+                const recentCommits = execSync('git log --oneline --since="10 minutes ago" -5', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                if (!noopDiff && !stagedDiff && !recentCommits) {
                   succeeded = false;
                   const noopMsg = '\n--- No changes made — agent did not edit any files ---\n';
                   appendAgentOutput(id, noopMsg);
@@ -508,24 +521,48 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               } catch {}
             }
 
-            // Self-review pass: re-use the SAME command, just send another Aider call
+            // Self-review pass: check uncommitted changes OR recent commits
             const reviewState = reviewPending.get(id);
             if (succeeded && agent && !reviewState) {
               try {
-                const diffStat = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                let diffStat = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                let diffContent = '';
+
                 if (diffStat) {
-                  // Keep diff short to avoid Windows CMD length limits (~8191 chars)
-                  let diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                  // Uncommitted changes — diff them
+                  diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                } else {
+                  // Maybe agent auto-committed — check last commit's diff
+                  const recentCommits = execSync('git log --oneline --since="10 minutes ago" -1', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                  if (recentCommits) {
+                    diffStat = execSync('git diff HEAD~1 --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                    diffContent = execSync('git diff HEAD~1', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
+                  }
+                }
+
+                if (diffStat && diffContent) {
                   if (diffContent.length > 3000) {
                     diffContent = diffContent.slice(0, 3000) + '\n...(truncated)';
                   }
                   reviewPending.set(id, true);
+
+                  // Create a new command for the review so it's tracked properly
+                  const reviewCmdId = generateId();
+                  const reviewNow = new Date().toISOString();
+                  runQuery(
+                    `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
+                     VALUES (?, ?, ?, ?, 'running', ?)`,
+                    [reviewCmdId, agentId, taskId || null, '[Self-review] Checking for bugs', reviewNow]
+                  );
+                  currentCommandIds.set(id, reviewCmdId);
+                  const reviewCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [reviewCmdId]);
+                  if (reviewCmd) broadcast({ type: 'command:updated', command: parseCommand(reviewCmd) });
+
                   const reviewMsg = '\n=== Self-review: checking changes for bugs ===\n';
                   appendAgentOutput(id, reviewMsg);
                   broadcast({ type: 'agent:output', agentId: id, chunk: reviewMsg });
 
-                  // Re-use the same command ID — no new command row
-                  const reviewPrompt = `Review these changes for the task: "${prompt.slice(0, 100)}"\n\nFiles changed:\n${diffStat}\n\nDiff:\n${diffContent}\n\nCheck: logic bugs, missing imports, wrong file edited, new files created accidentally. Fix issues or do nothing if correct.`;
+                  const reviewPrompt = `Review these changes for the task: "${prompt.slice(0, 100)}"\n\nFiles changed:\n${diffStat}\n\nDiff:\n${diffContent}\n\nCheck for: logic bugs, missing imports, wrong file edited, broken types, accidentally created files. If you find issues, fix them. If everything looks correct, just say "Changes look good."`;
                   sendToAgent(id, reviewPrompt);
                   return; // Don't finalize yet, wait for review to complete
                 }

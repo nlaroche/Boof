@@ -142,6 +142,7 @@ export type WSServerMessage =
   | { type: 'command:updated'; command: Command }
   | { type: 'task:updated'; task: Task }
   | { type: 'folder:updated'; folder: Folder }
+  | { type: 'folder:deleted'; folderId: string }
   | { type: 'repos:list'; repos: RepoInfo[] }
   | { type: 'notify'; agentId: string; title: string; body: string }
   | { type: 'agent:history'; agentId: string; commands: Command[] }

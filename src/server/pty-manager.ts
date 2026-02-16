@@ -1,11 +1,11 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
+import path from 'path';
 
 interface AgentState {
   activePty: IPty | null;
   workingDirectory: string;
   name: string;
-  sessionId: string | null;
   onOutput: (id: string, chunk: string) => void;
   onExit: (id: string, code: number) => void;
 }
@@ -21,19 +21,14 @@ const MINIMAX_CMD = process.env.MINIMAX_CMD
 
 function getCleanEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
-  // Prevent nested Claude Code session errors
   delete env['CLAUDECODE'];
-  // cc-mirror pattern: unset auth token
   delete env['ANTHROPIC_AUTH_TOKEN'];
 
-  // Point at the cc-mirror minimax config so the process uses MiniMax API
   env['CLAUDE_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\config';
   env['TWEAKCC_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\tweakcc';
   env['DISABLE_AUTOUPDATER'] = '1';
   env['DISABLE_AUTO_MIGRATE_TO_NATIVE'] = '1';
   env['DISABLE_INSTALLATION_CHECKS'] = '1';
-
-  // MiniMax API settings (also in settings.json but set explicitly for safety)
   env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
   env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5';
   env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5';
@@ -61,7 +56,6 @@ export function createAgent(
     activePty: null,
     workingDirectory,
     name,
-    sessionId: null,
     onOutput,
     onExit,
   });
@@ -70,63 +64,197 @@ export function createAgent(
 }
 
 /**
- * Strip ConPTY escape code noise from raw PTY data.
- * ConPTY on Windows injects cursor movement, private mode, and OSC sequences
- * into the output stream which corrupt JSON parsing.
+ * Strip ConPTY escape codes that corrupt JSON parsing.
  */
 function stripPtyNoise(data: string): string {
   return data
-    .replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, '')          // private mode set/reset
-    .replace(/\x1b\[[0-9]*[ABCDHJ]/g, '')               // cursor movement/erase
-    .replace(/\x1b\[[0-9;]*[Hf]/g, '')                   // cursor position
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')  // OSC sequences
-    .replace(/\x1b\[2J/g, '')                            // clear screen
-    .replace(/\x1b\[K/g, '')                             // erase to end of line
-    .replace(/\x1b\[[0-9;]*m/g, '')                      // ANSI color codes (strip for JSON)
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')      // control chars (keep \n \r \t)
-    .replace(/\r+/g, '');                                // carriage returns
+    .replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\x1b\[[0-9]*[ABCDHJ]/g, '')
+    .replace(/\x1b\[[0-9;]*[Hf]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b\[2J/g, '')
+    .replace(/\x1b\[K/g, '')
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')
+    .replace(/\r+/g, '');
+}
+
+/** Shorten a file path to just the relative part for display */
+function shortPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/');
+  const srcIdx = normalized.indexOf('src/');
+  if (srcIdx >= 0) return normalized.slice(srcIdx);
+  const pubIdx = normalized.indexOf('public/');
+  if (pubIdx >= 0) return normalized.slice(pubIdx);
+  return path.basename(normalized);
 }
 
 /**
- * Parse a single stream-json line from Claude Code.
- * Returns extracted text to display, or null if nothing to show.
+ * Parse a single JSONL line from Claude Code stream-json output.
+ * Extracts meaningful text for display including tool call details.
+ *
+ * The format outputs full message objects:
+ *   type:"assistant" with message.content[] containing "text", "tool_use", or "thinking"
+ *   type:"user" with message.content[] containing "tool_result"
+ *   type:"result" at the end with session_id and summary
+ *   type:"system" at init with session_id
  */
-function parseStreamJsonLine(line: string): { text: string | null; sessionId: string | null } {
+function parseStreamJsonLine(line: string): string | null {
   try {
     const obj = JSON.parse(line);
 
-    // Init message — capture session_id
-    if (obj.type === 'system' && obj.session_id) {
-      return { text: null, sessionId: obj.session_id };
-    }
-
-    // Assistant text (full message)
+    // --- Assistant messages ---
     if (obj.type === 'assistant' && obj.message?.content) {
-      const parts = obj.message.content
-        .filter((c: any) => c.type === 'text')
-        .map((c: any) => c.text);
-      if (parts.length > 0) return { text: parts.join(''), sessionId: null };
+      const parts: string[] = [];
+
+      for (const block of obj.message.content) {
+        // Text output from the assistant
+        if (block.type === 'text' && block.text) {
+          parts.push(block.text);
+        }
+
+        // Tool use — show tool name + key details
+        if (block.type === 'tool_use') {
+          const tool = block.name;
+          const input = block.input || {};
+
+          switch (tool) {
+            case 'Read':
+              parts.push(`\n📖 Read ${shortPath(input.file_path || '?')}\n`);
+              break;
+            case 'Write':
+              parts.push(`\n✏️ Write ${shortPath(input.file_path || '?')}\n`);
+              break;
+            case 'Edit':
+              parts.push(`\n✏️ Edit ${shortPath(input.file_path || '?')}\n`);
+              break;
+            case 'Glob':
+              parts.push(`\n🔍 Glob ${input.pattern || '?'}\n`);
+              break;
+            case 'Grep':
+              parts.push(`\n🔍 Grep "${input.pattern || '?'}" ${input.glob || ''}\n`);
+              break;
+            case 'Bash':
+              parts.push(`\n💻 Bash: ${(input.command || '?').slice(0, 120)}\n`);
+              break;
+            case 'Task':
+              parts.push(`\n🤖 Subagent: ${input.description || input.prompt?.slice(0, 80) || '?'}\n`);
+              break;
+            case 'TodoWrite':
+              parts.push(`\n📋 TodoWrite\n`);
+              break;
+            default:
+              parts.push(`\n🔧 ${tool}\n`);
+              break;
+          }
+        }
+
+        // Skip thinking blocks — don't show internal reasoning
+      }
+
+      if (parts.length > 0) return parts.join('');
     }
 
-    // Streaming text delta
+    // --- Tool results (user messages with tool_result content) ---
+    if (obj.type === 'user' && Array.isArray(obj.message?.content)) {
+      const parts: string[] = [];
+
+      for (const block of obj.message.content) {
+        if (block.type === 'tool_result') {
+          const result = typeof block.content === 'string' ? block.content : '';
+
+          // Show errors prominently
+          if (block.is_error) {
+            const errorMsg = result.replace(/<[^>]+>/g, '').trim();
+            parts.push(`\n❌ Error: ${errorMsg.slice(0, 200)}\n`);
+            continue;
+          }
+
+          // Show structured results from toolUseResult if available
+          const tur = obj.toolUseResult;
+          if (tur && typeof tur === 'object') {
+            // Write/Edit results
+            if (tur.filePath) {
+              parts.push(`  ✅ ${shortPath(tur.filePath)}\n`);
+              continue;
+            }
+            // Glob results
+            if (tur.numFiles !== undefined && tur.filenames) {
+              parts.push(`  → ${tur.numFiles} file(s) found\n`);
+              continue;
+            }
+            // Grep results
+            if (tur.mode) {
+              if (tur.mode === 'files_with_matches') {
+                parts.push(`  → ${tur.numFiles || 0} file(s) matched\n`);
+              } else {
+                parts.push(`  → ${tur.numLines || 0} line(s) matched\n`);
+              }
+              continue;
+            }
+            // Task/subagent results
+            if (tur.status === 'completed') {
+              parts.push(`  ✅ Subagent done (${tur.totalToolUseCount || 0} tool calls)\n`);
+              continue;
+            }
+            // Bash results — show brief output
+            if (tur.stdout !== undefined || tur.exitCode !== undefined) {
+              const code = tur.exitCode ?? 0;
+              const stdout = (tur.stdout || '').trim();
+              if (code !== 0) {
+                parts.push(`  ❌ Exit code ${code}\n`);
+              } else if (stdout) {
+                const brief = stdout.split('\n').slice(0, 3).join('\n');
+                parts.push(`  → ${brief.slice(0, 200)}\n`);
+              } else {
+                parts.push(`  ✅ OK\n`);
+              }
+              continue;
+            }
+          }
+
+          // Fallback: show a brief snippet of the result
+          if (result.length > 0 && result.length < 300) {
+            // Short results: show them
+          } else if (result.length >= 300) {
+            // Long results: just confirm receipt
+            parts.push(`  → (${result.length} chars)\n`);
+          }
+        }
+      }
+
+      if (parts.length > 0) return parts.join('');
+    }
+
+    // --- Streaming deltas (if format uses them) ---
     if (obj.type === 'content_block_delta' && obj.delta?.type === 'text_delta') {
-      return { text: obj.delta.text, sessionId: null };
+      return obj.delta.text;
     }
 
-    // Tool use — show what tool is being called
     if (obj.type === 'content_block_start' && obj.content_block?.type === 'tool_use') {
-      return { text: `\n[Tool: ${obj.content_block.name}]\n`, sessionId: null };
+      const tool = obj.content_block.name;
+      return `\n🔧 ${tool}\n`;
     }
 
-    // Tool result
+    // --- Result message (end of session) ---
     if (obj.type === 'result' && obj.result) {
-      return { text: obj.result, sessionId: null };
+      return null; // Don't echo the final result blob — it's redundant
     }
 
-    return { text: null, sessionId: null };
+    return null;
   } catch {
-    return { text: null, sessionId: null };
+    return null;
   }
+}
+
+/**
+ * Wrap the user's prompt with instructions that force implementation.
+ * Without this, the model may enter plan mode or just describe what to do.
+ */
+function wrapPrompt(text: string): string {
+  return `${text}
+
+IMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
 }
 
 function spawnClaude(id: string, state: AgentState, text: string): void {
@@ -140,15 +268,13 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
   // Skip permissions for autonomous operation
   args.push('--dangerously-skip-permissions');
 
-  // Resume existing session to maintain conversation context
-  if (state.sessionId) {
-    args.push('--resume', state.sessionId);
-  }
+  // Fresh session every time — no --resume
+  // Resuming causes context pollution from previous tasks
 
-  // The prompt
-  args.push(text);
+  // The wrapped prompt
+  args.push(wrapPrompt(text));
 
-  console.log(`[agent ${id.slice(0,6)}] spawning claude: session=${state.sessionId || 'new'} prompt=${text.slice(0, 80)}...`);
+  console.log(`[agent ${id.slice(0,6)}] spawning claude (fresh session) prompt=${text.slice(0, 80)}...`);
 
   const proc = pty.spawn(MINIMAX_CMD, args, {
     cwd: state.workingDirectory,
@@ -159,7 +285,6 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
 
   state.activePty = proc;
 
-  // Buffer for accumulating partial JSON lines
   let lineBuffer = '';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingOutput = '';
@@ -175,7 +300,6 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
       pendingOutput = '';
       return;
     }
-    // Suppress duplicate flushes (ConPTY re-renders)
     if (recentlySent.includes(stripped)) {
       pendingOutput = '';
       return;
@@ -184,8 +308,8 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
     if (recentlySent.length > MAX_RECENT) recentlySent.shift();
 
     let output = pendingOutput;
-    if (output.length > 4000) {
-      output = '... (truncated)\n' + output.slice(-4000);
+    if (output.length > 8000) {
+      output = '... (truncated)\n' + output.slice(-8000);
     }
 
     state.onOutput(id, output);
@@ -196,7 +320,6 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
     const clean = stripPtyNoise(data);
     lineBuffer += clean;
 
-    // Process complete lines
     const lines = lineBuffer.split('\n');
     lineBuffer = lines.pop() || '';
 
@@ -204,11 +327,7 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
       const trimmed = line.trim();
       if (!trimmed) continue;
 
-      const { text, sessionId } = parseStreamJsonLine(trimmed);
-      if (sessionId && !state.sessionId) {
-        state.sessionId = sessionId;
-        console.log(`[agent ${id.slice(0,6)}] captured session: ${sessionId}`);
-      }
+      const text = parseStreamJsonLine(trimmed);
       if (text) {
         pendingOutput += text;
       }
@@ -219,10 +338,8 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
   });
 
   proc.onExit(({ exitCode }) => {
-    // Process remaining buffer
     if (lineBuffer.trim()) {
-      const { text, sessionId } = parseStreamJsonLine(lineBuffer.trim());
-      if (sessionId && !state.sessionId) state.sessionId = sessionId;
+      const text = parseStreamJsonLine(lineBuffer.trim());
       if (text) pendingOutput += text;
     }
 
