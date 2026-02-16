@@ -13,15 +13,15 @@ export function TaskItem({ task, subtaskCount = 0, doneSubtasks = 0, onToggle }:
   return (
     <button
       onClick={() => onToggle(task.id, task.status)}
-      className="flex items-center gap-3 w-full p-3 text-left active:bg-[#1e1e2e] transition-colors rounded-lg"
+      className="flex items-center gap-3 w-full p-3 text-left hover:bg-[#1e1e2e] active:bg-[#1e1e2e] transition-colors rounded-lg"
     >
       <span
-        className={`w-6 h-6 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
+        className={`w-8 h-8 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-colors ${
           isDone ? 'border-[#22c55e] bg-[#22c55e]' : 'border-[#6b6b80]'
         }`}
       >
         {isDone && (
-          <svg viewBox="0 0 24 24" className="w-4 h-4 text-white" fill="none" stroke="currentColor" strokeWidth={3}>
+          <svg viewBox="0 0 24 24" className="w-5 h-5 text-white" fill="none" stroke="currentColor" strokeWidth={3}>
             <path d="M5 13l4 4L19 7" />
           </svg>
         )}
