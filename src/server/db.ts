@@ -217,6 +217,92 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
 
+  // Run metrics — per-run performance data
+  db.run(`
+    CREATE TABLE IF NOT EXISTS run_metrics (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      command_id TEXT,
+      goal_id TEXT,
+      task_id TEXT,
+      duration_ms INTEGER DEFAULT 0,
+      retries INTEGER DEFAULT 0,
+      build_failures INTEGER DEFAULT 0,
+      files_touched INTEGER DEFAULT 0,
+      prompt_tokens INTEGER DEFAULT 0,
+      completion_tokens INTEGER DEFAULT 0,
+      success INTEGER DEFAULT 1,
+      error_type TEXT DEFAULT NULL,
+      prompt_version_id TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Post-run reflections
+  db.run(`
+    CREATE TABLE IF NOT EXISTS reflections (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      command_id TEXT,
+      went_well TEXT DEFAULT '',
+      improve TEXT DEFAULT '',
+      pattern TEXT DEFAULT '',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Skill library — reusable learned patterns
+  db.run(`
+    CREATE TABLE IF NOT EXISTS skills (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      code_snippet TEXT DEFAULT '',
+      tags TEXT DEFAULT '[]',
+      times_used INTEGER DEFAULT 0,
+      times_succeeded INTEGER DEFAULT 0,
+      avg_score REAL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Prompt versions — versioned prompt templates
+  db.run(`
+    CREATE TABLE IF NOT EXISTS prompt_versions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      template TEXT NOT NULL,
+      avg_score REAL DEFAULT 0,
+      total_runs INTEGER DEFAULT 0,
+      is_active INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Experiments — A/B test tracking
+  db.run(`
+    CREATE TABLE IF NOT EXISTS experiments (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      hypothesis TEXT DEFAULT '',
+      variant_a TEXT NOT NULL,
+      variant_b TEXT NOT NULL,
+      metric TEXT DEFAULT 'score',
+      runs_a INTEGER DEFAULT 0,
+      runs_b INTEGER DEFAULT 0,
+      avg_metric_a REAL DEFAULT 0,
+      avg_metric_b REAL DEFAULT 0,
+      status TEXT DEFAULT 'running',
+      winner TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    )
+  `);
+
   // Reset any agents stuck in 'running' from a previous server crash
   db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 

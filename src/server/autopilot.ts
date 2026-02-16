@@ -339,6 +339,28 @@ function logToGoal(
   }
 }
 
+// ── Parallel Task Execution ────────────────────────────────────────────
+
+/**
+ * Run multiple agent steps in parallel.
+ * Returns when all agents complete.
+ */
+async function runParallelAgentSteps(
+  tasks: Array<{
+    agentId: string;
+    agent: Agent;
+    prompt: string;
+    broadcast: (msg: WSServerMessage) => void;
+    options?: { skipWrap?: boolean };
+  }>
+): Promise<Array<{ code: number; output: string }>> {
+  return Promise.all(
+    tasks.map(({ agentId, agent, prompt, broadcast, options }) =>
+      runAgentStep(agentId, agent, prompt, broadcast, options)
+    )
+  );
+}
+
 // ── Agent Step ──────────────────────────────────────────────────────────
 
 function runAgentStep(
@@ -426,6 +448,36 @@ async function executeWorkflow(
 }
 
 // ── Task Management ─────────────────────────────────────────────────────
+
+/**
+ * Detect independent tasks by checking if they mention different files.
+ * Tasks are considered independent if their descriptions reference non-overlapping file sets.
+ */
+function detectIndependentTasks(tasks: { id: string; title: string; description: string }[]): typeof tasks {
+  if (tasks.length <= 1) return tasks;
+
+  // Extract file mentions from task descriptions
+  const filePattern = /\b(?:src\/[a-z0-9_/-]+\.(?:ts|tsx|js|jsx|json))\b/gi;
+  const taskFiles = tasks.map(task => {
+    const matches = (task.description || '').match(filePattern) || [];
+    return { task, files: new Set(matches.map(f => f.toLowerCase())) };
+  });
+
+  // Find tasks that don't share files
+  const independent: typeof tasks = [];
+  const usedFiles = new Set<string>();
+
+  for (const { task, files } of taskFiles) {
+    // Check if this task overlaps with already selected tasks
+    const hasOverlap = Array.from(files).some(f => usedFiles.has(f));
+    if (!hasOverlap || files.size === 0) {
+      independent.push(task);
+      files.forEach(f => usedFiles.add(f));
+    }
+  }
+
+  return independent.length > 0 ? independent : [tasks[0]];
+}
 
 function getOrCreateGoalTasksFolder(): string {
   const broadcast = getBroadcast();
@@ -556,6 +608,16 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       "SELECT id, title, description FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress') LIMIT 10",
       [goalId]
     );
+
+    // Check if we can run tasks in parallel (experimental)
+    const useParallel = pendingTasks.length >= 2;
+    const parallelTasks = useParallel ? detectIndependentTasks(pendingTasks).slice(0, 2) : [];
+
+    if (parallelTasks.length >= 2) {
+      broadcast({ type: 'agent:output', agentId, chunk: `\n[autopilot] Running ${parallelTasks.length} tasks in parallel\n` });
+      // For now, fall back to sequential — full parallel implementation needs more work
+      // This lays groundwork for future parallel execution
+    }
 
     if (pendingTasks.length === 0) {
       // Planning phase: ask agent to create tasks

@@ -141,6 +141,90 @@ export interface XpEvent {
   created_at: string;
 }
 
+export interface RunMetric {
+  id: string;
+  agent_id: string;
+  command_id: string | null;
+  goal_id: string | null;
+  task_id: string | null;
+  duration_ms: number;
+  retries: number;
+  build_failures: number;
+  files_touched: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  success: number;
+  error_type: string | null;
+  prompt_version_id: string | null;
+  created_at: string;
+}
+
+export interface Reflection {
+  id: string;
+  agent_id: string;
+  command_id: string | null;
+  went_well: string;
+  improve: string;
+  pattern: string;
+  created_at: string;
+}
+
+export interface Skill {
+  id: string;
+  agent_id: string;
+  name: string;
+  description: string;
+  code_snippet: string;
+  tags: string;
+  times_used: number;
+  times_succeeded: number;
+  avg_score: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromptVersion {
+  id: string;
+  agent_id: string;
+  version: number;
+  template: string;
+  avg_score: number;
+  total_runs: number;
+  is_active: number;
+  created_at: string;
+}
+
+export interface Experiment {
+  id: string;
+  agent_id: string;
+  name: string;
+  hypothesis: string;
+  variant_a: string;
+  variant_b: string;
+  metric: string;
+  runs_a: number;
+  runs_b: number;
+  avg_metric_a: number;
+  avg_metric_b: number;
+  status: string;
+  winner: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface DashboardData {
+  success_rate_10: number;
+  success_rate_50: number;
+  success_rate_all: number;
+  avg_duration_trend: number[];
+  avg_score_trend: number[];
+  total_tokens: number;
+  skills_count: number;
+  top_errors: { type: string; count: number }[];
+  xp_per_day: { date: string; xp: number }[];
+  recent_reflections: Reflection[];
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types
@@ -185,7 +269,10 @@ export type WSClientMessage =
   | { type: 'agent:branches'; agentId: string }
   | { type: 'agent:merge-branch'; agentId: string; branchName: string }
   | { type: 'agent:discard-branch'; agentId: string; branchName: string }
-  | { type: 'agent:xp-events'; agentId: string };
+  | { type: 'agent:xp-events'; agentId: string }
+  | { type: 'agent:dashboard'; agentId: string }
+  | { type: 'agent:skills'; agentId: string }
+  | { type: 'agent:experiments'; agentId: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -219,7 +306,10 @@ export type WSServerMessage =
   | { type: 'agent:xp-events'; agentId: string; events: XpEvent[] }
   | { type: 'agent:branches'; agentId: string; branches: string[] }
   | { type: 'agent:branch-merged'; agentId: string; branchName: string; success: boolean; output: string }
-  | { type: 'agent:branch-discarded'; agentId: string; branchName: string };
+  | { type: 'agent:branch-discarded'; agentId: string; branchName: string }
+  | { type: 'agent:dashboard'; agentId: string; data: DashboardData }
+  | { type: 'agent:skills'; agentId: string; skills: Skill[] }
+  | { type: 'agent:experiments'; agentId: string; experiments: Experiment[] };
 
 export interface RepoInfo {
   name: string;
