@@ -19,7 +19,9 @@ const isWindows = process.platform === 'win32';
 /** Clean env: remove vars that cause nested session errors */
 function baseEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
+  // Must remove these to prevent "nested session" error from Claude Code
   delete env['CLAUDECODE'];
+  delete env['CLAUDE_CODE_ENTRYPOINT'];
   delete env['ANTHROPIC_AUTH_TOKEN'];
   env['DISABLE_AUTOUPDATER'] = '1';
   env['DISABLE_AUTO_MIGRATE_TO_NATIVE'] = '1';
@@ -58,64 +60,46 @@ const minimaxProvider: AgentProvider = {
   },
 };
 
-// ── Claude Code (Sonnet) ────────────────────────────────────────────────
+// ── Claude Code providers ───────────────────────────────────────────────
+// On Windows, use node + cli.js directly to bypass claude.cmd which
+// mangles arguments through cmd.exe (causes "Input must be provided" error).
+// Use process.execPath since node is not in the system PATH on this machine.
+
+const claudeCliJs = isWindows
+  ? 'C:\\Users\\nlaroche\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js'
+  : '';
+const claudeCommand = isWindows ? process.execPath : 'claude';
+
+function claudeArgs(prompt: string, model: string): string[] {
+  const base = isWindows ? [claudeCliJs] : [];
+  return [
+    ...base,
+    '-p', '--verbose', '--output-format', 'stream-json',
+    '--dangerously-skip-permissions',
+    '--model', model,
+    prompt,
+  ];
+}
 
 const claudeSonnetProvider: AgentProvider = {
   name: 'Claude Sonnet',
-  command: isWindows
-    ? 'C:\\Users\\nlaroche\\AppData\\Roaming\\npm\\claude.cmd'
-    : 'claude',
-  getArgs(prompt: string) {
-    return [
-      '-p', '--verbose', '--output-format', 'stream-json',
-      '--dangerously-skip-permissions',
-      '--model', 'sonnet',
-      prompt,
-    ];
-  },
-  getEnv() {
-    return baseEnv();
-  },
+  command: claudeCommand,
+  getArgs(prompt: string) { return claudeArgs(prompt, 'sonnet'); },
+  getEnv() { return baseEnv(); },
 };
-
-// ── Claude Code (Opus) ─────────────────────────────────────────────────
 
 const claudeOpusProvider: AgentProvider = {
   name: 'Claude Opus',
-  command: isWindows
-    ? 'C:\\Users\\nlaroche\\AppData\\Roaming\\npm\\claude.cmd'
-    : 'claude',
-  getArgs(prompt: string) {
-    return [
-      '-p', '--verbose', '--output-format', 'stream-json',
-      '--dangerously-skip-permissions',
-      '--model', 'opus',
-      prompt,
-    ];
-  },
-  getEnv() {
-    return baseEnv();
-  },
+  command: claudeCommand,
+  getArgs(prompt: string) { return claudeArgs(prompt, 'opus'); },
+  getEnv() { return baseEnv(); },
 };
-
-// ── Claude Code (Haiku) ────────────────────────────────────────────────
 
 const claudeHaikuProvider: AgentProvider = {
   name: 'Claude Haiku',
-  command: isWindows
-    ? 'C:\\Users\\nlaroche\\AppData\\Roaming\\npm\\claude.cmd'
-    : 'claude',
-  getArgs(prompt: string) {
-    return [
-      '-p', '--verbose', '--output-format', 'stream-json',
-      '--dangerously-skip-permissions',
-      '--model', 'haiku',
-      prompt,
-    ];
-  },
-  getEnv() {
-    return baseEnv();
-  },
+  command: claudeCommand,
+  getArgs(prompt: string) { return claudeArgs(prompt, 'haiku'); },
+  getEnv() { return baseEnv(); },
 };
 
 // ── Registry ────────────────────────────────────────────────────────────

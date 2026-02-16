@@ -9,3 +9,5 @@ boof.db
 .dev-stderr.tmp
 install.ps1
 .aider*
+
+.boof/

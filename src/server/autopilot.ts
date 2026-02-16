@@ -215,13 +215,20 @@ function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
   if (memoryContext) {
     prompt += memoryContext;
   }
-  prompt += `Analyze the codebase for goal: "${goal.name}"\n`;
+  prompt += `You are planning tasks for the goal: "${goal.name}"\n`;
   prompt += `Description: ${goal.description || 'No description provided.'}\n\n`;
-  prompt += `Output exactly 3-5 concrete tasks as TASK: lines.\n`;
-  prompt += `Format: TASK: <title> | <description>\n`;
-  prompt += `Each task should be completable in one agent run (1-2 file changes).\n`;
-  prompt += `Be specific — name exact files and what to change.\n`;
-  prompt += `Do NOT implement anything — just plan.\n`;
+  prompt += `Look at the file structure (use Glob on src/server/) then IMMEDIATELY output 3-5 task lines.\n`;
+  prompt += `Do NOT read file contents — just use the file listing to plan.\n`;
+  prompt += `Keep exploration to 1-2 tool calls MAX, then output your tasks.\n\n`;
+  prompt += `OUTPUT FORMAT — each task MUST be on its own line:\n`;
+  prompt += `TASK: <short title> | <one-line description with specific file names>\n\n`;
+  prompt += `Example:\n`;
+  prompt += `TASK: Add scheduler tests | Create src/server/__tests__/scheduler.test.ts testing matchesCron and matchField\n`;
+  prompt += `TASK: Test agent-memory | Create src/server/__tests__/agent-memory.test.ts testing recordMistake and getMemoryContext\n\n`;
+  prompt += `Rules:\n`;
+  prompt += `- Each task = one agent run (1-2 file changes)\n`;
+  prompt += `- Name exact files\n`;
+  prompt += `- Do NOT implement — just plan\n`;
   return prompt;
 }
 
@@ -526,6 +533,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast, { skipWrap: true });
 
       if (planResult.code === 0) {
+        console.log(`[autopilot] Planning output (${planResult.output.length} chars):\n${planResult.output.slice(0, 2000)}`);
         const taskCount = parseTasksFromOutput(planResult.output, goalId, agentId);
         logToGoal(goalId, agentId, 'planning', `Decomposed goal into ${taskCount} tasks`, '', Date.now() - startTime, true);
       } else {
