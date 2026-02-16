@@ -308,18 +308,20 @@ function runAgentStep(
   agent: Agent,
   prompt: string,
   broadcast: (msg: WSServerMessage) => void
-): Promise<number> {
+): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     if (hasAgent(agentId)) {
       killAgent(agentId);
     }
 
+    let output = '';
     const handleOutput = (id: string, chunk: string) => {
+      output += chunk;
       broadcast({ type: 'agent:output', agentId: id, chunk });
     };
 
     const handleExit = (id: string, code: number) => {
-      resolve(code);
+      resolve({ code, output });
     };
 
     createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
@@ -354,8 +356,8 @@ async function executeWorkflow(
     while (attempts < maxAttempts) {
       attempts++;
       const fullPrompt = `${step.prompt}\n\nContext — Goal: "${goal.name}": ${goal.description || ''}`;
-      const code = await runAgentStep(agentId, agent, fullPrompt, broadcast);
-      stepSuccess = code === 0;
+      const stepResult = await runAgentStep(agentId, agent, fullPrompt, broadcast);
+      stepSuccess = stepResult.code === 0;
 
       if (stepSuccess) break;
       if (step.on_fail === 'retry' && attempts < maxAttempts) {
@@ -514,12 +516,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Planning phase: ask agent to create tasks
       broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Planning phase — decomposing goal into tasks...\n' });
       const planPrompt = buildPlanningPrompt(goal, memoryContext);
-      const planCode = await runAgentStep(agentId, agent, planPrompt, broadcast);
+      const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast);
 
-      if (planCode === 0) {
-        // The agent output should contain TASK: lines — but they come through the PTY
-        // We log the planning action; task parsing happens from the agent output buffer
-        logToGoal(goalId, agentId, 'planning', 'Decomposed goal into tasks', '', Date.now() - startTime, true);
+      if (planResult.code === 0) {
+        const taskCount = parseTasksFromOutput(planResult.output, goalId, agentId);
+        logToGoal(goalId, agentId, 'planning', `Decomposed goal into ${taskCount} tasks`, '', Date.now() - startTime, true);
       } else {
         logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
       }
@@ -600,9 +601,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
       if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
 
-      const code = await runAgentStep(agentId, agent, prompt, broadcast);
-      success = code === 0;
-      summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${code})`;
+      const runResult = await runAgentStep(agentId, agent, prompt, broadcast);
+      success = runResult.code === 0;
+      summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${runResult.code})`;
 
       // Safety gate: build check + commit on agent branches
       if (needsBranchIsolation && success) {
