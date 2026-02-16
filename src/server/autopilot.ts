@@ -465,8 +465,8 @@ async function executeWorkflow(
 
     while (attempts < maxAttempts) {
       attempts++;
-      const fullPrompt = `${step.prompt}\n\nContext — Goal: "${goal.name}": ${goal.description || ''}`;
-      const stepResult = await runAgentStep(agentId, agent, fullPrompt, broadcast);
+      // Step prompt already has context from workflow definition
+      const stepResult = await runAgentStep(agentId, agent, step.prompt, broadcast);
       stepSuccess = stepResult.code === 0;
 
       if (stepSuccess) break;
@@ -830,14 +830,14 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const dbQueryMs = Date.now() - dbQueryStart;
       console.log(`[perf:implementation] DB query (cached): ${dbQueryMs}ms`);
 
-      // Build a task-focused prompt
+      // Build a task-focused prompt (task details included in pendingTasks list, no duplication needed)
       const promptBuildStart = Date.now();
       const taskDesc = `${currentTask.title} ${currentTask.description || ''}`;
       let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId, taskDesc);
       // Track which skills were matched for this run
       lastMatchedSkillIds = ((buildAutopilotPrompt as any)._lastMatchedSkills || []).map((s: Skill) => s.id);
-      prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
-      if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
+      // Task already listed in pendingTasks — direct agent to pick it
+      prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
 
