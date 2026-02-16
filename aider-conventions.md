@@ -1,5 +1,7 @@
 # Aider Conventions for Boof
 
+You are an AI coding assistant running inside Aider. You MUST edit files directly using Aider's edit format. Do NOT output tool calls, function calls, XML tags, or any other format — just provide the file edits. You have the files loaded in chat — edit them directly.
+
 You are working on a React 19 + TypeScript + Vite PWA with a Node.js Express 5 backend. Follow these rules strictly.
 
 ## Architecture

@@ -496,7 +496,20 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
             // Done (success or exhausted retries)
             retryState.delete(id);
-            const succeeded = code === 0 && !hasTestFailure;
+            let succeeded = code === 0 && !hasTestFailure;
+
+            // No-op detection: if Aider exited 0 but made no changes, it failed to do the task
+            if (succeeded && agent) {
+              try {
+                const noopDiff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                if (!noopDiff) {
+                  succeeded = false;
+                  const noopMsg = '\n--- No changes made — agent did not edit any files ---\n';
+                  appendAgentOutput(id, noopMsg);
+                  broadcast({ type: 'agent:output', agentId: id, chunk: noopMsg });
+                }
+              } catch {}
+            }
 
             // Self-review pass: if successful and there are changes, ask MiniMax to review its own diff
             const reviewState = reviewPending.get(id);
