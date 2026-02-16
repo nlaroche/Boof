@@ -5,6 +5,40 @@
 import { execSync } from 'child_process';
 import { isProtectedBranch } from './branch-guard.js';
 
+/** Cache entry with TTL */
+interface CacheEntry<T> {
+  value: T;
+  expires: number;
+}
+
+/** Simple TTL cache for git operations */
+class GitCache {
+  private cache = new Map<string, CacheEntry<string>>();
+
+  get(key: string): string | null {
+    const entry = this.cache.get(key);
+    if (!entry) return null;
+    if (Date.now() > entry.expires) {
+      this.cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  set(key: string, value: string, ttlMs: number): void {
+    this.cache.set(key, {
+      value,
+      expires: Date.now() + ttlMs,
+    });
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+const gitCache = new GitCache();
+
 /** Strip all ANSI escape codes from text */
 export function stripAnsi(str: string): string {
   return str
@@ -140,4 +174,45 @@ export function commitAgentChanges(workingDirectory: string, prompt: string, age
   } catch {
     return false;
   }
+}
+
+/** Get current branch with 30s cache */
+export function getCurrentBranch(workingDirectory: string): string {
+  const cacheKey = `branch:${workingDirectory}`;
+  const cached = gitCache.get(cacheKey);
+  if (cached) return cached;
+
+  const branch = execSync('git branch --show-current', {
+    cwd: workingDirectory,
+    encoding: 'utf-8',
+    timeout: 5000,
+  }).trim();
+
+  gitCache.set(cacheKey, branch, 30_000);
+  return branch;
+}
+
+/** Get recent commits with 30s cache */
+export function getRecentCommits(
+  workingDirectory: string,
+  since: string = '10 minutes ago',
+  limit: number = 5
+): string {
+  const cacheKey = `commits:${workingDirectory}:${since}:${limit}`;
+  const cached = gitCache.get(cacheKey);
+  if (cached) return cached;
+
+  const commits = execSync(`git log --oneline --since="${since}" -${limit}`, {
+    cwd: workingDirectory,
+    encoding: 'utf-8',
+    timeout: 5000,
+  }).trim();
+
+  gitCache.set(cacheKey, commits, 30_000);
+  return commits;
+}
+
+/** Clear git cache (useful for tests or after git operations that change state) */
+export function clearGitCache(): void {
+  gitCache.clear();
 }

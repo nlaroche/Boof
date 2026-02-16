@@ -5,8 +5,17 @@ import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js'
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
-import { assessPerformance, identifyImprovements, awardXp } from './self-improve.js';
-import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement } from '../client/lib/types.js';
+import {
+  assessPerformance, identifyImprovements, awardXp,
+  persistRunMetrics, storeReflection, buildReflectionPrompt, parseReflectionResponse,
+  getRecentReflections, getMatchingSkills, updateSkillUsage,
+  buildSkillExtractionPrompt, extractSkillsFromOutput, saveSkill,
+  getActivePromptVersion, seedPromptVersion, updatePromptVersionStats,
+  shouldOptimizePrompt, buildPromptOptimizationMeta, createPromptVersion,
+  getActiveExperiments, pickExperimentVariant, recordExperimentResult,
+  rankTasks,
+} from './self-improve.js';
+import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement, Skill } from '../client/lib/types.js';
 
 const execAsync = promisify(exec);
 
@@ -181,8 +190,12 @@ function buildAutopilotPrompt(
   recentLogs: GoalLogEntry[],
   pendingTasks: { title: string; description: string }[],
   memoryContext: string,
-  agentId: string
+  agentId: string,
+  currentTaskDescription?: string
 ): string {
+  // Check for active prompt version — if one exists, use its template as the base
+  const activeVersion = getActivePromptVersion(agentId);
+
   let prompt = '';
 
   // Memory context first
@@ -201,6 +214,35 @@ function buildAutopilotPrompt(
       prompt += `- [${imp.category}] ${imp.description}\n`;
     }
     prompt += '\n';
+  }
+
+  // Reflections from recent runs
+  const reflections = getRecentReflections(agentId, 5);
+  if (reflections.length > 0) {
+    prompt += 'LESSONS FROM RECENT RUNS:\n';
+    for (const r of reflections) {
+      if (r.went_well) prompt += `- Worked well: ${r.went_well}\n`;
+      if (r.improve) prompt += `- To improve: ${r.improve}\n`;
+      if (r.pattern) prompt += `- Pattern: ${r.pattern}\n`;
+    }
+    prompt += '\n';
+  }
+
+  // Matching skills for this task
+  if (currentTaskDescription) {
+    const matchedSkills = getMatchingSkills(agentId, currentTaskDescription, 3);
+    if (matchedSkills.length > 0) {
+      prompt += 'AVAILABLE SKILLS:\n';
+      for (const skill of matchedSkills) {
+        prompt += `- ${skill.name}: ${skill.description}\n`;
+        if (skill.code_snippet) {
+          prompt += `  Snippet: ${skill.code_snippet.slice(0, 200)}\n`;
+        }
+      }
+      prompt += '\n';
+      // Store skill IDs so we can track usage after the run
+      (buildAutopilotPrompt as any)._lastMatchedSkills = matchedSkills;
+    }
   }
 
   prompt += `You are working autonomously on this goal: "${goal.name}"\n`;
@@ -238,8 +280,16 @@ function buildAutopilotPrompt(
     prompt += `Pick the most impactful pending task, implement it, and verify the build passes.\n`;
   }
 
+  // Seed prompt version if this is the first run
+  if (!activeVersion) {
+    seedPromptVersion(agentId, prompt);
+  }
+
   return prompt;
 }
+
+// Track matched skills for the current run (used after run for skill usage tracking)
+let lastMatchedSkillIds: string[] = [];
 
 function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
   let prompt = '';
@@ -687,8 +737,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     }
 
     // ── Implementation Phase ──
-    // Pick first pending task and mark it in_progress
-    const currentTask = pendingTasks[0];
+    // Adaptive task selection: rank tasks by skill match, failure history, priority
+    const rankedTasks = rankTasks(agentId, pendingTasks);
+    const currentTask = rankedTasks[0];
     runQuery("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?", [now, currentTask.id]);
 
     // Check if agent has a workflow assigned
@@ -781,7 +832,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
       // Build a task-focused prompt
       const promptBuildStart = Date.now();
-      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId);
+      const taskDesc = `${currentTask.title} ${currentTask.description || ''}`;
+      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId, taskDesc);
+      // Track which skills were matched for this run
+      lastMatchedSkillIds = ((buildAutopilotPrompt as any)._lastMatchedSkills || []).map((s: Skill) => s.id);
       prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
       if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
       const promptBuildMs = Date.now() - promptBuildStart;
@@ -875,7 +929,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       : { prompt: implPromptTokens, completion: implCompletionTokens, total: implTotalTokens };
     logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success, tokenData);
 
-    // Self-improve: assess performance and award XP / identify improvements
+    // Self-improve: assess performance, persist metrics, reflect, extract skills
+    let assessmentScore = 0;
     try {
       const filesTouched = diffStats ? diffStats.split('\n').filter(l => l.includes('|')).length : 0;
       const assessment = assessPerformance(agentId, goalId, {
@@ -886,6 +941,44 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         durationMs,
         completedFully: success,
       });
+      assessmentScore = assessment.score;
+
+      // Persist run metrics to DB
+      const activeVersion = getActivePromptVersion(agentId);
+      persistRunMetrics({
+        agentId,
+        commandId: goalId,
+        goalId,
+        taskId: currentTask.id,
+        durationMs,
+        retries: 0,
+        buildFailures: success ? 0 : 1,
+        filesTouched,
+        promptTokens: implPromptTokens,
+        completionTokens: implCompletionTokens,
+        success,
+        errorType: success ? undefined : 'build_failure',
+        promptVersionId: activeVersion?.id,
+      });
+
+      // Update prompt version stats
+      if (activeVersion) {
+        updatePromptVersionStats(activeVersion.id, assessment.score);
+      }
+
+      // Update skill usage tracking
+      for (const skillId of lastMatchedSkillIds) {
+        updateSkillUsage(skillId, success, assessment.score);
+      }
+      lastMatchedSkillIds = [];
+
+      // Record experiment results if any active
+      const experiments = getActiveExperiments(agentId);
+      for (const exp of experiments) {
+        const variant = pickExperimentVariant(exp);
+        recordExperimentResult(exp.id, variant, assessment.score);
+      }
+
       if (success) {
         const xpAmount = assessment.score >= 90 ? 3 : 1;
         const reason = `Autopilot: ${currentTask?.title || goalSlug} (score ${assessment.score})`;
@@ -893,6 +986,59 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
       } else {
         identifyImprovements(agentId, assessment.id, summary, goalSlug, assessment.score, 0);
+      }
+
+      // Post-run reflection (async, doesn't block the flow)
+      try {
+        broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Reflecting on run...\n' });
+        const reflectionResult = await runAgentStep(agentId, agent, buildReflectionPrompt(), broadcast, { skipWrap: true });
+        const parsed = parseReflectionResponse(reflectionResult.output);
+        if (parsed) {
+          storeReflection(agentId, goalId, parsed.went_well, parsed.improve, parsed.pattern);
+          console.log(`[autopilot] Reflection stored: ${JSON.stringify(parsed)}`);
+        }
+      } catch (reflErr) {
+        console.error('[autopilot] Reflection error:', reflErr);
+      }
+
+      // Skill extraction for successful runs with score >= 70
+      if (success && assessment.score >= 70) {
+        try {
+          broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Extracting skills...\n' });
+          const skillResult = await runAgentStep(agentId, agent, buildSkillExtractionPrompt(), broadcast, { skipWrap: true });
+          const skills = extractSkillsFromOutput(skillResult.output);
+          for (const skill of skills) {
+            saveSkill(agentId, skill.name, skill.description, skill.code_snippet, skill.tags);
+            console.log(`[autopilot] Skill saved: ${skill.name}`);
+          }
+        } catch (skillErr) {
+          console.error('[autopilot] Skill extraction error:', skillErr);
+        }
+      }
+
+      // Auto-optimize prompt every 10 runs
+      if (shouldOptimizePrompt(agentId)) {
+        try {
+          const reflections = getRecentReflections(agentId, 10);
+          const currentVersion = getActivePromptVersion(agentId);
+          if (currentVersion && reflections.length >= 5) {
+            broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Optimizing prompt template...\n' });
+            const metaPrompt = buildPromptOptimizationMeta(reflections, currentVersion.template);
+            const optResult = await runAgentStep(agentId, agent, metaPrompt, broadcast, { skipWrap: true });
+            if (optResult.code === 0 && optResult.output.length > 100) {
+              // Strip ANSI from output for clean template
+              const cleanTemplate = optResult.output
+                .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+                .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+                .replace(/\x1b./g, '')
+                .trim();
+              createPromptVersion(agentId, cleanTemplate, true);
+              console.log(`[autopilot] New prompt version created and activated`);
+            }
+          }
+        } catch (optErr) {
+          console.error('[autopilot] Prompt optimization error:', optErr);
+        }
       }
     } catch (err) {
       console.error('[autopilot] Self-improve error:', err);

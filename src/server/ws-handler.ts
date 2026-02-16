@@ -21,10 +21,11 @@ import {
   assessPerformance, identifyImprovements, awardXp,
   getAgentImprovements, getAgentAssessments, getAgentXpEvents,
   skipImprovement, markImprovementRunning,
+  getDashboardData, getAgentSkills, getAllExperiments,
 } from './self-improve.js';
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
 import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch } from './autopilot.js';
-import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary } from './git-utils.js';
+import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary, getRecentCommits } from './git-utils.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
 const MAX_OUTPUT_BUFFER = 200; // lines per agent
@@ -430,7 +431,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
                 const noopDiff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
                 const stagedDiff = execSync('git diff --cached --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
                 // Check if any commits were made in the last 10 minutes (agent's work)
-                const recentCommits = execSync('git log --oneline --since="10 minutes ago" -5', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                const recentCommits = getRecentCommits(agent.working_directory, '10 minutes ago', 5);
                 if (!noopDiff && !stagedDiff && !recentCommits) {
                   succeeded = false;
                   const noopMsg = '\n--- No changes made — agent did not edit any files ---\n';
@@ -452,7 +453,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
                   diffContent = execSync('git diff', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
                 } else {
                   // Maybe agent auto-committed — check last commit's diff
-                  const recentCommits = execSync('git log --oneline --since="10 minutes ago" -1', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
+                  const recentCommits = getRecentCommits(agent.working_directory, '10 minutes ago', 1);
                   if (recentCommits) {
                     diffStat = execSync('git diff HEAD~1 --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();
                     diffContent = execSync('git diff HEAD~1', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 10000 }).trim();
