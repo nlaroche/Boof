@@ -19,13 +19,16 @@ export function BottomNav() {
           <button
             key={tab.id}
             onClick={() => setActiveScreen(tab.id)}
-            className={`flex flex-col items-center justify-center min-w-[64px] min-h-[48px] rounded-lg transition-colors ${
+            className={`relative flex flex-col items-center justify-center min-w-[64px] min-h-[48px] rounded-lg transition-colors ${
               activeScreen === tab.id
                 ? 'text-[#7c5bf5]'
                 : 'text-[#6b6b80] active:text-[#e2e2ef]'
             }`}
           >
             <span className="text-base font-mono leading-none">{tab.icon}</span>
+            {activeScreen === tab.id && (
+              <span className="absolute bottom-1 w-1 h-1 rounded-full bg-[#7c5bf5]" />
+            )}
             <span className="text-xs mt-0.5">{tab.label}</span>
           </button>
         ))}
