@@ -1,45 +1,19 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import path from 'path';
+import { getProvider } from './agent-providers.js';
+import type { AgentProvider } from './agent-providers.js';
 
 interface AgentState {
   activePty: IPty | null;
   workingDirectory: string;
   name: string;
+  agentType: string;
   onOutput: (id: string, chunk: string) => void;
   onExit: (id: string, code: number) => void;
 }
 
 const agents: Map<string, AgentState> = new Map();
-const isWindows = process.platform === 'win32';
-
-// Path to the cc-mirror minimax native binary
-const MINIMAX_CMD = process.env.MINIMAX_CMD
-  || (isWindows
-    ? 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\native\\claude.exe'
-    : 'minimax');
-
-function getCleanEnv(): Record<string, string> {
-  const env = { ...process.env } as Record<string, string>;
-  delete env['CLAUDECODE'];
-  delete env['ANTHROPIC_AUTH_TOKEN'];
-
-  env['CLAUDE_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\config';
-  env['TWEAKCC_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\tweakcc';
-  env['DISABLE_AUTOUPDATER'] = '1';
-  env['DISABLE_AUTO_MIGRATE_TO_NATIVE'] = '1';
-  env['DISABLE_INSTALLATION_CHECKS'] = '1';
-  env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
-  env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5-lightning';
-  env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5-lightning';
-  env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'MiniMax-M2.5-lightning';
-  env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = 'MiniMax-M2.5-lightning';
-  env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = 'MiniMax-M2.5-lightning';
-  env['API_TIMEOUT_MS'] = '3000000';
-  env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1';
-
-  return env;
-}
 
 export function createAgent(
   id: string,
@@ -47,6 +21,7 @@ export function createAgent(
   name: string,
   onOutput: (id: string, chunk: string) => void,
   onExit: (id: string, code: number) => void,
+  agentType: string = 'claude-sonnet',
 ): void {
   if (agents.has(id)) {
     killAgent(id);
@@ -56,11 +31,12 @@ export function createAgent(
     activePty: null,
     workingDirectory,
     name,
+    agentType,
     onOutput,
     onExit,
   });
 
-  console.log(`Agent ${id} registered (${name})`);
+  console.log(`Agent ${id} registered (${name}) [${agentType}]`);
 }
 
 /**
@@ -260,30 +236,24 @@ function wrapPrompt(text: string): string {
 IMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
 }
 
-function spawnClaude(id: string, state: AgentState, text: string): void {
-  const args: string[] = [];
+function spawnWithProvider(
+  id: string,
+  state: AgentState,
+  text: string,
+  provider: AgentProvider,
+  skipWrap?: boolean
+): void {
+  const prompt = skipWrap ? text : wrapPrompt(text);
+  const args = provider.getArgs(prompt);
+  const env = provider.getEnv();
 
-  // Non-interactive mode (TUI doesn't work via ConPTY on Windows)
-  args.push('-p');
-  args.push('--verbose');
-  args.push('--output-format', 'stream-json');
+  console.log(`[agent ${id.slice(0,6)}] spawning ${provider.name} (fresh session) prompt=${text.slice(0, 80)}...`);
 
-  // Skip permissions for autonomous operation
-  args.push('--dangerously-skip-permissions');
-
-  // Fresh session every time — no --resume
-  // Resuming causes context pollution from previous tasks
-
-  // The wrapped prompt
-  args.push(wrapPrompt(text));
-
-  console.log(`[agent ${id.slice(0,6)}] spawning claude (fresh session) prompt=${text.slice(0, 80)}...`);
-
-  const proc = pty.spawn(MINIMAX_CMD, args, {
+  const proc = pty.spawn(provider.command, args, {
     cwd: state.workingDirectory,
     cols: 1000,
     rows: 50,
-    env: getCleanEnv(),
+    env,
   } as any);
 
   state.activePty = proc;
@@ -448,7 +418,7 @@ function spawnClaude(id: string, state: AgentState, text: string): void {
   });
 }
 
-export function sendToAgent(id: string, text: string): void {
+export function sendToAgent(id: string, text: string, options?: { skipWrap?: boolean }): void {
   const state = agents.get(id);
   if (!state) return;
 
@@ -457,7 +427,8 @@ export function sendToAgent(id: string, text: string): void {
     state.activePty = null;
   }
 
-  spawnClaude(id, state, text);
+  const provider = getProvider(state.agentType);
+  spawnWithProvider(id, state, text, provider, options?.skipWrap);
 }
 
 export function interruptAgent(id: string): void {
@@ -485,9 +456,10 @@ export function restartAgent(
   name: string,
   onOutput: (id: string, chunk: string) => void,
   onExit: (id: string, code: number) => void,
+  agentType?: string,
 ): void {
   killAgent(id);
-  createAgent(id, workingDirectory, name, onOutput, onExit);
+  createAgent(id, workingDirectory, name, onOutput, onExit, agentType);
 }
 
 export function getAgentPid(id: string): number | null {

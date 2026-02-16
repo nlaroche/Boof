@@ -107,7 +107,7 @@ function fireScheduledPrompt(agent: Agent): void {
       broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
     };
 
-    createAgent(agent.id, agent.working_directory, agent.name, handleOutput, handleExit);
+    createAgent(agent.id, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
   }
 
   runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agent.id]);

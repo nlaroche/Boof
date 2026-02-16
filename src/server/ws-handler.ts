@@ -312,7 +312,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
           broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
         };
 
-        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
+        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
         broadcast({ type: 'agent:status', agentId, status: 'running' });
       }
       break;
@@ -573,7 +573,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             });
           };
 
-          ptyCreateAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
+          ptyCreateAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
         }
 
         runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);

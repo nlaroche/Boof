@@ -307,7 +307,8 @@ function runAgentStep(
   agentId: string,
   agent: Agent,
   prompt: string,
-  broadcast: (msg: WSServerMessage) => void
+  broadcast: (msg: WSServerMessage) => void,
+  options?: { skipWrap?: boolean }
 ): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     if (hasAgent(agentId)) {
@@ -324,8 +325,8 @@ function runAgentStep(
       resolve({ code, output });
     };
 
-    createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
-    sendToAgent(agentId, prompt);
+    createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type);
+    sendToAgent(agentId, prompt, { skipWrap: options?.skipWrap });
   });
 }
 
@@ -428,10 +429,16 @@ function createTaskForGoal(goalId: string, agentId: string, title: string, descr
 }
 
 function parseTasksFromOutput(output: string, goalId: string, agentId: string): number {
-  const lines = output.split('\n');
+  // Strip ANSI escape codes that ConPTY injects
+  const clean = output
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b./g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  const lines = clean.split('\n');
   let count = 0;
   for (const line of lines) {
-    const match = line.match(/^TASK:\s*([^|]+)\|(.+)$/);
+    const match = line.match(/TASK:\s*([^|]+)\|(.+)/);
     if (match) {
       const title = match[1].trim();
       const description = match[2].trim();
@@ -516,7 +523,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Planning phase: ask agent to create tasks
       broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Planning phase — decomposing goal into tasks...\n' });
       const planPrompt = buildPlanningPrompt(goal, memoryContext);
-      const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast);
+      const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast, { skipWrap: true });
 
       if (planResult.code === 0) {
         const taskCount = parseTasksFromOutput(planResult.output, goalId, agentId);
