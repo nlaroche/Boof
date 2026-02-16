@@ -281,7 +281,7 @@ export function AgentScreen({ onSend }: Props) {
           <div className="p-3 bg-[#14141f] border-t border-[#1e1e2e] shrink-0">
             <button
               onClick={handleNewChat}
-              className="w-full py-2.5 bg-[#1e1e2e] text-[#e2e2ef] rounded-lg text-sm active:bg-[#2e2e3e]"
+              className="w-full py-2.5 bg-[#7c5bf5] text-white rounded-lg text-sm font-medium active:bg-[#6b4ae4]"
             >
               + New Chat
             </button>

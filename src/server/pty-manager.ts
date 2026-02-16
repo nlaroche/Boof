@@ -160,12 +160,26 @@ function guessRelevantFiles(prompt: string, allFiles: string[], mentionedFiles: 
   return [...editable];
 }
 
-/** Use grep to find which files actually contain code related to the prompt.
- *  Much more reliable than keyword-matching filenames. */
+/** Select which files to load for editing based on the prompt.
+ *  Strategy: detect if it's a UI task → load client files. Server task → load server files.
+ *  Then use grep to narrow down to the most relevant ones. */
 function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): string[] {
   const hitFiles = new Set<string>();
+  const lower = prompt.toLowerCase();
 
-  // Always include types.ts and store.ts (frequently needed)
+  // Classify: is this a UI/client task or a server task?
+  const uiSignals = ['button', 'modal', 'header', 'footer', 'nav', 'input', 'chat', 'card',
+    'list', 'tab', 'menu', 'icon', 'title', 'form', 'screen', 'style', 'color', 'text',
+    'click', 'hover', 'pill', 'badge', 'label', 'font', 'padding', 'margin', 'rounded',
+    'status', 'agent', 'goal', 'task', 'home', 'history', 'conversation', 'message'];
+  const serverSignals = ['api', 'database', 'sql', 'query', 'route', 'endpoint', 'websocket',
+    'pty', 'spawn', 'process', 'cron', 'schedule', 'autopilot'];
+
+  const uiScore = uiSignals.filter(s => lower.includes(s)).length;
+  const serverScore = serverSignals.filter(s => lower.includes(s)).length;
+  const isUI = uiScore >= serverScore;
+
+  // Always include types.ts and store.ts
   for (const f of allFiles) {
     const base = path.basename(f).toLowerCase();
     if (base === 'types.ts' || base === 'store.ts') hitFiles.add(f);
@@ -175,22 +189,21 @@ function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): s
   const mentionedFiles = extractFilePaths(prompt, cwd);
   for (const f of mentionedFiles) hitFiles.add(f);
 
-  // Extract search terms from the prompt
-  const terms: string[] = [];
-  // Quoted strings
-  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
-  terms.push(...quoted);
-  // PascalCase identifiers (component names, class names)
-  const pascal = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
-  terms.push(...pascal);
-  // UI elements and common words → grep for their JSX usage
-  const uiWords = prompt.toLowerCase().match(/\b(?:button|modal|header|footer|nav|input|chat|card|list|tab|menu|icon|title|form|dialog|drawer|toggle|sidebar|toolbar|banner)\b/g) || [];
-  // Action words → grep for handlers
-  const actions = prompt.toLowerCase().match(/\b(?:remove|add|fix|change|move|hide|show|delete|update|replace|rename)\b/g) || [];
+  // If it's a UI task, include all client screens and components (they're small)
+  if (isUI) {
+    for (const f of allFiles) {
+      if (f.includes('src/client/screens/') || f.includes('src/client/components/')) {
+        hitFiles.add(f);
+      }
+    }
+  }
 
-  // Grep each term and collect which files have hits
-  const searchTerms = [...new Set([...quoted, ...pascal])];
-  for (const term of searchTerms.slice(0, 6)) {
+  // Grep for PascalCase identifiers and quoted strings
+  const pascal = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
+  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
+  const searchTerms = [...new Set([...pascal, ...quoted])];
+
+  for (const term of searchTerms.slice(0, 5)) {
     try {
       const escaped = term.replace(/"/g, '\\"').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const result = execSync(
@@ -205,36 +218,14 @@ function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): s
     } catch {}
   }
 
-  // Grep for UI element text in JSX (e.g., "New Chat", "header", "button")
-  // Combine UI words with nearby nouns from the prompt for specific searches
-  const promptWords = prompt.match(/\b[a-zA-Z]{3,20}\b/g) || [];
-  const specificPhrases = uiWords.flatMap(ui =>
-    promptWords.filter(w => w.toLowerCase() !== ui && !/^(the|and|for|that|this|with|from|its|should|would|could|please|want|like|just|also|remove|add|fix|change|dont|make)$/i.test(w))
-      .slice(0, 2)
-      .map(w => `${w}.*${ui}|${ui}.*${w}`)
-  );
-  for (const phrase of [...new Set(specificPhrases)].slice(0, 4)) {
-    try {
-      const result = execSync(
-        `git grep -l -i -E "${phrase}" -- "*.tsx"`,
-        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-      if (result) {
-        for (const f of result.split('\n').filter(Boolean)) {
-          if (allFiles.includes(f)) hitFiles.add(f);
-        }
-      }
-    } catch {}
-  }
-
-  // If still nothing, fall back to the old guessRelevantFiles approach
+  // If nothing specific found, fall back to old guess
   if (hitFiles.size <= 2) {
     const guessed = guessRelevantFiles(prompt, allFiles, mentionedFiles);
     for (const f of guessed) hitFiles.add(f);
   }
 
-  // Cap at 10 files to stay under context limits
-  return [...hitFiles].slice(0, 10);
+  // Cap at 12 files (screens + components is usually ~10-12 files)
+  return [...hitFiles].slice(0, 12);
 }
 
 /** Enrich a vague user prompt with specific file paths, line numbers, and grep results.
