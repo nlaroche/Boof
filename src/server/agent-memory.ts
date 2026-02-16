@@ -145,7 +145,7 @@ export function getMemoryContext(repoPath: string): string {
   const parts: string[] = [];
 
   if (memory.mistakes.length > 0) {
-    const recent = memory.mistakes.slice(-10);
+    const recent = memory.mistakes.slice(-5);
     parts.push('PAST MISTAKES (avoid these):');
     for (const m of recent) {
       parts.push(`- ${m.description}${m.fix ? ` → Fix: ${m.fix}` : ''}`);
