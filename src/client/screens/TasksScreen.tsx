@@ -57,6 +57,10 @@ export function TasksScreen({ onSend }: Props) {
     onSend({ type: 'folder:delete', folderId });
   };
 
+  const handleDeleteTask = (taskId: string) => {
+    onSend({ type: 'task:delete', taskId });
+  };
+
   return (
     <div className="min-h-full pb-20">
       <div className="p-4">
@@ -108,6 +112,7 @@ export function TasksScreen({ onSend }: Props) {
                     subtaskCount={subtasks.length}
                     doneSubtasks={doneSubtasks}
                     onToggle={handleToggle}
+                    onDelete={handleDeleteTask}
                   />
                 );
               })
@@ -133,5 +138,9 @@ export function TasksScreen({ onSend }: Props) {
         </div>
       )}
     </div>
+    <div className="fixed bottom-2 left-0 right-0 text-center">
+      <span className="text-xs text-[#4a4a5a]">Boof v1.0</span>
+    </div>
+  </div>
   );
 }
