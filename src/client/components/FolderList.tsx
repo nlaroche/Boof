@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import type { Folder, Task } from '../lib/types';
+import { DrawerModal } from './DrawerModal';
+import { Input, Button } from './ui';
 
 interface Props {
   folders: Folder[];
@@ -121,10 +123,10 @@ export function FolderList({
               onMouseDown={(e) => handleMouseDown(folder, e)}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              className={`p-3 rounded-xl text-left transition-colors border relative ${
+              className={`p-3 rounded-xl text-left transition-all duration-200 border relative ${
                 isSelected
-                  ? 'bg-[#1e1e2e] border-[#7c5bf5]'
-                  : 'bg-[#14141f] border-[#1e1e2e] active:bg-[#1e1e2e]'
+                  ? 'bg-[#1e1e2e] border-[#7c5bf5] shadow-lg shadow-[#7c5bf5]/10'
+                  : 'bg-[#14141f] border-[#1e1e2e] hover:border-[#3a3a4a] active:bg-[#1e1e2e]'
               }`}
             >
               <button
@@ -148,14 +150,12 @@ export function FolderList({
 
       {/* Edit Modal */}
       {editingFolder && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#14141f] border border-[#1e1e2e] rounded-xl w-full max-w-sm p-4">
-            <h3 className="text-lg font-semibold text-[#e2e2ef] mb-4">Edit Folder</h3>
-            <input
+        <DrawerModal open title="Edit Folder" onClose={() => setEditingFolder(null)}>
+            <Input
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               placeholder="Folder name"
-              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5] mb-3"
+              className="mb-3"
               autoFocus
             />
             <div className="mb-4">
@@ -175,53 +175,34 @@ export function FolderList({
               </div>
             </div>
             <div className="flex gap-2">
-              <button
-                onClick={() => setEditingFolder(null)}
-                className="flex-1 bg-[#1e1e2e] text-[#e2e2ef] py-2 rounded-lg"
-              >
+              <Button variant="secondary" onClick={() => setEditingFolder(null)} className="flex-1">
                 Cancel
-              </button>
-              <button
-                onClick={handleSaveEdit}
-                className="flex-1 bg-[#7c5bf5] text-white py-2 rounded-lg"
-              >
+              </Button>
+              <Button onClick={handleSaveEdit} className="flex-1">
                 Save
-              </button>
+              </Button>
             </div>
-          </div>
-        </div>
+        </DrawerModal>
       )}
 
       {/* Delete Confirmation Modal */}
       {deleteFolder && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
-          <div className="bg-[#14141f] border border-[#1e1e2e] rounded-xl w-full max-w-sm p-4">
-            <h3 className="text-lg font-semibold text-[#e2e2ef] mb-2">Delete Folder?</h3>
+        <DrawerModal open title="Delete Folder?" onClose={() => setDeleteFolder(null)}>
             <p className="text-sm text-[#6b6b80] mb-4">
               Delete "{deleteFolder.name}" and all its tasks? This cannot be undone.
             </p>
             <div className="flex gap-2">
-              <button
-                onClick={() => setDeleteFolder(null)}
-                className="flex-1 bg-[#1e1e2e] text-[#e2e2ef] py-2 rounded-lg"
-              >
+              <Button variant="secondary" onClick={() => setDeleteFolder(null)} className="flex-1">
                 Cancel
-              </button>
-              <button
-                onClick={handleEditFolder}
-                className="flex-1 bg-[#3b3b4f] text-[#e2e2ef] py-2 rounded-lg"
-              >
+              </Button>
+              <Button variant="secondary" onClick={() => { handleEditFolder(deleteFolder); }} className="flex-1">
                 Edit
-              </button>
-              <button
-                onClick={handleConfirmDelete}
-                className="flex-1 bg-[#ef4444] text-white py-2 rounded-lg"
-              >
+              </Button>
+              <Button variant="danger" onClick={handleConfirmDelete} className="flex-1">
                 Delete
-              </button>
+              </Button>
             </div>
-          </div>
-        </div>
+        </DrawerModal>
       )}
     </div>
   );

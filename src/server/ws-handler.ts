@@ -2,69 +2,31 @@ import { WebSocket, WebSocketServer } from 'ws';
 import type { Server } from 'http';
 import fs from 'fs';
 import path from 'path';
-import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
-import { createAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
-import { execSync } from 'child_process';
-import { triggerAutopilotRun } from './autopilot.js';
+import { exec, execSync } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
+import {
+  runQuery, getOne, getAll, generateId, getNow,
+  createTask, updateTask, deleteTask, reorderTask,
+  createFolder, updateFolder, deleteFolder,
+  createAgent as dbCreateAgent, updateAgent, deleteAgent, updateAgentStatus,
+  createGoal, updateGoal, deleteGoal,
+  createWorkflow, updateWorkflow, deleteWorkflow,
+  createCommand, updateCommand,
+  listTasks, listFolders, listAgents, listGoals, listWorkflows, listCommands,
+  listGoalLog, listAgentCommands, listAgentActivity,
+} from './db-helpers.js';
+import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
+import {
+  assessPerformance, identifyImprovements, awardXp,
+  getAgentImprovements, getAgentAssessments,
+  skipImprovement, markImprovementRunning,
+} from './self-improve.js';
+import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
+import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch } from './autopilot.js';
+import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary } from './git-utils.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
-
-/** Commit agent changes — only stages files the agent actually touched */
-function commitAgentChanges(workingDirectory: string, prompt: string, agentOutput: string): boolean {
-  try {
-    // Get all modified/untracked files in the repo
-    const statusOutput = execSync('git status --porcelain', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-    if (!statusOutput) return false;
-
-    // Extract files the agent touched from the output
-    const agentFiles = extractEditedFiles(agentOutput);
-
-    // Also get files from git diff that are in src/client or public (likely agent work)
-    // but exclude src/server (likely our infrastructure changes)
-    const allModified = statusOutput.split('\n')
-      .map(line => line.slice(3).trim())
-      .filter(f => f);
-
-    // If we detected specific agent files, only stage those + any new files in src/client/public
-    const filesToStage: string[] = [];
-    if (agentFiles.length > 0) {
-      for (const f of allModified) {
-        // Stage if it matches an agent-edited file
-        const isAgentFile = agentFiles.some(af => f.endsWith(af) || af.endsWith(f) || f.includes(af) || af.includes(f));
-        // Or if it's a new untracked file in src/client or public (agent likely created it)
-        const statusLine = statusOutput.split('\n').find(l => l.includes(f));
-        const isNewClientFile = statusLine?.startsWith('??') && (f.startsWith('src/client') || f.startsWith('public/'));
-        if (isAgentFile || isNewClientFile) {
-          filesToStage.push(f);
-        }
-      }
-    } else {
-      // Fallback: no detected files, stage everything except src/server
-      for (const f of allModified) {
-        if (!f.startsWith('src/server/')) {
-          filesToStage.push(f);
-        }
-      }
-    }
-
-    if (filesToStage.length === 0) return false;
-
-    for (const f of filesToStage) {
-      execSync(`git add "${f}"`, { cwd: workingDirectory, timeout: 5000 });
-    }
-
-    // Check if anything was actually staged
-    const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-    if (!staged) return false;
-
-    const msg = prompt.slice(0, 72).replace(/"/g, "'");
-    execSync(`git commit -m "agent: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
-    return true;
-  } catch {
-    return false;
-  }
-}
 const MAX_OUTPUT_BUFFER = 200; // lines per agent
 
 /** Parse files_changed from JSON string (SQLite stores it as TEXT) */
@@ -76,80 +38,6 @@ function parseCommand(cmd: Command): Command {
 }
 function parseCommands(cmds: Command[]): Command[] {
   return cmds.map(parseCommand);
-}
-
-/** Strip all ANSI escape codes from text */
-function stripAnsi(str: string): string {
-  return str
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b./g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-}
-
-/** Extract edited files from Claude Code stream-json parsed output */
-function extractEditedFiles(rawOutput: string): string[] {
-  const clean = stripAnsi(rawOutput);
-  const files: string[] = [];
-  for (const line of clean.split('\n')) {
-    const trimmed = line.trim();
-    // Our parsed output format: "✏️ Write src/foo.ts" or "✏️ Edit src/foo.ts"
-    const writeMatch = trimmed.match(/(?:✏️\s*(?:Write|Edit)|✅)\s+(\S+)/);
-    if (writeMatch) {
-      files.push(writeMatch[1].replace(/[,;]+$/, ''));
-    }
-    // Also match "Wrote to" / "Applied edit to" from raw Claude output
-    const rawMatch = trimmed.match(/(?:Wrote to|Applied edit to|Updated|Created|Edited)\s+(\S+)/);
-    if (rawMatch) {
-      files.push(rawMatch[1].replace(/[,;]+$/, ''));
-    }
-  }
-  return [...new Set(files)];
-}
-
-/** Generate a summary from Claude Code stream-json parsed output */
-function generateSummary(rawOutput: string, prompt: string): string {
-  const clean = stripAnsi(rawOutput);
-  const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-  const tail = lines.slice(-40);
-
-  const toolLines: string[] = [];
-  const descriptionLines: string[] = [];
-
-  for (const line of tail) {
-    // Track tool usage (our emoji format from parsed stream-json)
-    if (/^[📖✏️🔍💻🤖🔧📋❌✅]/.test(line)) {
-      toolLines.push(line);
-      continue;
-    }
-    // Skip noise and self-review markers
-    if (/^[─━═\-]{3,}$/.test(line)) continue;
-    if (/^---/.test(line)) continue;
-    if (/^===/.test(line)) continue;
-    if (line.startsWith('→')) continue;
-    if (line.includes('Self-review')) continue;
-    if (line.includes('Changes committed')) continue;
-    // Collect meaningful text lines
-    if (line.length > 10) {
-      descriptionLines.push(line);
-    }
-  }
-
-  const parts: string[] = [];
-
-  if (descriptionLines.length > 0) {
-    parts.push(descriptionLines.slice(-3).join(' ').slice(0, 300));
-  }
-
-  if (toolLines.length > 0) {
-    const uniqueTools = [...new Set(toolLines)];
-    parts.push(uniqueTools.slice(-5).join(', '));
-  }
-
-  if (parts.length > 0) return parts.join('\n').slice(0, 400);
-
-  const fallback = tail.slice(-5).join(' ').slice(0, 200);
-  return fallback || `Ran: ${prompt.slice(0, 100)}`;
 }
 
 interface ConnectedClient {
@@ -222,14 +110,7 @@ function send(ws: WebSocket, message: WSServerMessage): void {
   }
 }
 
-function generateId(): string {
-  const chars = 'abcdef0123456789';
-  let id = '';
-  for (let i = 0; i < 16; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
-}
+// generateId is imported from db-helpers
 
 function handleMessage(ws: WebSocket, message: WSClientMessage): void {
   switch (message.type) {
@@ -237,9 +118,9 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const id = generateId();
       const now = new Date().toISOString();
       runQuery(
-        `INSERT INTO tasks (id, folder_id, parent_task_id, title, description, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'todo', ?, ?)`,
-        [id, message.folderId, message.parentTaskId || null, message.title, message.description || '', now, now]
+        `INSERT INTO tasks (id, folder_id, parent_task_id, title, description, status, goal_id, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
+        [id, message.folderId, message.parentTaskId || null, message.title, message.description || '', message.goalId || null, now, now]
       );
       const task = getOne<Task>('SELECT * FROM tasks WHERE id = ?', [id]);
       if (task) {
@@ -273,6 +154,10 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         updates.push('folder_id = ?');
         values.push(fields.folder_id);
       }
+      if ((fields as any).goal_id !== undefined) {
+        updates.push('goal_id = ?');
+        values.push((fields as any).goal_id);
+      }
 
       if (updates.length > 0) {
         updates.push('updated_at = ?');
@@ -289,6 +174,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
     case 'task:delete': {
       runQuery('DELETE FROM tasks WHERE id = ?', [message.taskId]);
+      broadcast({ type: 'task:deleted', taskId: message.taskId });
       break;
     }
 
@@ -634,6 +520,47 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               }
             }
 
+            // ── Performance Assessment ──
+            const origCmdId = cmdId || currentCommandIds.get(id);
+            if (origCmdId) {
+              const startedCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [origCmdId]);
+              const durationMs = startedCmd?.started_at
+                ? new Date(finishedAt).getTime() - new Date(startedCmd.started_at).getTime()
+                : 0;
+              const retryInfo = retryState.get(id);
+              const retryCount = retryInfo?.count || 0;
+              const filesChanged = extractEditedFiles(rawTail);
+
+              const assessment = assessPerformance(id, origCmdId, {
+                retries: retryCount,
+                buildFailures: 0,
+                reviewIssues: 0,
+                filesTouched: filesChanged.length,
+                durationMs,
+                completedFully: succeeded,
+              });
+              broadcast({ type: 'agent:assessments', agentId: id, assessments: getAgentAssessments(id) });
+
+              // Award XP: 1 for completion, bonus for perfect scores
+              if (succeeded) {
+                const xpGain = assessment.score >= 90 ? 2 : 1;
+                const newXp = awardXp(id, xpGain);
+                broadcast({ type: 'agent:xp', agentId: id, xp: newXp });
+              }
+
+              // Async: identify improvements after agent goes idle
+              const assessId = assessment.id;
+              const assessScore = assessment.score;
+              setTimeout(() => {
+                const buf4 = agentOutputBuffers.get(id);
+                const fullRaw = buf4 ? buf4.join('\n') : '';
+                const improvements = identifyImprovements(id, assessId, fullRaw, prompt, assessScore, retryCount);
+                if (improvements.length > 0) {
+                  broadcast({ type: 'agent:improvements', agentId: id, improvements: getAgentImprovements(id) });
+                }
+              }, 500);
+            }
+
             const exitStatus = succeeded ? 'idle' : 'dead';
             runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, finishedAt, id]);
             broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
@@ -646,7 +573,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             });
           };
 
-          createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
+          ptyCreateAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
         }
 
         runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
@@ -806,12 +733,28 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const id = generateId();
       const now = new Date().toISOString();
       runQuery(
-        `INSERT INTO goals (id, name, description, status, priority, created_at, updated_at)
-         VALUES (?, ?, ?, 'active', 0, ?, ?)`,
-        [id, message.name, message.description || '', now, now]
+        `INSERT INTO goals (id, name, description, status, priority, repo_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`,
+        [id, message.name, message.description || '', message.repoId || null, now, now]
       );
       const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
       if (goal) {
+        broadcast({ type: 'goal:updated', goal });
+      }
+      break;
+    }
+
+    case 'goal:propose': {
+      const id = generateId();
+      const now = new Date().toISOString();
+      runQuery(
+        `INSERT INTO goals (id, name, description, status, priority, repo_id, proposed_by, proposal_status, created_at, updated_at)
+         VALUES (?, ?, ?, 'active', 0, ?, ?, 'pending', ?, ?)`,
+        [id, message.name, message.description || '', message.repoId || null, message.agentId, now, now]
+      );
+      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
+      if (goal) {
+        broadcast({ type: 'goal:proposed', goal, agentId: message.agentId });
         broadcast({ type: 'goal:updated', goal });
       }
       break;
@@ -837,6 +780,14 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       if (fields.priority !== undefined) {
         updates.push('priority = ?');
         values.push(fields.priority);
+      }
+      if (fields.repo_id !== undefined) {
+        updates.push('repo_id = ?');
+        values.push(fields.repo_id);
+      }
+      if ((fields as any).proposal_status !== undefined) {
+        updates.push('proposal_status = ?');
+        values.push((fields as any).proposal_status);
       }
 
       if (updates.length > 0) {
@@ -951,6 +902,86 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const rows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
       const workflows: Workflow[] = rows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
       send(ws, { type: 'workflow:list', workflows });
+      break;
+    }
+
+    case 'agent:self-improve': {
+      const { agentId, enabled } = message;
+      runQuery('UPDATE agents SET self_improve = ?, last_activity = ? WHERE id = ?', [enabled ? 1 : 0, new Date().toISOString(), agentId]);
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        broadcast({ type: 'agent:updated', agent });
+      }
+      break;
+    }
+
+    case 'agent:improvements': {
+      const improvements = getAgentImprovements(message.agentId);
+      send(ws, { type: 'agent:improvements', agentId: message.agentId, improvements });
+      break;
+    }
+
+    case 'agent:assessments': {
+      const assessments = getAgentAssessments(message.agentId);
+      send(ws, { type: 'agent:assessments', agentId: message.agentId, assessments });
+      break;
+    }
+
+    case 'improvement:skip': {
+      const imp = skipImprovement(message.improvementId);
+      if (imp) {
+        broadcast({ type: 'improvement:updated', improvement: imp });
+      }
+      break;
+    }
+
+    case 'improvement:execute': {
+      const { improvementId, agentId } = message;
+      const imp = markImprovementRunning(improvementId);
+      if (imp) {
+        broadcast({ type: 'improvement:updated', improvement: imp });
+        // Execute the improvement as a task sent to the agent
+        const agentData = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+        if (agentData && agentData.status === 'idle') {
+          // Send as a normal agent command - the improvement prompt
+          const prompt = `Self-improvement task: ${imp.description}\n\nMake minimal, focused changes. Run the build to verify.`;
+          handleMessage(ws, { type: 'agent:send', agentId, prompt });
+        }
+      }
+      break;
+    }
+
+    case 'agent:branches': {
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [message.agentId]);
+      if (agent) {
+        listAgentBranches(agent.working_directory).then(branches => {
+          send(ws, { type: 'agent:branches', agentId: message.agentId, branches });
+        });
+      }
+      break;
+    }
+
+    case 'agent:merge-branch': {
+      const { agentId, branchName } = message;
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        mergeAgentBranch(agent.working_directory, branchName).then(result => {
+          broadcast({ type: 'agent:branch-merged', agentId, branchName, success: result.success, output: result.output });
+        });
+      }
+      break;
+    }
+
+    case 'agent:discard-branch': {
+      const { agentId, branchName } = message;
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        execAsync(`git branch -D "${branchName}"`, { cwd: agent.working_directory, timeout: 30_000 })
+          .then(() => {
+            broadcast({ type: 'agent:branch-discarded', agentId, branchName });
+          })
+          .catch(() => {});
+      }
       break;
     }
 

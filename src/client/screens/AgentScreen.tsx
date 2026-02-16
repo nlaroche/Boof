@@ -1,10 +1,28 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useStore } from '../stores/store';
 import { CommandInput } from '../components/CommandInput';
+import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
 import { ansiToHtml } from '../lib/ansi';
 import { timeAgo } from '../lib/format';
-import type { WSClientMessage, Command, GoalLogEntry } from '../lib/types';
+import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment } from '../lib/types';
+import { getLevel, xpForLevel, XpBar, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from '../components/AgentWidget';
+
+const categoryColors: Record<string, string> = {
+  parser: 'bg-[#f59e0b]/20 text-[#f59e0b]',
+  prompt: 'bg-[#3b82f6]/20 text-[#3b82f6]',
+  build: 'bg-[#ef4444]/20 text-[#ef4444]',
+  workflow: 'bg-[#22c55e]/20 text-[#22c55e]',
+  general: 'bg-[#6b6b80]/20 text-[#6b6b80]',
+};
+
+const statusIcons: Record<string, string> = {
+  pending: '\u25CB',
+  running: '\u25D4',
+  completed: '\u2713',
+  skipped: '\u2014',
+  failed: '\u2717',
+};
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -19,6 +37,9 @@ export function AgentScreen({ onSend }: Props) {
   const commands = useStore((s) => s.commands);
   const clearOutput = useStore((s) => s.clearOutput);
   const agentActivity = useStore((s) => s.agentActivity);
+  const agentImprovements = useStore((s) => s.agentImprovements);
+  const agentAssessments = useStore((s) => s.agentAssessments);
+  const agentBranches = useStore((s) => s.agentBranches);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
@@ -34,10 +55,14 @@ export function AgentScreen({ onSend }: Props) {
   const { transcript, isListening, startListening, stopListening, resetTranscript, supported } = useSpeech();
 
   const activity = selectedAgentId ? (agentActivity[selectedAgentId] || []) : [];
+  const improvements = selectedAgentId ? (agentImprovements[selectedAgentId] || []) : [];
+  const assessments = selectedAgentId ? (agentAssessments[selectedAgentId] || []) : [];
+  const branches = selectedAgentId ? (agentBranches[selectedAgentId] || []) : [];
 
   // null = history list, 'live' = live output, string = viewing a past command
   const [viewing, setViewing] = useState<string | null>(null);
-  const [historyTab, setHistoryTab] = useState<'messages' | 'activity'>('messages');
+  const [historyTab, setHistoryTab] = useState<'messages' | 'experience' | 'branches'>('messages');
+  const [summaryCommandId, setSummaryCommandId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
   const lastScrollTop = useRef(0);
@@ -51,6 +76,9 @@ export function AgentScreen({ onSend }: Props) {
     if (selectedAgentId) {
       onSend({ type: 'agent:history', agentId: selectedAgentId, limit: 50 });
       onSend({ type: 'agent:activity', agentId: selectedAgentId, limit: 50 });
+      onSend({ type: 'agent:improvements', agentId: selectedAgentId });
+      onSend({ type: 'agent:assessments', agentId: selectedAgentId });
+      onSend({ type: 'agent:branches', agentId: selectedAgentId });
     }
   }, [selectedAgentId, onSend]);
 
@@ -120,19 +148,8 @@ export function AgentScreen({ onSend }: Props) {
     userScrolledUp.current = false;
   };
 
-  const statusColors: Record<string, string> = {
-    idle: 'bg-[#22c55e]/20 text-[#22c55e]',
-    running: 'bg-[#f59e0b]/20 text-[#f59e0b]',
-    error: 'bg-[#ef4444]/20 text-[#ef4444]',
-    dead: 'bg-[#6b6b80]/20 text-[#6b6b80]',
-  };
-
-  const statusLabels: Record<string, string> = {
-    idle: 'Idle',
-    running: 'Working...',
-    error: 'Error',
-    dead: 'Offline',
-  };
+  const statusColors = AGENT_STATUS_BADGE_COLORS;
+  const statusLabels = AGENT_STATUS_LABELS;
 
   const showHistory = viewing === null;
   const showLive = viewing === 'live';
@@ -187,19 +204,64 @@ export function AgentScreen({ onSend }: Props) {
               Messages
             </button>
             <button
-              onClick={() => setHistoryTab('activity')}
+              onClick={() => setHistoryTab('experience')}
               className={`flex-1 py-2 text-xs font-medium text-center ${
-                historyTab === 'activity'
+                historyTab === 'experience'
                   ? 'text-[#e2e2ef] border-b-2 border-[#7c5bf5]'
                   : 'text-[#6b6b80]'
               }`}
             >
-              Activity{activity.length > 0 ? ` (${activity.length})` : ''}
+              Experience{(agent.xp || 0) > 0 ? ` Lv.${getLevel(agent.xp || 0)}` : ''}
+            </button>
+            <button
+              onClick={() => {
+                setHistoryTab('branches');
+                onSend({ type: 'agent:branches', agentId: agent.id });
+              }}
+              className={`flex-1 py-2 text-xs font-medium text-center ${
+                historyTab === 'branches'
+                  ? 'text-[#e2e2ef] border-b-2 border-[#7c5bf5]'
+                  : 'text-[#6b6b80]'
+              }`}
+            >
+              Branches{branches.length > 0 ? ` (${branches.length})` : ''}
             </button>
           </div>
 
           <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0a0f]">
-            {historyTab === 'messages' ? (
+            {historyTab === 'branches' ? (
+              /* ===== BRANCHES TAB ===== */
+              branches.length === 0 ? (
+                <div className="text-center text-[#6b6b80] py-12">
+                  <div className="text-lg font-mono mb-2">---</div>
+                  <p>No agent branches</p>
+                  <p className="text-sm mt-1">Autopilot runs create branches for isolation</p>
+                </div>
+              ) : (
+                branches.map((branchName) => (
+                  <div
+                    key={branchName}
+                    className="px-4 py-3 border-b border-[#1e1e2e]"
+                  >
+                    <div className="text-xs text-[#e2e2ef] font-mono break-all mb-2">{branchName}</div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => onSend({ type: 'agent:merge-branch', agentId: agent.id, branchName })}
+                        className="text-xs px-3 py-1.5 bg-[#22c55e]/20 text-[#22c55e] rounded active:bg-[#22c55e]/30"
+                      >
+                        Merge
+                      </button>
+                      <button
+                        onClick={() => onSend({ type: 'agent:discard-branch', agentId: agent.id, branchName })}
+                        className="text-xs px-3 py-1.5 bg-[#ef4444]/20 text-[#ef4444] rounded active:bg-[#ef4444]/30"
+                      >
+                        Discard
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )
+            ) : historyTab === 'messages' ? (
               <>
                 {/* Live output entry */}
                 {(lines.length > 0 || isRunning) && (
@@ -225,7 +287,7 @@ export function AgentScreen({ onSend }: Props) {
                   sortedDesc.filter((c) => c.status !== 'running').map((cmd) => (
                     <button
                       key={cmd.id}
-                      onClick={() => setViewing(cmd.id)}
+                      onClick={() => setSummaryCommandId(cmd.id)}
                       className="w-full px-4 py-3 flex items-center gap-3 border-b border-[#1e1e2e] active:bg-[#14141f] text-left"
                     >
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -244,43 +306,93 @@ export function AgentScreen({ onSend }: Props) {
                 )}
               </>
             ) : (
-              /* ===== ACTIVITY TAB ===== */
-              activity.length === 0 ? (
-                <div className="text-center text-[#6b6b80] py-12">
-                  <div className="text-lg font-mono mb-2">---</div>
-                  <p>No activity yet</p>
-                  <p className="text-sm mt-1">Autopilot runs and workflow steps appear here</p>
-                </div>
-              ) : (
-                activity.map((entry) => (
-                  <div
-                    key={entry.id}
-                    className="px-4 py-3 border-b border-[#1e1e2e]"
-                  >
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-                        entry.success ? 'bg-[#22c55e]' : 'bg-[#ef4444]'
-                      }`} />
-                      <span className="text-xs font-medium text-[#e2e2ef]">{entry.action}</span>
-                      <span className="text-[10px] text-[#6b6b80] ml-auto shrink-0">{timeAgo(entry.created_at)}</span>
-                    </div>
-                    {entry.summary && (
-                      <p className="text-xs text-[#6b6b80] ml-3.5 break-words">{entry.summary}</p>
-                    )}
-                    <div className="flex items-center gap-3 ml-3.5 mt-1 text-[10px] text-[#6b6b80]">
-                      {entry.duration_ms > 0 && (
-                        <span>{(entry.duration_ms / 1000).toFixed(1)}s</span>
-                      )}
-                      {entry.cost_usd > 0 && (
-                        <span>${entry.cost_usd.toFixed(4)}</span>
-                      )}
-                      {entry.diff_stats && (
-                        <span className="truncate">{entry.diff_stats}</span>
-                      )}
+              /* ===== EXPERIENCE TAB ===== */
+              <div>
+                {/* XP Header */}
+                <div className="px-4 py-3 bg-[#14141f] border-b border-[#1e1e2e]">
+                  <div className="flex items-center justify-end mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-[#6b6b80]">Self-improve</span>
+                      <button
+                        onClick={() => onSend({ type: 'agent:self-improve', agentId: agent.id, enabled: !agent.self_improve })}
+                        className={`w-10 h-5 rounded-full relative transition-colors ${agent.self_improve ? 'bg-[#7c5bf5]' : 'bg-[#1e1e2e]'}`}
+                      >
+                        <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform ${agent.self_improve ? 'left-5' : 'left-0.5'}`} />
+                      </button>
                     </div>
                   </div>
-                ))
-              )
+                  <XpBar xp={agent.xp || 0} size="lg" />
+                </div>
+
+                {/* Improvements List */}
+                {improvements.length > 0 && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Improvements</div>
+                    {improvements.map((imp) => (
+                      <div key={imp.id} className="px-4 py-2.5 border-t border-[#1e1e2e]/50 flex items-start gap-2">
+                        <span className={`text-xs mt-0.5 shrink-0 ${
+                          imp.status === 'completed' ? 'text-[#22c55e]' :
+                          imp.status === 'failed' ? 'text-[#ef4444]' :
+                          imp.status === 'running' ? 'text-[#f59e0b]' :
+                          imp.status === 'skipped' ? 'text-[#6b6b80]' : 'text-[#e2e2ef]'
+                        }`}>{statusIcons[imp.status]}</span>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-xs text-[#e2e2ef] break-words">{imp.description}</div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded ${categoryColors[imp.category] || categoryColors.general}`}>{imp.category}</span>
+                            {imp.xp_awarded > 0 && <span className="text-[9px] text-[#7c5bf5]">+{imp.xp_awarded} XP</span>}
+                          </div>
+                        </div>
+                        {imp.status === 'pending' && (
+                          <div className="flex gap-1 shrink-0">
+                            <button
+                              onClick={() => onSend({ type: 'improvement:execute', improvementId: imp.id, agentId: agent.id })}
+                              className="text-[10px] px-2 py-1 bg-[#7c5bf5]/20 text-[#7c5bf5] rounded active:bg-[#7c5bf5]/30"
+                            >
+                              Run
+                            </button>
+                            <button
+                              onClick={() => onSend({ type: 'improvement:skip', improvementId: imp.id })}
+                              className="text-[10px] px-2 py-1 bg-[#1e1e2e] text-[#6b6b80] rounded active:bg-[#2e2e3e]"
+                            >
+                              Skip
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Assessment History */}
+                {assessments.length > 0 ? (
+                  <div>
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Assessment History</div>
+                    {assessments.map((a) => (
+                      <div key={a.id} className="px-4 py-2.5 border-t border-[#1e1e2e]/50 flex items-center gap-3">
+                        <div className={`text-sm font-bold ${
+                          a.score >= 90 ? 'text-[#22c55e]' :
+                          a.score >= 70 ? 'text-[#f59e0b]' : 'text-[#ef4444]'
+                        }`}>{a.score}</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 text-[10px] text-[#6b6b80]">
+                            {a.retries > 0 && <span>{a.retries} retries</span>}
+                            <span>{a.files_touched} files</span>
+                            {a.duration_ms > 0 && <span>{(a.duration_ms / 1000).toFixed(0)}s</span>}
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-[#6b6b80] shrink-0">{timeAgo(a.created_at)}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : improvements.length === 0 && (
+                  <div className="text-center text-[#6b6b80] py-12">
+                    <div className="text-lg font-mono mb-2">---</div>
+                    <p>No experience yet</p>
+                    <p className="text-sm mt-1">Complete tasks to earn XP</p>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
@@ -347,6 +459,19 @@ export function AgentScreen({ onSend }: Props) {
           </div>
         </>
       )}
+
+      {/* ===== TASK SUMMARY MODAL ===== */}
+      {summaryCommandId && (() => {
+        const cmd = agentCommands.find((c) => c.id === summaryCommandId);
+        if (!cmd) return null;
+        return (
+          <TaskSummaryModal
+            command={cmd}
+            onClose={() => setSummaryCommandId(null)}
+            onViewRaw={() => { setSummaryCommandId(null); setViewing(cmd.id); }}
+          />
+        );
+      })()}
 
       {/* ===== LIVE OUTPUT (bubbles) ===== */}
       {showLive && (

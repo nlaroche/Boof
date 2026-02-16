@@ -98,9 +98,21 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
           <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[#6b6b80]">
             {linkedRepo && <span className="text-[#7c5bf5]">{linkedRepo.name}</span>}
             {linkedAgents.length > 0 && <span>{linkedAgents.length} agent{linkedAgents.length !== 1 ? 's' : ''}</span>}
-            {linkedTasks.length > 0 && <span>{linkedTasks.length} task{linkedTasks.length !== 1 ? 's' : ''}</span>}
+            {linkedTasks.length > 0 && (() => {
+              const done = linkedTasks.filter((t: any) => t.status === 'done').length;
+              return <span>{done}/{linkedTasks.length} tasks done</span>;
+            })()}
             <span>{formatTime(goal.updated_at)}</span>
           </div>
+          {linkedTasks.length > 0 && (() => {
+            const done = linkedTasks.filter((t: any) => t.status === 'done').length;
+            const pct = Math.round((done / linkedTasks.length) * 100);
+            return (
+              <div className="mt-2 h-1 bg-[#1e1e2e] rounded-full overflow-hidden">
+                <div className="h-full bg-[#22c55e] rounded-full transition-all" style={{ width: `${pct}%` }} />
+              </div>
+            );
+          })()}
         </div>
         <span className="text-[#6b6b80] text-xs mt-1">{expanded ? '\u25B2' : '\u25BC'}</span>
       </div>

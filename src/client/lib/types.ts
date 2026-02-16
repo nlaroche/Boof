@@ -15,6 +15,8 @@ export interface Task {
   description: string;
   status: 'todo' | 'in_progress' | 'done' | 'archived';
   sort_order: number;
+  goal_id: string | null;
+  agent_generated: number;
   created_at: string;
   updated_at: string;
 }
@@ -33,6 +35,8 @@ export interface Agent {
   schedule_enabled: number;
   schedule_prompt: string;
   agent_type: string;
+  xp: number;
+  self_improve: number;
   autopilot: number;
   autopilot_interval: number;
   autopilot_goal_id: string | null;
@@ -49,6 +53,8 @@ export interface Goal {
   status: 'active' | 'paused' | 'completed';
   priority: number;
   repo_id: string | null;
+  proposed_by: string | null;
+  proposal_status: 'approved' | 'pending' | 'rejected' | null;
   created_at: string;
   updated_at: string;
 }
@@ -96,11 +102,38 @@ export interface Command {
   files_changed: string[];
 }
 
+export interface Assessment {
+  id: string;
+  agent_id: string;
+  command_id: string;
+  score: number;
+  retries: number;
+  build_failures: number;
+  review_issues: number;
+  files_touched: number;
+  duration_ms: number;
+  completed_fully: number;
+  improvements: string;
+  created_at: string;
+}
+
+export interface Improvement {
+  id: string;
+  agent_id: string;
+  assessment_id: string | null;
+  description: string;
+  category: 'parser' | 'prompt' | 'build' | 'workflow' | 'general';
+  status: 'pending' | 'running' | 'completed' | 'skipped' | 'failed';
+  xp_awarded: number;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types
 export type WSClientMessage =
-  | { type: 'task:create'; folderId: string; title: string; description?: string; parentTaskId?: string }
+  | { type: 'task:create'; folderId: string; title: string; description?: string; parentTaskId?: string; goalId?: string }
   | { type: 'task:update'; taskId: string; fields: Partial<Task> }
   | { type: 'task:delete'; taskId: string }
   | { type: 'task:reorder'; taskId: string; sortOrder: number }
@@ -123,6 +156,7 @@ export type WSClientMessage =
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
   | { type: 'goal:create'; name: string; description?: string; repoId?: string }
+  | { type: 'goal:propose'; agentId: string; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
   | { type: 'goal:list' }
@@ -130,7 +164,15 @@ export type WSClientMessage =
   | { type: 'workflow:create'; name: string; description?: string; steps: WorkflowStep[] }
   | { type: 'workflow:update'; workflowId: string; fields: Partial<Workflow> }
   | { type: 'workflow:delete'; workflowId: string }
-  | { type: 'workflow:list' };
+  | { type: 'workflow:list' }
+  | { type: 'agent:self-improve'; agentId: string; enabled: boolean }
+  | { type: 'agent:improvements'; agentId: string }
+  | { type: 'agent:assessments'; agentId: string }
+  | { type: 'improvement:skip'; improvementId: string }
+  | { type: 'improvement:execute'; improvementId: string; agentId: string }
+  | { type: 'agent:branches'; agentId: string }
+  | { type: 'agent:merge-branch'; agentId: string; branchName: string }
+  | { type: 'agent:discard-branch'; agentId: string; branchName: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -141,6 +183,7 @@ export type WSServerMessage =
   | { type: 'agent:summary'; agentId: string; commandId: string; summary: string; filesChanged: string[] }
   | { type: 'command:updated'; command: Command }
   | { type: 'task:updated'; task: Task }
+  | { type: 'task:deleted'; taskId: string }
   | { type: 'folder:updated'; folder: Folder }
   | { type: 'folder:deleted'; folderId: string }
   | { type: 'repos:list'; repos: RepoInfo[] }
@@ -148,13 +191,21 @@ export type WSServerMessage =
   | { type: 'agent:history'; agentId: string; commands: Command[] }
   | { type: 'agent:activity'; agentId: string; entries: GoalLogEntry[] }
   | { type: 'goal:updated'; goal: Goal }
+  | { type: 'goal:proposed'; goal: Goal; agentId: string; reason?: string }
   | { type: 'goal:deleted'; goalId: string }
   | { type: 'goal:list'; goals: Goal[] }
   | { type: 'goal:log'; goalId: string; entries: GoalLogEntry[] }
   | { type: 'goal:log:entry'; entry: GoalLogEntry }
   | { type: 'workflow:updated'; workflow: Workflow }
   | { type: 'workflow:deleted'; workflowId: string }
-  | { type: 'workflow:list'; workflows: Workflow[] };
+  | { type: 'workflow:list'; workflows: Workflow[] }
+  | { type: 'agent:improvements'; agentId: string; improvements: Improvement[] }
+  | { type: 'agent:assessments'; agentId: string; assessments: Assessment[] }
+  | { type: 'improvement:updated'; improvement: Improvement }
+  | { type: 'agent:xp'; agentId: string; xp: number }
+  | { type: 'agent:branches'; agentId: string; branches: string[] }
+  | { type: 'agent:branch-merged'; agentId: string; branchName: string; success: boolean; output: string }
+  | { type: 'agent:branch-discarded'; agentId: string; branchName: string };
 
 export interface RepoInfo {
   name: string;

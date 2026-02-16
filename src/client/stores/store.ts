@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
@@ -16,6 +16,9 @@ interface StoreState {
   goals: Goal[];
   goalLogs: Record<string, GoalLogEntry[]>;
   agentActivity: Record<string, GoalLogEntry[]>;
+  agentImprovements: Record<string, Improvement[]>;
+  agentAssessments: Record<string, Assessment[]>;
+  agentBranches: Record<string, string[]>;
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
@@ -32,6 +35,10 @@ interface StoreState {
   setGoalLog: (goalId: string, entries: GoalLogEntry[]) => void;
   addGoalLogEntry: (entry: GoalLogEntry) => void;
   setAgentActivity: (agentId: string, entries: GoalLogEntry[]) => void;
+  setAgentImprovements: (agentId: string, improvements: Improvement[]) => void;
+  updateImprovement: (improvement: Improvement) => void;
+  setAgentAssessments: (agentId: string, assessments: Assessment[]) => void;
+  setAgentBranches: (agentId: string, branches: string[]) => void;
   setWorkflows: (workflows: Workflow[]) => void;
   updateWorkflow: (workflow: Workflow) => void;
   removeWorkflow: (workflowId: string) => void;
@@ -39,6 +46,7 @@ interface StoreState {
   clearOutput: (agentId: string) => void;
   setAgentStatus: (agentId: string, status: AgentStatus) => void;
   updateTask: (task: Task) => void;
+  removeTask: (taskId: string) => void;
   updateFolder: (folder: Folder) => void;
   removeFolder: (folderId: string) => void;
   updateAgent: (agent: Agent) => void;
@@ -62,6 +70,9 @@ export const useStore = create<StoreState>((set) => ({
   goals: [],
   goalLogs: {},
   agentActivity: {},
+  agentImprovements: {},
+  agentAssessments: {},
+  agentBranches: {},
   workflows: [],
   activeOutputs: {},
   ui: {
@@ -123,6 +134,33 @@ export const useStore = create<StoreState>((set) => ({
       agentActivity: { ...state.agentActivity, [agentId]: entries },
     })),
 
+  setAgentImprovements: (agentId, improvements) =>
+    set((state) => ({
+      agentImprovements: { ...state.agentImprovements, [agentId]: improvements },
+    })),
+
+  updateImprovement: (improvement) =>
+    set((state) => {
+      const agentImps = state.agentImprovements[improvement.agent_id] || [];
+      const index = agentImps.findIndex((i) => i.id === improvement.id);
+      if (index >= 0) {
+        const updated = [...agentImps];
+        updated[index] = improvement;
+        return { agentImprovements: { ...state.agentImprovements, [improvement.agent_id]: updated } };
+      }
+      return { agentImprovements: { ...state.agentImprovements, [improvement.agent_id]: [improvement, ...agentImps] } };
+    }),
+
+  setAgentAssessments: (agentId, assessments) =>
+    set((state) => ({
+      agentAssessments: { ...state.agentAssessments, [agentId]: assessments },
+    })),
+
+  setAgentBranches: (agentId, branches) =>
+    set((state) => ({
+      agentBranches: { ...state.agentBranches, [agentId]: branches },
+    })),
+
   setWorkflows: (workflows) => set({ workflows }),
 
   updateWorkflow: (workflow) =>
@@ -182,6 +220,11 @@ export const useStore = create<StoreState>((set) => ({
       }
       return { tasks: [...state.tasks, task] };
     }),
+
+  removeTask: (taskId) =>
+    set((state) => ({
+      tasks: state.tasks.filter((t) => t.id !== taskId),
+    })),
 
   updateFolder: (folder) =>
     set((state) => {

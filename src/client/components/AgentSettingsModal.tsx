@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Drawer } from 'vaul';
 import * as Switch from '@radix-ui/react-switch';
 import * as Select from '@radix-ui/react-select';
 import type { Agent, WSClientMessage } from '../lib/types';
 import { ProfileSelector } from './ProfileSelector';
 import { useStore } from '../stores/store';
+import { DrawerModal } from './DrawerModal';
+import { Label, Input, Textarea, Button } from './ui';
 
 const AVAILABLE_SKILLS = [
   { id: 'commit', label: 'Commit', desc: 'Auto-commit changes' },
@@ -111,43 +112,29 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
   };
 
   return (
-    <Drawer.Root open onOpenChange={(open) => !open && onClose()} snapPoints={[0.85, 1]}>
-      <Drawer.Portal>
-        <Drawer.Overlay className="fixed inset-0 z-50" />
-        <Drawer.Content className="fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl outline-none">
-          {/* Drag handle */}
-          <div className="pt-3 pb-2">
-            <div className="mx-auto h-1 w-10 rounded-full bg-[#6b6b80]/40" />
-          </div>
-
-          <div className="overflow-y-auto max-h-[calc(95dvh-2rem)] px-4 pb-8">
-            <div className="flex items-center justify-between mb-4">
-              <Drawer.Title className="text-lg font-bold text-[#e2e2ef]">Agent Settings</Drawer.Title>
-              <button onClick={onClose} className="text-[#6b6b80] text-xl px-2">x</button>
-            </div>
-
+    <DrawerModal open title="Agent Settings" onClose={onClose} snapPoints={[0.85, 1]}>
             {/* Name */}
-            <label className="text-xs text-[#6b6b80] mb-1 block">Name</label>
-            <input
+            <Label>Name</Label>
+            <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-4 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]"
+              className="mb-4"
             />
 
             {/* Profile */}
-            <label className="text-xs text-[#6b6b80] mb-1.5 block">Profile</label>
+            <Label className="mb-1.5">Profile</Label>
             <div className="mb-4">
               <ProfileSelector selected={profileId} onSelect={setProfileId} />
             </div>
 
             {/* Instructions */}
-            <label className="text-xs text-[#6b6b80] mb-1 block">Instructions</label>
-            <textarea
+            <Label>Instructions</Label>
+            <Textarea
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
               placeholder="Custom system prompt for this agent..."
               rows={4}
-              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-4 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5] resize-none"
+              className="mb-4"
             />
 
             {/* Skills */}
@@ -285,31 +272,25 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
               ))}
             </div>
 
-            <input
+            <Input
               value={schedule}
               onChange={(e) => setSchedule(e.target.value)}
               placeholder="Cron expression (e.g. */5 * * * *)"
-              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5] font-mono"
+              className="mb-2 font-mono"
             />
 
-            <textarea
+            <Textarea
               value={schedulePrompt}
               onChange={(e) => setSchedulePrompt(e.target.value)}
               placeholder="Prompt to send when schedule fires..."
               rows={2}
-              className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-4 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5] resize-none"
+              className="mb-4"
             />
 
             {/* Save */}
-            <button
-              onClick={handleSave}
-              className="w-full bg-[#7c5bf5] text-white py-2.5 rounded-lg text-sm font-medium active:bg-[#6b4ae4] transition-colors"
-            >
+            <Button onClick={handleSave} className="w-full">
               Save Settings
-            </button>
-          </div>
-        </Drawer.Content>
-      </Drawer.Portal>
-    </Drawer.Root>
+            </Button>
+    </DrawerModal>
   );
 }

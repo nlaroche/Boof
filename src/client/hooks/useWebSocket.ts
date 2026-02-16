@@ -60,6 +60,9 @@ export function useWebSocket() {
           case 'task:updated':
             s.updateTask(msg.task);
             break;
+          case 'task:deleted':
+            s.removeTask(msg.taskId);
+            break;
           case 'folder:updated':
             s.updateFolder(msg.folder);
             break;
@@ -85,6 +88,9 @@ export function useWebSocket() {
           case 'goal:updated':
             s.updateGoal(msg.goal);
             break;
+          case 'goal:proposed':
+            s.updateGoal(msg.goal);
+            break;
           case 'goal:deleted':
             s.removeGoal(msg.goalId);
             break;
@@ -105,6 +111,34 @@ export function useWebSocket() {
             break;
           case 'workflow:list':
             s.setWorkflows(msg.workflows);
+            break;
+          case 'agent:improvements':
+            s.setAgentImprovements(msg.agentId, msg.improvements);
+            break;
+          case 'agent:assessments':
+            s.setAgentAssessments(msg.agentId, msg.assessments);
+            break;
+          case 'improvement:updated':
+            s.updateImprovement(msg.improvement);
+            break;
+          case 'agent:xp':
+            s.updateAgent({ ...s.agents.find((a) => a.id === msg.agentId)!, xp: msg.xp });
+            break;
+          case 'agent:branches':
+            s.setAgentBranches(msg.agentId, msg.branches);
+            break;
+          case 'agent:branch-merged':
+            if (msg.success) {
+              // Remove the merged branch from the list
+              const current = s.agentBranches[msg.agentId] || [];
+              s.setAgentBranches(msg.agentId, current.filter(b => b !== msg.branchName));
+            }
+            break;
+          case 'agent:branch-discarded':
+            {
+              const cur = s.agentBranches[msg.agentId] || [];
+              s.setAgentBranches(msg.agentId, cur.filter(b => b !== msg.branchName));
+            }
             break;
         }
       } catch {

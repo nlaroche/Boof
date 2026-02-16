@@ -79,6 +79,39 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'schedule_enabled', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'schedule_prompt', "TEXT DEFAULT ''");
   addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'minimax'");
+  addColumnIfMissing('agents', 'xp', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('agents', 'self_improve', 'INTEGER DEFAULT 0');
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS assessments (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      command_id TEXT NOT NULL,
+      score INTEGER DEFAULT 0,
+      retries INTEGER DEFAULT 0,
+      build_failures INTEGER DEFAULT 0,
+      review_issues INTEGER DEFAULT 0,
+      files_touched INTEGER DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      completed_fully INTEGER DEFAULT 1,
+      improvements TEXT DEFAULT '[]',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS improvements (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      assessment_id TEXT,
+      description TEXT NOT NULL,
+      category TEXT DEFAULT 'general',
+      status TEXT DEFAULT 'pending',
+      xp_awarded INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      completed_at TEXT
+    )
+  `);
 
   db.run(`
     CREATE TABLE IF NOT EXISTS commands (
@@ -158,6 +191,11 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'autopilot_goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('agents', 'autopilot_last_run', 'TEXT DEFAULT NULL');
   addColumnIfMissing('agents', 'workflow_id', 'TEXT DEFAULT NULL');
+
+  // Goal columns
+  addColumnIfMissing('goals', 'repo_id', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('goals', 'proposed_by', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('goals', 'proposal_status', 'TEXT DEFAULT NULL');
 
   // Goal linkage on tasks
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');

@@ -3,7 +3,8 @@ import { promisify } from 'util';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import type { Agent, Goal, GoalLogEntry, Workflow, WorkflowStep, WSServerMessage } from '../client/lib/types.js';
+import { initBoofDir, getMemoryContext, recordMistake, recordPattern } from './agent-memory.js';
+import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage } from '../client/lib/types.js';
 
 const execAsync = promisify(exec);
 
@@ -22,9 +23,133 @@ function generateId(): string {
   return id;
 }
 
-function buildAutopilotPrompt(goal: Goal, recentLogs: GoalLogEntry[], pendingTasks: { title: string; description: string }[]): string {
-  let prompt = `You are working autonomously on this goal: "${goal.name}"\n`;
-  prompt += `Description: ${goal.description || 'No description provided.'}\n\n`;
+// ── Branch-based isolation ──────────────────────────────────────────────
+
+async function getCurrentBranch(workingDirectory: string): Promise<string> {
+  try {
+    const { stdout } = await execAsync('git branch --show-current', {
+      cwd: workingDirectory,
+      timeout: 10_000,
+    });
+    return stdout.trim();
+  } catch {
+    return 'main';
+  }
+}
+
+function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+async function createAgentBranch(
+  workingDirectory: string,
+  agentName: string,
+  goalSlug: string
+): Promise<string> {
+  const timestamp = Date.now();
+  const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
+  await execAsync(`git checkout -b "${branchName}"`, {
+    cwd: workingDirectory,
+    timeout: 30_000,
+  });
+  console.log(`[autopilot] Created branch: ${branchName}`);
+  return branchName;
+}
+
+async function switchBack(workingDirectory: string, originalBranch: string): Promise<void> {
+  try {
+    await execAsync(`git checkout "${originalBranch}"`, {
+      cwd: workingDirectory,
+      timeout: 30_000,
+    });
+    console.log(`[autopilot] Switched back to: ${originalBranch}`);
+  } catch (err) {
+    console.error('[autopilot] Failed to switch back:', err);
+  }
+}
+
+async function discardAgentBranch(
+  workingDirectory: string,
+  branchName: string,
+  originalBranch: string
+): Promise<void> {
+  try {
+    // Make sure we're on the original branch before deleting
+    await execAsync(`git checkout "${originalBranch}"`, {
+      cwd: workingDirectory,
+      timeout: 30_000,
+    });
+    await execAsync(`git branch -D "${branchName}"`, {
+      cwd: workingDirectory,
+      timeout: 30_000,
+    });
+    console.log(`[autopilot] Discarded branch: ${branchName}`);
+  } catch (err) {
+    console.error('[autopilot] Failed to discard branch:', err);
+  }
+}
+
+/** List all agent branches for a given working directory */
+export async function listAgentBranches(workingDirectory: string): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync('git branch --list "agent/*"', {
+      cwd: workingDirectory,
+      timeout: 10_000,
+    });
+    return stdout
+      .split('\n')
+      .map(b => b.trim().replace(/^\*\s*/, ''))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** Merge an agent branch into the current branch */
+export async function mergeAgentBranch(
+  workingDirectory: string,
+  branchName: string
+): Promise<{ success: boolean; output: string }> {
+  try {
+    const { stdout, stderr } = await execAsync(
+      `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
+      { cwd: workingDirectory, timeout: 60_000 }
+    );
+    // Delete the branch after successful merge
+    await execAsync(`git branch -d "${branchName}"`, {
+      cwd: workingDirectory,
+      timeout: 10_000,
+    }).catch(() => {});
+    return { success: true, output: stdout + stderr };
+  } catch (err: any) {
+    // Abort the failed merge
+    await execAsync('git merge --abort', { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
+    return { success: false, output: err.stderr || err.stdout || String(err) };
+  }
+}
+
+// ── Prompts & Build ─────────────────────────────────────────────────────
+
+function buildAutopilotPrompt(
+  goal: Goal,
+  recentLogs: GoalLogEntry[],
+  pendingTasks: { title: string; description: string }[],
+  memoryContext: string
+): string {
+  let prompt = '';
+
+  // Memory context first
+  if (memoryContext) {
+    prompt += memoryContext;
+  }
+
+  prompt += `You are working autonomously on this goal: "${goal.name}"\n`;
+  prompt += `Description: ${goal.description || 'No description provided.'}\n`;
+  prompt += `IMPORTANT: Stay focused on this specific goal. Do not work on unrelated improvements.\n\n`;
 
   if (recentLogs.length > 0) {
     prompt += `Recent progress:\n`;
@@ -43,19 +168,42 @@ function buildAutopilotPrompt(goal: Goal, recentLogs: GoalLogEntry[], pendingTas
     prompt += '\n';
   }
 
-  prompt += `Research the codebase, pick the most impactful task, implement it, and test it.\n`;
-  prompt += `If no tasks exist, research the code and create new tasks.\n`;
-  prompt += `Keep your changes focused and testable.\n\n`;
-  prompt += `SELF-IMPROVEMENT: If you learn something from a failure or discover a better approach, `;
-  prompt += `update CLAUDE.md with the lesson. This helps future runs avoid the same issues.\n`;
-  prompt += `Examples: build quirks, import patterns, test setup, env requirements.`;
+  prompt += `RULES:\n`;
+  prompt += `1. Make SMALL, focused changes — edit 1-2 files max per run.\n`;
+  prompt += `2. After making changes, ALWAYS run the build: node node_modules/vite/bin/vite.js build\n`;
+  prompt += `   Do NOT use "npm run build" — vite is not in cmd.exe PATH on this Windows system.\n`;
+  prompt += `3. If the build fails, fix the errors before finishing.\n`;
+  prompt += `4. Keep your changes focused and testable.\n\n`;
 
+  if (pendingTasks.length === 0) {
+    prompt += `There are no pending tasks. Research the codebase and pick ONE small improvement related to the goal.\n`;
+    prompt += `Implement it, verify the build passes, and you're done.\n`;
+  } else {
+    prompt += `Pick the most impactful pending task, implement it, and verify the build passes.\n`;
+  }
+
+  return prompt;
+}
+
+function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
+  let prompt = '';
+  if (memoryContext) {
+    prompt += memoryContext;
+  }
+  prompt += `Analyze the codebase for goal: "${goal.name}"\n`;
+  prompt += `Description: ${goal.description || 'No description provided.'}\n\n`;
+  prompt += `Output exactly 3-5 concrete tasks as TASK: lines.\n`;
+  prompt += `Format: TASK: <title> | <description>\n`;
+  prompt += `Each task should be completable in one agent run (1-2 file changes).\n`;
+  prompt += `Be specific — name exact files and what to change.\n`;
+  prompt += `Do NOT implement anything — just plan.\n`;
   return prompt;
 }
 
 async function runBuildCheck(workingDirectory: string): Promise<{ success: boolean; output: string }> {
   try {
-    const { stdout, stderr } = await execAsync('npm run build', {
+    const buildCmd = 'node node_modules/vite/bin/vite.js build';
+    const { stdout, stderr } = await execAsync(buildCmd, {
       cwd: workingDirectory,
       timeout: 120_000,
       env: { ...process.env },
@@ -66,28 +214,11 @@ async function runBuildCheck(workingDirectory: string): Promise<{ success: boole
   }
 }
 
-async function revertToHead(workingDirectory: string, headBefore: string): Promise<void> {
-  if (!headBefore) {
-    console.error('[autopilot] No HEAD reference, cannot safely revert');
-    return;
-  }
-  try {
-    // Only revert to the state at headBefore, not a blanket checkout
-    // This preserves any pre-existing uncommitted changes
-    await execAsync(`git stash`, { cwd: workingDirectory, timeout: 30_000 });
-    await execAsync(`git reset --hard ${headBefore}`, { cwd: workingDirectory, timeout: 30_000 });
-    // Restore any stashed pre-existing changes
-    await execAsync(`git stash pop`, { cwd: workingDirectory, timeout: 30_000 }).catch(() => {});
-  } catch (err) {
-    console.error('[autopilot] Failed to revert changes:', err);
-  }
-}
-
-async function autoCommit(workingDirectory: string, summary: string): Promise<string> {
+async function autoCommit(workingDirectory: string, goalSlug: string, summary: string): Promise<string> {
   try {
     await execAsync('git add -A', { cwd: workingDirectory, timeout: 30_000 });
-    const msg = summary.slice(0, 200) || 'autopilot changes';
-    await execAsync(`git commit -m "${msg.replace(/"/g, '\\"')}"`, {
+    const msg = `agent(${goalSlug}): ${summary.slice(0, 150)}`.replace(/"/g, '\\"');
+    await execAsync(`git commit -m "${msg}"`, {
       cwd: workingDirectory,
       timeout: 30_000,
     });
@@ -101,18 +232,6 @@ async function autoCommit(workingDirectory: string, summary: string): Promise<st
   }
 }
 
-async function getGitHead(workingDirectory: string): Promise<string> {
-  try {
-    const { stdout } = await execAsync('git rev-parse HEAD', {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    });
-    return stdout.trim();
-  } catch {
-    return '';
-  }
-}
-
 function isSelfImprovement(workingDirectory: string): boolean {
   const projectRoot = process.cwd();
   const normalized = workingDirectory.replace(/\\/g, '/').toLowerCase();
@@ -120,7 +239,15 @@ function isSelfImprovement(workingDirectory: string): boolean {
   return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + '/');
 }
 
-function logToGoal(goalId: string, agentId: string, action: string, summary: string, diffStats: string, durationMs: number, success: boolean): void {
+function logToGoal(
+  goalId: string,
+  agentId: string,
+  action: string,
+  summary: string,
+  diffStats: string,
+  durationMs: number,
+  success: boolean
+): void {
   const broadcast = getBroadcast();
   const logId = generateId();
   const now = new Date().toISOString();
@@ -135,10 +262,8 @@ function logToGoal(goalId: string, agentId: string, action: string, summary: str
   }
 }
 
-/**
- * Run a single prompt through the agent PTY and wait for it to exit.
- * Returns the exit code.
- */
+// ── Agent Step ──────────────────────────────────────────────────────────
+
 function runAgentStep(
   agentId: string,
   agent: Agent,
@@ -146,7 +271,6 @@ function runAgentStep(
   broadcast: (msg: WSServerMessage) => void
 ): Promise<number> {
   return new Promise((resolve) => {
-    // Kill existing pty to get a fresh process for this step
     if (hasAgent(agentId)) {
       killAgent(agentId);
     }
@@ -164,16 +288,16 @@ function runAgentStep(
   });
 }
 
-/**
- * Execute a workflow: run each step in sequence with failure handling.
- */
+// ── Workflow Execution ──────────────────────────────────────────────────
+
 async function executeWorkflow(
   agentId: string,
   agent: Agent,
   workflow: Workflow,
   goal: Goal,
   broadcast: (msg: WSServerMessage) => void,
-  headBefore: string
+  branchName: string,
+  originalBranch: string
 ): Promise<{ success: boolean; summary: string }> {
   const steps = workflow.steps;
   const results: string[] = [];
@@ -190,7 +314,6 @@ async function executeWorkflow(
 
     while (attempts < maxAttempts) {
       attempts++;
-      // Interpolate the step prompt with goal context
       const fullPrompt = `${step.prompt}\n\nContext — Goal: "${goal.name}": ${goal.description || ''}`;
       const code = await runAgentStep(agentId, agent, fullPrompt, broadcast);
       stepSuccess = code === 0;
@@ -212,8 +335,9 @@ async function executeWorkflow(
         return { success: false, summary: `Workflow stopped at step "${step.name}"` };
       }
       if (step.on_fail === 'revert') {
-        await revertToHead(agent.working_directory, headBefore);
-        return { success: false, summary: `Step "${step.name}" failed — changes reverted` };
+        // With branch isolation, "revert" just means discard the branch
+        await discardAgentBranch(agent.working_directory, branchName, originalBranch);
+        return { success: false, summary: `Step "${step.name}" failed — branch discarded` };
       }
       // 'skip' — continue to next step
     }
@@ -221,6 +345,65 @@ async function executeWorkflow(
 
   return { success: true, summary: `Workflow "${workflow.name}" completed: ${results.join(', ')}` };
 }
+
+// ── Task Management ─────────────────────────────────────────────────────
+
+function getOrCreateGoalTasksFolder(): string {
+  const broadcast = getBroadcast();
+  const existing = getOne<any>("SELECT * FROM folders WHERE name = 'Goal Tasks'", []);
+  if (existing) return existing.id;
+
+  const id = generateId();
+  const now = new Date().toISOString();
+  runQuery(
+    `INSERT INTO folders (id, name, icon, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    [id, 'Goal Tasks', '\uD83C\uDFAF', now, now]
+  );
+  const folder = getOne<any>('SELECT * FROM folders WHERE id = ?', [id]);
+  if (folder) {
+    broadcast({ type: 'folder:updated', folder });
+  }
+  return id;
+}
+
+function createTaskForGoal(goalId: string, agentId: string, title: string, description: string): void {
+  const broadcast = getBroadcast();
+  const folderId = getOrCreateGoalTasksFolder();
+  const id = generateId();
+  const now = new Date().toISOString();
+
+  runQuery(
+    `INSERT INTO tasks (id, folder_id, title, description, status, goal_id, agent_generated, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'todo', ?, 1, ?, ?)`,
+    [id, folderId, title, description, goalId, now, now]
+  );
+
+  const task = getOne<any>('SELECT * FROM tasks WHERE id = ?', [id]);
+  if (task) {
+    broadcast({ type: 'task:updated', task });
+  }
+
+  logToGoal(goalId, agentId, 'task_created', `Created task: ${title}`, '', 0, true);
+}
+
+function parseTasksFromOutput(output: string, goalId: string, agentId: string): number {
+  const lines = output.split('\n');
+  let count = 0;
+  for (const line of lines) {
+    const match = line.match(/^TASK:\s*([^|]+)\|(.+)$/);
+    if (match) {
+      const title = match[1].trim();
+      const description = match[2].trim();
+      if (title) {
+        createTaskForGoal(goalId, agentId, title, description);
+        count++;
+      }
+    }
+  }
+  return count;
+}
+
+// ── Main Autopilot Run ──────────────────────────────────────────────────
 
 export async function triggerAutopilotRun(agentId: string): Promise<void> {
   if (runningAutopilots.has(agentId)) {
@@ -246,6 +429,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   const broadcast = getBroadcast();
   const selfImprovement = isSelfImprovement(agent.working_directory);
   const startTime = Date.now();
+  const goalSlug = slugify(goal.name);
 
   runningAutopilots.add(agentId);
 
@@ -259,7 +443,61 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     broadcast({ type: 'agent:updated', agent: updatedAgent });
   }
 
+  // Initialize memory directory
+  initBoofDir(agent.working_directory);
+  const memoryContext = getMemoryContext(agent.working_directory);
+
+  // Record current branch before creating agent branch
+  let originalBranch = '';
+  let agentBranch = '';
+
   try {
+    // ── Branch Isolation ──
+    if (selfImprovement) {
+      originalBranch = await getCurrentBranch(agent.working_directory);
+      agentBranch = await createAgentBranch(agent.working_directory, agent.name, goalSlug);
+      broadcast({
+        type: 'agent:output',
+        agentId,
+        chunk: `\n[autopilot] Working on branch: ${agentBranch}\n`,
+      });
+    }
+
+    // ── Task Decomposition: Plan if no pending tasks ──
+    const pendingTasks = getAll<{ id: string; title: string; description: string }>(
+      "SELECT id, title, description FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress') LIMIT 10",
+      [goalId]
+    );
+
+    if (pendingTasks.length === 0) {
+      // Planning phase: ask agent to create tasks
+      broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Planning phase — decomposing goal into tasks...\n' });
+      const planPrompt = buildPlanningPrompt(goal, memoryContext);
+      const planCode = await runAgentStep(agentId, agent, planPrompt, broadcast);
+
+      if (planCode === 0) {
+        // The agent output should contain TASK: lines — but they come through the PTY
+        // We log the planning action; task parsing happens from the agent output buffer
+        logToGoal(goalId, agentId, 'planning', 'Decomposed goal into tasks', '', Date.now() - startTime, true);
+      } else {
+        logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
+      }
+
+      // Clean up branch (planning doesn't produce code changes)
+      if (selfImprovement && agentBranch) {
+        await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+        agentBranch = '';
+      }
+
+      // Done for this run — next run will pick up the tasks
+      return;
+    }
+
+    // ── Implementation Phase ──
+    // Pick first pending task and mark it in_progress
+    const currentTask = pendingTasks[0];
+    runQuery("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+
     // Check if agent has a workflow assigned
     let workflowObj: Workflow | null = null;
     if (agent.workflow_id) {
@@ -274,64 +512,91 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     let diffStats = '';
 
     if (workflowObj && workflowObj.steps.length > 0) {
-      // Workflow mode: run steps sequentially
-      const headBefore = selfImprovement ? await getGitHead(agent.working_directory) : '';
-      const result = await executeWorkflow(agentId, agent, workflowObj, goal, broadcast, headBefore);
+      // Workflow mode
+      const result = await executeWorkflow(
+        agentId, agent, workflowObj, goal, broadcast, agentBranch, originalBranch
+      );
       success = result.success;
       summary = result.summary;
 
-      // Self-improvement safety gate after workflow
       if (selfImprovement) {
         const buildResult = await runBuildCheck(agent.working_directory);
         if (!buildResult.success) {
-          console.log(`[autopilot] Build failed for self-improvement after workflow, reverting`);
-          await revertToHead(agent.working_directory, headBefore);
+          console.log(`[autopilot] Build failed after workflow, discarding branch`);
+          const errSnippet = buildResult.output.slice(-500).trim();
+          recordMistake(agent.working_directory, `Build failed after workflow: ${errSnippet.slice(0, 200)}`, '');
+          if (agentBranch) {
+            await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+            agentBranch = '';
+          }
           success = false;
-          summary = 'Build failed after workflow — reverted';
+          summary = `Build failed after workflow — branch discarded.\nBuild error:\n${errSnippet}`;
         } else if (success) {
-          diffStats = await autoCommit(agent.working_directory, summary);
-          summary += ' (committed)';
+          diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          summary += ' (committed on branch)';
+          recordPattern(agent.working_directory, `Workflow "${workflowObj.name}" succeeded for goal "${goal.name}"`, 'autopilot');
         }
       }
     } else {
-      // Simple mode: single prompt run
+      // Simple mode: single prompt
       const recentLogs = getAll<GoalLogEntry>(
         'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT 5',
         [goalId]
       );
-      const pendingTasks = getAll<{ title: string; description: string }>(
-        "SELECT title, description FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress') LIMIT 10",
-        [goalId]
-      );
 
-      const prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks);
-      const headBefore = selfImprovement ? await getGitHead(agent.working_directory) : '';
+      // Build a task-focused prompt
+      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext);
+      prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
+      if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
 
       const code = await runAgentStep(agentId, agent, prompt, broadcast);
       success = code === 0;
-      summary = success ? 'Autopilot run completed' : `Autopilot run failed (exit code ${code})`;
+      summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${code})`;
 
-      // Self-improvement safety gate
+      // Safety gate for self-improvement
       if (selfImprovement && success) {
         const buildResult = await runBuildCheck(agent.working_directory);
         if (!buildResult.success) {
-          console.log(`[autopilot] Build failed for self-improvement, reverting`);
-          await revertToHead(agent.working_directory, headBefore);
+          console.log(`[autopilot] Build failed, discarding branch`);
+          const errSnippet = buildResult.output.slice(-500).trim();
+          recordMistake(agent.working_directory, `Build failed: ${errSnippet.slice(0, 200)}`, '');
+          if (agentBranch) {
+            await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+            agentBranch = '';
+          }
           success = false;
-          summary = 'Build failed after changes — reverted';
+          summary = `Build failed — branch discarded.\nBuild error:\n${errSnippet}`;
         } else {
-          diffStats = await autoCommit(agent.working_directory, summary);
-          summary = 'Self-improvement changes committed (build passed)';
+          diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          summary += ' (committed on branch)';
+          recordPattern(agent.working_directory, `Task "${currentTask.title}" succeeded`, 'autopilot');
         }
       }
     }
 
+    // Update task status
+    const taskStatus = success ? 'done' : 'todo';
+    runQuery("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", [taskStatus, new Date().toISOString(), currentTask.id]);
+
     const durationMs = Date.now() - startTime;
-    logToGoal(goalId, agentId, 'autopilot_run', summary, diffStats, durationMs, success);
+
+    // Log with branch info
+    const branchInfo = agentBranch ? ` [branch: ${agentBranch}]` : '';
+    logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success);
+
+    // Switch back to original branch (leave agent branch for merge/discard via UI)
+    if (selfImprovement && agentBranch && originalBranch) {
+      await switchBack(agent.working_directory, originalBranch);
+    }
 
   } catch (err: any) {
     console.error(`[autopilot] Error during run for agent ${agentId}:`, err);
     logToGoal(goalId, agentId, 'autopilot_run', `Error: ${err.message || err}`, '', Date.now() - startTime, false);
+
+    // Clean up: switch back to original branch on error
+    if (selfImprovement && agentBranch && originalBranch) {
+      await switchBack(agent.working_directory, originalBranch).catch(() => {});
+    }
   } finally {
     const finishedAt = new Date().toISOString();
     runQuery("UPDATE agents SET status = 'idle', last_activity = ? WHERE id = ?", [finishedAt, agentId]);
@@ -339,6 +604,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     runningAutopilots.delete(agentId);
   }
 }
+
+// ── Autopilot Loop ──────────────────────────────────────────────────────
 
 function checkAutopilotAgents(): void {
   const agents = getAll<Agent>(

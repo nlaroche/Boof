@@ -1,28 +1,7 @@
 import type { Agent, Command } from '../lib/types';
 import { timeAgo } from '../lib/format';
 import { useStore } from '../stores/store';
-
-const statusColors: Record<string, string> = {
-  idle: 'bg-[#22c55e]',
-  running: 'bg-[#f59e0b] animate-pulse',
-  error: 'bg-[#ef4444]',
-  dead: 'bg-[#6b6b80]',
-};
-
-const statusLabels: Record<string, string> = {
-  idle: 'Idle',
-  running: 'Working...',
-  error: 'Error',
-  dead: 'Offline',
-};
-
-// Deterministic portrait based on agent name
-function getPortrait(name: string): string {
-  const portraits = ['(^_^)', '(o_o)', '(>_<)', '(-_-)', '(~_~)', '(*_*)', '(._.)' , '(T_T)', '(u_u)', '(n_n)'];
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash + name.charCodeAt(i)) | 0;
-  return portraits[Math.abs(hash) % portraits.length];
-}
+import { AGENT_STATUS_COLORS, AGENT_STATUS_LABELS, getPortrait, XpBar } from './AgentWidget';
 
 export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: Command }) {
   const setActiveScreen = useStore((s) => s.setActiveScreen);
@@ -38,7 +17,7 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
   return (
     <button
       onClick={handleClick}
-      className="bg-[#14141f] border border-[#1e1e2e] rounded-xl p-3 text-left w-full active:bg-[#1e1e2e] transition-colors"
+      className="bg-[#14141f] border border-[#1e1e2e] rounded-xl p-3 text-left w-full active:bg-[#1e1e2e] transition-all duration-200 hover:border-[#7c5bf5]/30 hover:shadow-lg hover:shadow-[#7c5bf5]/5 active:scale-[0.98]"
     >
       <div className="flex items-start gap-3">
         {/* Portrait */}
@@ -54,9 +33,9 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
 
           {/* Status line */}
           <div className="flex items-center gap-1.5 mb-1">
-            <span className={`w-1.5 h-1.5 rounded-full ${statusColors[agent.status]}`} />
+            <span className={`w-1.5 h-1.5 rounded-full ${AGENT_STATUS_COLORS[agent.status]}`} />
             <span className="text-[11px] text-[#6b6b80]">
-              {statusLabels[agent.status]}
+              {AGENT_STATUS_LABELS[agent.status]}
               {agent.status !== 'running' && ` · ${timeAgo(agent.last_activity)}`}
             </span>
           </div>
@@ -72,6 +51,9 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
           )}
         </div>
       </div>
+
+      {/* XP bar */}
+      {(agent.xp || 0) > 0 && <XpBar xp={agent.xp || 0} size="sm" />}
 
       {/* Autopilot badge */}
       {agent.autopilot === 1 && (

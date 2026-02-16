@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useStore } from '../stores/store';
 import { FolderList } from '../components/FolderList';
 import { TaskItem } from '../components/TaskItem';
 import type { WSClientMessage, Folder } from '../lib/types';
+import { Input, Button, EmptyState } from '../components/ui';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -11,14 +12,29 @@ interface Props {
 export function TasksScreen({ onSend }: Props) {
   const folders = useStore((s) => s.folders);
   const tasks = useStore((s) => s.tasks);
+  const goals = useStore((s) => s.goals);
   const selectedFolderId = useStore((s) => s.ui.selectedFolderId);
   const setSelectedFolderId = useStore((s) => s.setSelectedFolderId);
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [showNewFolder, setShowNewFolder] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
+  const [filterGoalId, setFilterGoalId] = useState<string | null>(null);
+
+  // Build goal lookup map
+  const goalMap = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const g of goals) map[g.id] = g.name;
+    return map;
+  }, [goals]);
+
+  const activeGoals = goals.filter((g) => g.status === 'active');
 
   const folderTasks = selectedFolderId
-    ? tasks.filter((t) => t.folder_id === selectedFolderId && !t.parent_task_id)
+    ? tasks.filter((t) => {
+        if (t.folder_id !== selectedFolderId || t.parent_task_id) return false;
+        if (filterGoalId && t.goal_id !== filterGoalId) return false;
+        return true;
+      })
     : [];
 
   const handleToggle = (taskId: string, currentStatus: string) => {
@@ -35,6 +51,7 @@ export function TasksScreen({ onSend }: Props) {
       type: 'task:create',
       folderId: selectedFolderId,
       title: newTaskTitle.trim(),
+      goalId: filterGoalId || undefined,
     });
     setNewTaskTitle('');
   };
@@ -69,20 +86,17 @@ export function TasksScreen({ onSend }: Props) {
 
       {showNewFolder && (
         <div className="px-3 mb-3 flex gap-2">
-          <input
+          <Input
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
             placeholder="Folder name..."
-            className="flex-1 bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5]"
             onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
             autoFocus
+            className="flex-1"
           />
-          <button
-            onClick={handleCreateFolder}
-            className="bg-[#7c5bf5] text-white px-4 py-2 rounded-lg text-sm"
-          >
+          <Button onClick={handleCreateFolder} className="px-4">
             Add
-          </button>
+          </Button>
         </div>
       )}
 
@@ -98,9 +112,38 @@ export function TasksScreen({ onSend }: Props) {
 
       {selectedFolderId && (
         <div className="p-3">
+          {/* Goal filter pills */}
+          {activeGoals.length > 0 && (
+            <div className="flex gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-hide">
+              <button
+                onClick={() => setFilterGoalId(null)}
+                className={`px-3 py-1 rounded-full text-xs whitespace-nowrap shrink-0 ${
+                  !filterGoalId
+                    ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
+                    : 'bg-[#1e1e2e] text-[#6b6b80] border border-[#1e1e2e]'
+                }`}
+              >
+                All
+              </button>
+              {activeGoals.map((g) => (
+                <button
+                  key={g.id}
+                  onClick={() => setFilterGoalId(filterGoalId === g.id ? null : g.id)}
+                  className={`px-3 py-1 rounded-full text-xs whitespace-nowrap shrink-0 ${
+                    filterGoalId === g.id
+                      ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
+                      : 'bg-[#1e1e2e] text-[#6b6b80] border border-[#1e1e2e]'
+                  }`}
+                >
+                  {g.name}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="bg-[#14141f] rounded-xl border border-[#1e1e2e] overflow-hidden">
             {folderTasks.length === 0 ? (
-              <div className="p-4 text-center text-[#6b6b80] text-sm">No tasks yet</div>
+              <EmptyState icon="📋" title="No tasks yet" description="Add a task below to get started" />
             ) : (
               folderTasks.map((task) => {
                 const subtasks = tasks.filter((t) => t.parent_task_id === task.id);
@@ -111,6 +154,7 @@ export function TasksScreen({ onSend }: Props) {
                     task={task}
                     subtaskCount={subtasks.length}
                     doneSubtasks={doneSubtasks}
+                    goalName={task.goal_id ? goalMap[task.goal_id] : undefined}
                     onToggle={handleToggle}
                     onDelete={handleDeleteTask}
                   />
@@ -119,20 +163,20 @@ export function TasksScreen({ onSend }: Props) {
             )}
 
             <div className="flex gap-2 p-3 border-t border-[#1e1e2e]">
-              <input
+              <Input
                 value={newTaskTitle}
                 onChange={(e) => setNewTaskTitle(e.target.value)}
                 placeholder="Add a task..."
-                className="flex-1 bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5]"
                 onKeyDown={(e) => e.key === 'Enter' && handleAddTask()}
+                className="flex-1"
               />
-              <button
+              <Button
                 onClick={handleAddTask}
                 disabled={!newTaskTitle.trim()}
-                className="bg-[#7c5bf5] text-white px-3 py-2 rounded-lg text-sm disabled:opacity-40"
+                className="px-3"
               >
                 +
-              </button>
+              </Button>
             </div>
           </div>
         </div>
