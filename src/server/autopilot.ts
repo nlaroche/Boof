@@ -47,7 +47,7 @@ function buildAutopilotPrompt(goal: Goal, recentLogs: GoalLogEntry[], pendingTas
   prompt += `If no tasks exist, research the code and create new tasks.\n`;
   prompt += `Keep your changes focused and testable.\n\n`;
   prompt += `SELF-IMPROVEMENT: If you learn something from a failure or discover a better approach, `;
-  prompt += `update aider-conventions.md (or create it) with the lesson. This helps future runs avoid the same issues.\n`;
+  prompt += `update CLAUDE.md with the lesson. This helps future runs avoid the same issues.\n`;
   prompt += `Examples: build quirks, import patterns, test setup, env requirements.`;
 
   return prompt;

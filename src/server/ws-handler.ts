@@ -19,7 +19,7 @@ function commitAgentChanges(workingDirectory: string, prompt: string): boolean {
 
     execSync('git add -A', { cwd: workingDirectory, timeout: 5000 });
     const msg = prompt.slice(0, 72).replace(/"/g, "'");
-    execSync(`git commit -m "aider: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
+    execSync(`git commit -m "agent: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
     return true;
   } catch {
     return false;
@@ -47,12 +47,23 @@ function stripAnsi(str: string): string {
     .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 }
 
-/** Extract edited files from Aider output */
+/** Extract edited files from Claude Code output */
 function extractEditedFiles(rawOutput: string): string[] {
   const clean = stripAnsi(rawOutput);
   const files: string[] = [];
   for (const line of clean.split('\n')) {
     const trimmed = line.trim();
+    // Claude Code tool use patterns
+    if (trimmed.startsWith('[Tool: Write]') || trimmed.startsWith('[Tool: Edit]')) {
+      // Try to find the file path on nearby lines
+      continue;
+    }
+    // Match file paths in tool output (e.g., "Wrote to src/foo.ts")
+    const writeMatch = trimmed.match(/(?:Wrote to|Updated|Created|Edited)\s+(\S+)/);
+    if (writeMatch) {
+      files.push(writeMatch[1]);
+    }
+    // Also match "Applied edit to" for backwards compat
     if (trimmed.startsWith('Applied edit to ')) {
       files.push(trimmed.replace('Applied edit to ', '').trim());
     }
@@ -60,31 +71,24 @@ function extractEditedFiles(rawOutput: string): string[] {
   return [...new Set(files)];
 }
 
-/** Generate a summary from Aider output */
+/** Generate a summary from Claude Code output */
 function generateSummary(rawOutput: string, prompt: string): string {
   const clean = stripAnsi(rawOutput);
   const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
   const tail = lines.slice(-40);
 
-  // Extract structured info from Aider output
-  const commitLines: string[] = [];
-  const editedFiles: string[] = [];
+  const toolLines: string[] = [];
   const descriptionLines: string[] = [];
 
   for (const line of tail) {
-    if (line.startsWith('Commit ') || line.match(/^[a-f0-9]{7,} /)) {
-      commitLines.push(line);
-      continue;
-    }
-    if (line.startsWith('Applied edit to ')) {
-      editedFiles.push(line.replace('Applied edit to ', '').trim());
+    // Track tool usage
+    if (line.startsWith('[Tool:')) {
+      toolLines.push(line);
       continue;
     }
     // Skip noise
-    if (/^(Tokens|Cost|Model|Git repo|Repo-map|Use \/help)/i.test(line)) continue;
-    if (/tokens? [\d,]+/i.test(line)) continue;
     if (/^[─━═\-]{3,}$/.test(line)) continue;
-    if (line.startsWith('>')) continue;
+    if (/^\[.*\]$/.test(line) && line.length < 30) continue;
     // Collect meaningful lines
     if (line.length > 10) {
       descriptionLines.push(line);
@@ -93,24 +97,17 @@ function generateSummary(rawOutput: string, prompt: string): string {
 
   const parts: string[] = [];
 
-  // Description of what it did
   if (descriptionLines.length > 0) {
     parts.push(descriptionLines.slice(-3).join(' ').slice(0, 300));
   }
 
-  // Files changed
-  if (editedFiles.length > 0) {
-    parts.push(`Changed: ${editedFiles.map(f => path.basename(f)).join(', ')}`);
-  }
-
-  // Commit info
-  if (commitLines.length > 0) {
-    parts.push(commitLines[commitLines.length - 1]);
+  if (toolLines.length > 0) {
+    const uniqueTools = [...new Set(toolLines)];
+    parts.push(`Tools: ${uniqueTools.slice(-5).join(', ')}`);
   }
 
   if (parts.length > 0) return parts.join('\n').slice(0, 400);
 
-  // Last resort
   const fallback = tail.slice(-5).join(' ').slice(0, 200);
   return fallback || `Ran: ${prompt.slice(0, 100)}`;
 }
@@ -320,7 +317,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const now = new Date().toISOString();
       const name = message.name || 'Agent';
       const profileId = message.profileId || 'robot';
-      const agentType = 'aider';
+      const agentType = 'minimax';
 
       runQuery(
         `INSERT INTO agents (id, name, working_directory, profile_id, agent_type, status, created_at, last_activity)
@@ -498,7 +495,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             retryState.delete(id);
             let succeeded = code === 0 && !hasTestFailure;
 
-            // No-op detection: if Aider exited 0 but made no changes, it failed to do the task
+            // No-op detection: if agent exited 0 but made no changes, it failed to do the task
             if (succeeded && agent) {
               try {
                 const noopDiff = execSync('git diff --stat', { cwd: agent.working_directory, encoding: 'utf-8', timeout: 5000 }).trim();

@@ -3,8 +3,8 @@
 This is a personal PWA + Node server for controlling Claude Code from a phone.
 
 ## Stack
-- Server: Node.js, Express, ws, node-pty, better-sqlite3, tsx
-- Client: React 18, TypeScript, Vite, Tailwind CSS, Zustand, vite-plugin-pwa
+- Server: Node.js, Express 5, ws, node-pty, sql.js, tsx
+- Client: React 19, TypeScript, Vite, Tailwind CSS, Zustand, vite-plugin-pwa
 
 ## Key Rules
 - This is a single-user personal tool. No auth, no multi-tenancy.
@@ -24,6 +24,17 @@ This is a personal PWA + Node server for controlling Claude Code from a phone.
 - SQLite at ./boof.db
 - Schema in src/server/db.ts
 - Migrations are just CREATE IF NOT EXISTS (it's personal, keep it simple)
+
+## Windows Environment Notes
+- This runs on Windows (MSYS/Git Bash). Use Unix shell syntax in bash.
+- `node` is NOT in the system PATH for `cmd.exe` subprocesses.
+- npm postinstall scripts often fail — use `npm install --ignore-scripts` as fallback.
+- Use `node node_modules/tsx/dist/cli.mjs` to run tsx (not `npx tsx`).
+- Use `node node_modules/.bin/<tool>` if a locally installed npm binary isn't found.
+- Express 5 uses `/{*path}` for wildcard routes (NOT `*`).
+- sql.js is used instead of better-sqlite3 to avoid native compilation issues.
+- Static files are served from `dist/client`, resolved via `process.cwd()` (not `__dirname`).
+- Use `powershell -ExecutionPolicy Bypass -Command` for PowerShell commands from bash.
 
 ## Aider Orchestration
 - `aider-task.ps1` — Send tasks to Aider with conventions prepended

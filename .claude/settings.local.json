@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run dev)",
+      "Bash(npm install)",
+      "Bash(npm install --legacy-peer-deps)",
+      "Bash(npm install:*)",
+      "Bash(npx concurrently:*)",
+      "Bash(node node_modules/tsx/dist/cli.mjs:*)",
+      "Bash(node:*)"
+    ]
+  }
+}

@@ -1,13 +1,11 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
-import { execSync } from 'child_process';
-import fs from 'fs';
-import path from 'path';
 
 interface AgentState {
   activePty: IPty | null;
   workingDirectory: string;
   name: string;
+  sessionId: string | null;
   onOutput: (id: string, chunk: string) => void;
   onExit: (id: string, code: number) => void;
 }
@@ -15,9 +13,36 @@ interface AgentState {
 const agents: Map<string, AgentState> = new Map();
 const isWindows = process.platform === 'win32';
 
+// Path to the cc-mirror minimax native binary
+const MINIMAX_CMD = process.env.MINIMAX_CMD
+  || (isWindows
+    ? 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\native\\claude.exe'
+    : 'minimax');
+
 function getCleanEnv(): Record<string, string> {
   const env = { ...process.env } as Record<string, string>;
+  // Prevent nested Claude Code session errors
   delete env['CLAUDECODE'];
+  // cc-mirror pattern: unset auth token
+  delete env['ANTHROPIC_AUTH_TOKEN'];
+
+  // Point at the cc-mirror minimax config so the process uses MiniMax API
+  env['CLAUDE_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\config';
+  env['TWEAKCC_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\tweakcc';
+  env['DISABLE_AUTOUPDATER'] = '1';
+  env['DISABLE_AUTO_MIGRATE_TO_NATIVE'] = '1';
+  env['DISABLE_INSTALLATION_CHECKS'] = '1';
+
+  // MiniMax API settings (also in settings.json but set explicitly for safety)
+  env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
+  env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5';
+  env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5';
+  env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'MiniMax-M2.5';
+  env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = 'MiniMax-M2.5';
+  env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = 'MiniMax-M2.5';
+  env['API_TIMEOUT_MS'] = '3000000';
+  env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1';
+
   return env;
 }
 
@@ -36,6 +61,7 @@ export function createAgent(
     activePty: null,
     workingDirectory,
     name,
+    sessionId: null,
     onOutput,
     onExit,
   });
@@ -43,310 +69,88 @@ export function createAgent(
   console.log(`Agent ${id} registered (${name})`);
 }
 
-/** Get all git-tracked source files in the repo */
-function getSourceFiles(cwd: string): string[] {
+/**
+ * Strip ConPTY escape code noise from raw PTY data.
+ * ConPTY on Windows injects cursor movement, private mode, and OSC sequences
+ * into the output stream which corrupt JSON parsing.
+ */
+function stripPtyNoise(data: string): string {
+  return data
+    .replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, '')          // private mode set/reset
+    .replace(/\x1b\[[0-9]*[ABCDHJ]/g, '')               // cursor movement/erase
+    .replace(/\x1b\[[0-9;]*[Hf]/g, '')                   // cursor position
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')  // OSC sequences
+    .replace(/\x1b\[2J/g, '')                            // clear screen
+    .replace(/\x1b\[K/g, '')                             // erase to end of line
+    .replace(/\x1b\[[0-9;]*m/g, '')                      // ANSI color codes (strip for JSON)
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '')      // control chars (keep \n \r \t)
+    .replace(/\r+/g, '');                                // carriage returns
+}
+
+/**
+ * Parse a single stream-json line from Claude Code.
+ * Returns extracted text to display, or null if nothing to show.
+ */
+function parseStreamJsonLine(line: string): { text: string | null; sessionId: string | null } {
   try {
-    const output = execSync('git ls-files', { cwd, timeout: 10_000, encoding: 'utf-8' });
-    const sourceExts = ['.ts', '.tsx', '.js', '.jsx', '.css', '.json', '.md', '.html'];
-    return output.split('\n')
-      .map(f => f.trim())
-      .filter(f => f && sourceExts.some(ext => f.endsWith(ext)))
-      .filter(f => !f.includes('node_modules') && !f.includes('dist/'));
+    const obj = JSON.parse(line);
+
+    // Init message — capture session_id
+    if (obj.type === 'system' && obj.session_id) {
+      return { text: null, sessionId: obj.session_id };
+    }
+
+    // Assistant text (full message)
+    if (obj.type === 'assistant' && obj.message?.content) {
+      const parts = obj.message.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text);
+      if (parts.length > 0) return { text: parts.join(''), sessionId: null };
+    }
+
+    // Streaming text delta
+    if (obj.type === 'content_block_delta' && obj.delta?.type === 'text_delta') {
+      return { text: obj.delta.text, sessionId: null };
+    }
+
+    // Tool use — show what tool is being called
+    if (obj.type === 'content_block_start' && obj.content_block?.type === 'tool_use') {
+      return { text: `\n[Tool: ${obj.content_block.name}]\n`, sessionId: null };
+    }
+
+    // Tool result
+    if (obj.type === 'result' && obj.result) {
+      return { text: obj.result, sessionId: null };
+    }
+
+    return { text: null, sessionId: null };
   } catch {
-    return [];
+    return { text: null, sessionId: null };
   }
 }
 
-/** Find files explicitly mentioned in the prompt */
-function extractFilePaths(text: string, cwd: string): string[] {
-  const patterns = text.match(/(?:^|\s|`)([\w./-]+\.[\w]+)/g);
-  if (!patterns) return [];
-  const files: string[] = [];
-  for (const match of patterns) {
-    const candidate = match.trim().replace(/^`|`$/g, '');
-    const fullPath = path.resolve(cwd, candidate);
-    if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-      files.push(candidate);
-    }
-  }
-  return [...new Set(files)];
-}
-
-/** Guess which files the user's prompt is about so we can make them editable.
- *  Be SELECTIVE — too many files wastes context tokens. */
-function guessRelevantFiles(prompt: string, allFiles: string[], mentionedFiles: string[]): string[] {
-  const editable = new Set(mentionedFiles);
-  const lower = prompt.toLowerCase();
-
-  // Only match specific, meaningful keywords (4+ chars, no stop words)
-  const stopWords = new Set([
-    'the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'was', 'are',
-    'but', 'not', 'you', 'all', 'can', 'had', 'one', 'our', 'out', 'has', 'its',
-    'how', 'did', 'get', 'they', 'them', 'then', 'than', 'want', 'like', 'just',
-    'also', 'back', 'make', 'use', 'new', 'should', 'would', 'could', 'will',
-    'please', 'need', 'look', 'show', 'remove', 'delete', 'update', 'change',
-    'fix', 'create', 'button', 'screen', 'page', 'component', 'feature', 'file',
-    'function', 'instead', 'currently', 'only', 'local', 'cleanup', 'call',
-    'action', 'send', 'message', 'existing', 'reset', 'clear', 'view',
-    'does', 'exist', 'which', 'when', 'what', 'where', 'there', 'here',
-    'some', 'each', 'both', 'after', 'before', 'about', 'into', 'more',
-    'still', 'already', 'being', 'been', 'were', 'done', 'doing', 'same',
-  ]);
-
-  // Look for specific file/component names mentioned in the prompt
-  // Match patterns like "AgentScreen", "store.ts", "GoalCard", etc.
-  const fileNamePatterns = lower.match(/[a-z][a-z0-9]*(?:screen|card|modal|list|item|nav|input|output|selector|hook)/g) || [];
-  const directFileRefs = lower.match(/[a-z][a-z0-9_-]*\.(?:ts|tsx|css|js)/g) || [];
-
-  for (const file of allFiles) {
-    if (editable.has(file)) continue;
-    const fileLower = file.toLowerCase();
-    const basename = path.basename(fileLower, path.extname(fileLower)).toLowerCase();
-
-    // Match exact file references (e.g., "agentscreen.tsx" → AgentScreen.tsx)
-    for (const ref of directFileRefs) {
-      const refBase = ref.replace(/\.[^.]+$/, '').toLowerCase();
-      if (basename === refBase) {
-        editable.add(file);
-        break;
-      }
-    }
-
-    // Match component name patterns (e.g., "agentscreen" → AgentScreen.tsx)
-    for (const pattern of fileNamePatterns) {
-      if (basename === pattern || basename.includes(pattern)) {
-        editable.add(file);
-        break;
-      }
-    }
-  }
-
-  // If we found explicit files, also add types.ts and store.ts as editable
-  // (they're frequently needed for type definitions and state management)
-  if (editable.size > 0) {
-    const hasClientFiles = [...editable].some(f => f.includes('src/client'));
-    if (hasClientFiles) {
-      for (const file of allFiles) {
-        const base = path.basename(file).toLowerCase();
-        if (base === 'types.ts' || base === 'store.ts') {
-          editable.add(file);
-        }
-      }
-    }
-  }
-
-  // If NOTHING matched, fall back to a small set of likely files
-  if (editable.size === 0) {
-    // Try looser keyword matching as last resort, but only for 5+ char keywords
-    const keywords = lower.match(/[a-z]{5,}/g)?.filter(w => !stopWords.has(w)) || [];
-    for (const file of allFiles) {
-      const basename = path.basename(file, path.extname(file)).toLowerCase();
-      for (const kw of keywords) {
-        if (basename.includes(kw)) {
-          editable.add(file);
-          break;
-        }
-      }
-    }
-  }
-
-  // Hard cap: if still nothing, add types.ts only so Aider has something
-  if (editable.size === 0) {
-    for (const file of allFiles) {
-      if (file.endsWith('types.ts')) editable.add(file);
-    }
-  }
-
-  return [...editable];
-}
-
-/** Select which files to load for editing based on the prompt.
- *  Strategy: detect if it's a UI task → load client files. Server task → load server files.
- *  Then use grep to narrow down to the most relevant ones. */
-function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): string[] {
-  const hitFiles = new Set<string>();
-  const lower = prompt.toLowerCase();
-
-  // Classify: is this a UI/client task or a server task?
-  const uiSignals = ['button', 'modal', 'header', 'footer', 'nav', 'input', 'chat', 'card',
-    'list', 'tab', 'menu', 'icon', 'title', 'form', 'screen', 'style', 'color', 'text',
-    'click', 'hover', 'pill', 'badge', 'label', 'font', 'padding', 'margin', 'rounded',
-    'status', 'agent', 'goal', 'task', 'home', 'history', 'conversation', 'message'];
-  const serverSignals = ['api', 'database', 'sql', 'query', 'route', 'endpoint', 'websocket',
-    'pty', 'spawn', 'process', 'cron', 'schedule', 'autopilot'];
-
-  const uiScore = uiSignals.filter(s => lower.includes(s)).length;
-  const serverScore = serverSignals.filter(s => lower.includes(s)).length;
-  const isUI = uiScore >= serverScore;
-
-  // Always include types.ts and store.ts
-  for (const f of allFiles) {
-    const base = path.basename(f).toLowerCase();
-    if (base === 'types.ts' || base === 'store.ts') hitFiles.add(f);
-  }
-
-  // Extract explicit file paths mentioned in prompt
-  const mentionedFiles = extractFilePaths(prompt, cwd);
-  for (const f of mentionedFiles) hitFiles.add(f);
-
-  // If it's a UI task, include screens first (they have the main views), then components
-  if (isUI) {
-    // Screens first — they contain the page-level JSX
-    for (const f of allFiles) {
-      if (f.includes('src/client/screens/')) hitFiles.add(f);
-    }
-    // Then components
-    for (const f of allFiles) {
-      if (f.includes('src/client/components/')) hitFiles.add(f);
-    }
-    // Then hooks and lib
-    for (const f of allFiles) {
-      if (f.includes('src/client/hooks/') || f.includes('src/client/lib/')) hitFiles.add(f);
-    }
-  }
-
-  // Grep for PascalCase identifiers and quoted strings
-  const pascal = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
-  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
-  const searchTerms = [...new Set([...pascal, ...quoted])];
-
-  for (const term of searchTerms.slice(0, 5)) {
-    try {
-      const escaped = term.replace(/"/g, '\\"').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const result = execSync(
-        `git grep -l "${escaped}" -- "*.ts" "*.tsx"`,
-        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-      if (result) {
-        for (const f of result.split('\n').filter(Boolean)) {
-          if (allFiles.includes(f)) hitFiles.add(f);
-        }
-      }
-    } catch {}
-  }
-
-  // If nothing specific found, fall back to old guess
-  if (hitFiles.size <= 2) {
-    const guessed = guessRelevantFiles(prompt, allFiles, mentionedFiles);
-    for (const f of guessed) hitFiles.add(f);
-  }
-
-  // Cap at 15 files (6 screens + 8 components + types/store)
-  return [...hitFiles].slice(0, 15);
-}
-
-/** Enrich a vague user prompt with specific file paths, line numbers, and grep results.
- *  This transforms "remove the button" into "In AgentScreen.tsx (lines 154-159), remove..." */
-function enrichPrompt(prompt: string, editableFiles: string[], cwd: string): string {
-  const sections: string[] = [];
-
-  // 1. Extract search keywords from the prompt
-  const lower = prompt.toLowerCase();
-  // UI-related keywords to grep for
-  const uiKeywords: string[] = [];
-  const uiTerms = lower.match(/\b(?:button|modal|header|footer|nav|input|chat|screen|card|list|tab|menu|icon|label|title|form|dialog|drawer|toggle|switch|select)\b/g);
-  if (uiTerms) uiKeywords.push(...new Set(uiTerms));
-
-  // Quoted strings and specific identifiers
-  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
-  const identifiers = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
-  const allTerms = [...new Set([...quoted, ...identifiers])];
-
-  // 2. Grep for relevant code patterns in editable files
-  const grepHits: string[] = [];
-  for (const term of allTerms.slice(0, 5)) {
-    try {
-      const escaped = term.replace(/"/g, '\\"').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const result = execSync(
-        `git grep -n --max-count=3 "${escaped}" -- "*.ts" "*.tsx"`,
-        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-      if (result) grepHits.push(result);
-    } catch {}
-  }
-
-  // Also search for UI element text mentioned in the prompt
-  for (const kw of uiKeywords.slice(0, 3)) {
-    try {
-      const result = execSync(
-        `git grep -n -i "${kw}" -- "*.tsx"`,
-        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
-      ).trim();
-      if (result) {
-        // Only keep lines that seem relevant (JSX, className, onClick, etc.)
-        const relevant = result.split('\n')
-          .filter(l => /<|className|onClick|{.*}|text|label/i.test(l))
-          .slice(0, 5);
-        if (relevant.length > 0) grepHits.push(relevant.join('\n'));
-      }
-    } catch {}
-  }
-
-  if (grepHits.length > 0) {
-    const deduped = [...new Set(grepHits.join('\n').split('\n'))].slice(0, 20);
-    sections.push(`GREP RESULTS (where relevant code lives):\n${deduped.join('\n')}`);
-  }
-
-  // 3. List ALL source files so MiniMax knows what exists
-  try {
-    const allSrc = execSync('git ls-files -- "*.ts" "*.tsx"', { cwd, timeout: 5000, encoding: 'utf-8' })
-      .trim().split('\n')
-      .filter(f => f.startsWith('src/') && !f.includes('.d.ts'))
-      .join('\n');
-    sections.push(`ALL SOURCE FILES:\n${allSrc}`);
-  } catch {}
-
-  // 4. For each editable file, show a brief summary of what it contains
-  for (const file of editableFiles.slice(0, 5)) {
-    try {
-      const fullPath = path.resolve(cwd, file);
-      const content = fs.readFileSync(fullPath, 'utf-8');
-      const lineCount = content.split('\n').length;
-      // Extract exports and component/function names
-      const exports = content.match(/export (?:function|const|class|interface|type) \w+/g) || [];
-      sections.push(`FILE: ${file} (${lineCount} lines)\nExports: ${exports.join(', ') || 'none'}`);
-    } catch {}
-  }
-
-  if (sections.length === 0) return prompt;
-
-  const context = sections.join('\n\n');
-  const truncated = context.length > 4000 ? context.slice(0, 4000) + '\n...(truncated)' : context;
-
-  return `${prompt}\n\n--- CONTEXT (auto-generated) ---\n${truncated}\n--- END CONTEXT ---\n\nIMPORTANT: Edit the files that are loaded in the chat. Do NOT create new files unless the task explicitly asks for it. Use the grep results above to find the exact lines to modify.`;
-}
-
-function spawnAider(id: string, state: AgentState, text: string): void {
+function spawnClaude(id: string, state: AgentState, text: string): void {
   const args: string[] = [];
-  if (isWindows) {
-    args.push('/c', 'aider', '--yes-always');
-  } else {
-    args.push('--yes-always');
+
+  // Non-interactive mode (TUI doesn't work via ConPTY on Windows)
+  args.push('-p');
+  args.push('--verbose');
+  args.push('--output-format', 'stream-json');
+
+  // Skip permissions for autonomous operation
+  args.push('--dangerously-skip-permissions');
+
+  // Resume existing session to maintain conversation context
+  if (state.sessionId) {
+    args.push('--resume', state.sessionId);
   }
-  // Everything else (read, map-tokens, auto-test, auto-lint, stream, pretty,
-  // suggest-shell-commands, detect-urls, cache-prompts, auto-commits)
-  // is handled by .aider.conf.yml in the working directory
 
-  // Smart file selection: use grep to find which files contain relevant code
-  // Cap at 10 files to stay under 25k token context limit
-  const allFiles = getSourceFiles(state.workingDirectory);
-  const editableFiles = selectFilesFromGrep(text, allFiles, state.workingDirectory);
-  for (const f of editableFiles) {
-    args.push(f);
-  }
-  console.log(`[agent ${id.slice(0,6)}] ${editableFiles.length} editable files: ${editableFiles.map(f => path.basename(f)).join(', ')}`);
+  // The prompt
+  args.push(text);
 
-  // Enrich the prompt with grep results, file list, and "edit existing files" instruction
-  const enrichedPrompt = enrichPrompt(text, editableFiles, state.workingDirectory);
-  console.log(`[agent ${id.slice(0,6)}] prompt: ${enrichedPrompt.slice(0, 120)}...`);
+  console.log(`[agent ${id.slice(0,6)}] spawning claude: session=${state.sessionId || 'new'} prompt=${text.slice(0, 80)}...`);
 
-  args.push('--message', enrichedPrompt);
-
-  const shell = isWindows ? 'cmd.exe' : 'aider';
-
-  console.log(`[agent ${id.slice(0,6)}] spawning aider: ${args.join(' ').slice(0, 120)}...`);
-
-  const proc = pty.spawn(shell, args, {
+  const proc = pty.spawn(MINIMAX_CMD, args, {
     cwd: state.workingDirectory,
     cols: 200,
     rows: 50,
@@ -355,92 +159,77 @@ function spawnAider(id: string, state: AgentState, text: string): void {
 
   state.activePty = proc;
 
-  // Aider PTY output: strip terminal control sequences, debounce, send clean lines
-  let aiderBuffer = '';
+  // Buffer for accumulating partial JSON lines
+  let lineBuffer = '';
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
-  // Track recently sent content to suppress ConPTY re-renders
+  let pendingOutput = '';
   const recentlySent: string[] = [];
   const MAX_RECENT = 5;
 
-  const flushAider = () => {
+  const flushOutput = () => {
     flushTimer = null;
-    if (!aiderBuffer) return;
+    if (!pendingOutput) return;
 
-    // Strip PTY control sequences but keep ANSI color codes
-    let clean = aiderBuffer
-      .replace(/\x1b\[\?[0-9;]*[a-zA-Z]/g, '')   // private mode set/reset
-      .replace(/\x1b\[[0-9]*[ABCDHJ]/g, '')        // cursor movement/erase
-      .replace(/\x1b\[[0-9;]*[Hf]/g, '')            // cursor position
-      .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '') // OSC sequences
-      .replace(/\x1b\[2J/g, '')                     // clear screen
-      .replace(/\x1b\[K/g, '')                      // erase to end of line
-      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, '') // control chars (keep \n \r \t)
-      .replace(/\r+/g, '')                          // carriage returns
-      .replace(/\n{3,}/g, '\n\n');                  // collapse blank lines
-
-    // Skip if it's just whitespace or spinner noise
-    const stripped = clean.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const stripped = pendingOutput.trim();
     if (!stripped) {
-      aiderBuffer = '';
+      pendingOutput = '';
       return;
     }
-
-    // Skip noisy lines
-    const lines = stripped.split('\n').filter(l => l.trim());
-    const isNoise = lines.length > 0 && lines.every(l =>
-      /^[█░▓▒\s]*$/.test(l) ||
-      /Waiting for \S+/.test(l) ||
-      /Updating repo map/.test(l) ||
-      /^Repo-map:/.test(l) ||
-      /^Model:/.test(l) ||
-      /^Git repo:/.test(l) ||
-      /^Use \/help/.test(l) ||
-      /tokens? [\d,]+ (?:remaining|sent|cost)/i.test(l) ||
-      /^\s*$/.test(l)
-    );
-    if (isNoise) {
-      aiderBuffer = '';
-      return;
-    }
-
-    // Deduplicate consecutive identical lines within this chunk
-    const cleanLines = clean.split('\n');
-    const deduped: string[] = [];
-    for (const line of cleanLines) {
-      if (deduped.length === 0 || line !== deduped[deduped.length - 1]) {
-        deduped.push(line);
-      }
-    }
-    clean = deduped.join('\n');
-
-    // Suppress exact duplicate flushes (ConPTY re-renders same content)
+    // Suppress duplicate flushes (ConPTY re-renders)
     if (recentlySent.includes(stripped)) {
-      aiderBuffer = '';
+      pendingOutput = '';
       return;
     }
     recentlySent.push(stripped);
     if (recentlySent.length > MAX_RECENT) recentlySent.shift();
 
-    // Truncate very large chunks — keep the tail
-    if (clean.length > 4000) {
-      clean = '... (truncated)\n' + clean.slice(-4000);
+    let output = pendingOutput;
+    if (output.length > 4000) {
+      output = '... (truncated)\n' + output.slice(-4000);
     }
 
-    state.onOutput(id, clean);
-    aiderBuffer = '';
+    state.onOutput(id, output);
+    pendingOutput = '';
   };
 
   proc.onData((data) => {
-    aiderBuffer += data;
+    const clean = stripPtyNoise(data);
+    lineBuffer += clean;
+
+    // Process complete lines
+    const lines = lineBuffer.split('\n');
+    lineBuffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+
+      const { text, sessionId } = parseStreamJsonLine(trimmed);
+      if (sessionId && !state.sessionId) {
+        state.sessionId = sessionId;
+        console.log(`[agent ${id.slice(0,6)}] captured session: ${sessionId}`);
+      }
+      if (text) {
+        pendingOutput += text;
+      }
+    }
+
     if (flushTimer) clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushAider, 150);
+    flushTimer = setTimeout(flushOutput, 150);
   });
 
   proc.onExit(({ exitCode }) => {
-    if (flushTimer) clearTimeout(flushTimer);
-    flushAider();
+    // Process remaining buffer
+    if (lineBuffer.trim()) {
+      const { text, sessionId } = parseStreamJsonLine(lineBuffer.trim());
+      if (sessionId && !state.sessionId) state.sessionId = sessionId;
+      if (text) pendingOutput += text;
+    }
 
-    console.log(`[agent ${id.slice(0,6)}] aider exited code=${exitCode}`);
+    if (flushTimer) clearTimeout(flushTimer);
+    flushOutput();
+
+    console.log(`[agent ${id.slice(0,6)}] claude exited code=${exitCode}`);
     if (state.activePty === proc) {
       state.activePty = null;
     }
@@ -457,7 +246,7 @@ export function sendToAgent(id: string, text: string): void {
     state.activePty = null;
   }
 
-  spawnAider(id, state, text);
+  spawnClaude(id, state, text);
 }
 
 export function interruptAgent(id: string): void {
