@@ -69,12 +69,21 @@ async function createAgentBranch(
   agentName: string,
   goalSlug: string
 ): Promise<string> {
-  if (await hasUncommittedChanges(workingDirectory)) {
-    throw new Error('SAFETY: Cannot create agent branch — uncommitted changes would be lost');
+  // If there are uncommitted changes (e.g. from a failed previous run),
+  // stash them so the checkout doesn't fail or carry them over
+  const dirty = await hasUncommittedChanges(workingDirectory);
+  if (dirty) {
+    console.log('[autopilot] Stashing uncommitted changes before branching');
+    await execAsync('git stash --include-untracked', {
+      cwd: workingDirectory,
+      timeout: 30_000,
+    }).catch(() => {});
   }
+
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  await execAsync(`git checkout -b "${branchName}"`, {
+  // Always branch from main, regardless of current HEAD
+  await execAsync(`git checkout -b "${branchName}" main`, {
     cwd: workingDirectory,
     timeout: 30_000,
   });
@@ -87,48 +96,57 @@ async function createAgentBranch(
   if (actual !== branchName) {
     throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
   }
-  console.log(`[autopilot] Created branch: ${branchName}`);
+  console.log(`[autopilot] Created branch: ${branchName} (from main)`);
   return branchName;
 }
 
-async function switchBack(workingDirectory: string, originalBranch: string): Promise<void> {
-  try {
-    if (await hasUncommittedChanges(workingDirectory)) {
-      console.error('[autopilot] SAFETY: switchBack blocked — uncommitted changes would be lost. Staying on current branch.');
-      return;
-    }
-    await execAsync(`git checkout "${originalBranch}"`, {
-      cwd: workingDirectory,
-      timeout: 30_000,
-    });
-    console.log(`[autopilot] Switched back to: ${originalBranch}`);
-  } catch (err) {
-    console.error('[autopilot] Failed to switch back:', err);
-  }
+/** Abandon a failed branch — just log it, don't checkout or delete anything. */
+function abandonBranch(branchName: string, reason: string): void {
+  console.log(`[autopilot] Abandoning branch ${branchName}: ${reason}`);
+  // Branch stays in the repo. Can be cleaned up later via UI or gc sweep.
 }
 
-async function discardAgentBranch(
+/**
+ * Merge an agent branch into main, then return to the agent branch.
+ * This is the ONLY function that briefly touches main.
+ * If anything goes wrong, we abort and stay safe.
+ */
+async function mergeToMain(
   workingDirectory: string,
-  branchName: string,
-  originalBranch: string
-): Promise<void> {
+  branchName: string
+): Promise<{ success: boolean; output: string }> {
   try {
-    if (await hasUncommittedChanges(workingDirectory)) {
-      console.error('[autopilot] SAFETY: discardAgentBranch blocked — uncommitted changes would be lost. Leaving branch intact.');
-      return;
-    }
-    // Make sure we're on the original branch before deleting
-    await execAsync(`git checkout "${originalBranch}"`, {
+    // Commit any uncommitted agent work first so checkout is safe
+    await execAsync('git add -A && git diff --cached --quiet || git commit -m "WIP: uncommitted agent work"', {
+      cwd: workingDirectory,
+      timeout: 30_000,
+    }).catch(() => {}); // ignore if nothing to commit
+
+    // Briefly checkout main for the merge
+    await execAsync('git checkout main', {
       cwd: workingDirectory,
       timeout: 30_000,
     });
-    await execAsync(`git branch -D "${branchName}"`, {
+
+    const { stdout, stderr } = await execAsync(
+      `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
+      { cwd: workingDirectory, timeout: 60_000 }
+    );
+
+    // Delete the merged branch
+    await execAsync(`git branch -d "${branchName}"`, {
       cwd: workingDirectory,
-      timeout: 30_000,
-    });
-    console.log(`[autopilot] Discarded branch: ${branchName}`);
-  } catch (err) {
-    console.error('[autopilot] Failed to discard branch:', err);
+      timeout: 10_000,
+    }).catch(() => {});
+
+    // Stay on main after successful merge — next run creates a fresh branch from here
+    return { success: true, output: stdout + stderr };
+  } catch (err: any) {
+    // Abort failed merge
+    await execAsync('git merge --abort', { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
+    // Go back to the agent branch — don't leave the repo on main with a broken merge
+    await execAsync(`git checkout "${branchName}"`, { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
+    return { success: false, output: err.stderr || err.stdout || String(err) };
   }
 }
 
@@ -148,27 +166,12 @@ export async function listAgentBranches(workingDirectory: string): Promise<strin
   }
 }
 
-/** Merge an agent branch into the current branch */
+/** Merge an agent branch into main (called from UI) */
 export async function mergeAgentBranch(
   workingDirectory: string,
   branchName: string
 ): Promise<{ success: boolean; output: string }> {
-  try {
-    const { stdout, stderr } = await execAsync(
-      `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
-      { cwd: workingDirectory, timeout: 60_000 }
-    );
-    // Delete the branch after successful merge
-    await execAsync(`git branch -d "${branchName}"`, {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    }).catch(() => {});
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    // Abort the failed merge
-    await execAsync('git merge --abort', { cwd: workingDirectory, timeout: 10_000 }).catch(() => {});
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
+  return mergeToMain(workingDirectory, branchName);
 }
 
 // ── Prompts & Build ─────────────────────────────────────────────────────
@@ -306,13 +309,6 @@ async function autoCommit(workingDirectory: string, goalSlug: string, summary: s
   }
 }
 
-function isSelfImprovement(workingDirectory: string): boolean {
-  const projectRoot = process.cwd();
-  const normalized = workingDirectory.replace(/\\/g, '/').toLowerCase();
-  const normalizedRoot = projectRoot.replace(/\\/g, '/').toLowerCase();
-  return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + '/');
-}
-
 function logToGoal(
   goalId: string,
   agentId: string,
@@ -373,8 +369,7 @@ async function executeWorkflow(
   workflow: Workflow,
   goal: Goal,
   broadcast: (msg: WSServerMessage) => void,
-  branchName: string,
-  originalBranch: string
+  branchName: string
 ): Promise<{ success: boolean; summary: string }> {
   const steps = workflow.steps;
   const results: string[] = [];
@@ -412,9 +407,9 @@ async function executeWorkflow(
         return { success: false, summary: `Workflow stopped at step "${step.name}"` };
       }
       if (step.on_fail === 'revert') {
-        // With branch isolation, "revert" just means discard the branch
-        await discardAgentBranch(agent.working_directory, branchName, originalBranch);
-        return { success: false, summary: `Step "${step.name}" failed — branch discarded` };
+        // With branch isolation, "revert" just means abandon the branch
+        abandonBranch(branchName, `workflow step "${step.name}" failed`);
+        return { success: false, summary: `Step "${step.name}" failed — branch abandoned` };
       }
       // 'skip' — continue to next step
     }
@@ -510,7 +505,6 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   }
 
   const broadcast = getBroadcast();
-  const selfImprovement = isSelfImprovement(agent.working_directory);
   const startTime = Date.now();
   const goalSlug = slugify(goal.name);
 
@@ -530,34 +524,18 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   initBoofDir(agent.working_directory);
   const memoryContext = getMemoryContext(agent.working_directory);
 
-  // Record current branch before creating agent branch
-  let originalBranch = '';
   let agentBranch = '';
 
   try {
-    // ── Safety: refuse to run if working tree has uncommitted changes ──
-    // This prevents the autopilot's branch switching from destroying manual work
-    if (await hasUncommittedChanges(agent.working_directory)) {
-      console.log(`[autopilot] Working tree has uncommitted changes — skipping run to avoid data loss`);
-      logToGoal(goalId, agentId, 'autopilot_skipped', 'Skipped: uncommitted changes in working tree', '', 0, false);
-      runQuery("UPDATE agents SET status = 'idle', last_activity = ? WHERE id = ?", [new Date().toISOString(), agentId]);
-      broadcast({ type: 'agent:status', agentId, status: 'idle' });
-      runningAutopilots.delete(agentId);
-      return;
-    }
-
-    // ── Branch Isolation ──
-    // Always isolate on protected branches, even for non-self-improvement
-    originalBranch = await getCurrentBranch(agent.working_directory);
-    const needsBranchIsolation = selfImprovement || isProtectedBranch(originalBranch);
-    if (needsBranchIsolation) {
-      agentBranch = await createAgentBranch(agent.working_directory, agent.name, goalSlug);
-      broadcast({
-        type: 'agent:output',
-        agentId,
-        chunk: `\n[autopilot] Working on branch: ${agentBranch}\n`,
-      });
-    }
+    // ── Always create a feature branch from main ──
+    // The autopilot NEVER works directly on main. Every run gets its own branch.
+    // This makes it impossible for the autopilot to corrupt main or lose work.
+    agentBranch = await createAgentBranch(agent.working_directory, agent.name, goalSlug);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Working on branch: ${agentBranch}\n`,
+    });
 
     // ── Task Decomposition: Plan if no pending tasks ──
     const pendingTasks = getAll<{ id: string; title: string; description: string }>(
@@ -596,9 +574,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
       }
 
-      // Clean up branch (planning doesn't produce code changes)
-      if (needsBranchIsolation && agentBranch) {
-        await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+      // Planning doesn't produce code changes — abandon the branch
+      if (agentBranch) {
+        abandonBranch(agentBranch, 'planning-only run, no code changes');
         agentBranch = '';
       }
 
@@ -627,12 +605,12 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     if (workflowObj && workflowObj.steps.length > 0) {
       // Workflow mode
       const result = await executeWorkflow(
-        agentId, agent, workflowObj, goal, broadcast, agentBranch, originalBranch
+        agentId, agent, workflowObj, goal, broadcast, agentBranch
       );
       success = result.success;
       summary = result.summary;
 
-      if (needsBranchIsolation) {
+      {
         const buildPhaseStart = Date.now();
         console.log(`[perf:build] Starting build validation phase (workflow mode)`);
 
@@ -655,13 +633,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
 
           if (agentBranch) {
-            const discardStart = Date.now();
-            await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
-            console.log(`[perf:build] Discard branch: ${Date.now() - discardStart}ms`);
+            abandonBranch(agentBranch, `build failed after workflow: ${errSnippet.slice(0, 100)}`);
             agentBranch = '';
           }
           success = false;
-          summary = `Build failed after workflow — branch discarded.\nBuild error:\n${errSnippet}`;
+          summary = `Build failed after workflow — branch abandoned.\nBuild error:\n${errSnippet}`;
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
@@ -718,8 +694,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const implPhaseMs = Date.now() - implPhaseStart;
       console.log(`[perf:implementation] TOTAL: ${implPhaseMs}ms (db:${dbQueryMs}ms, prompt:${promptBuildMs}ms, agent:${agentStepMs}ms)`)
 
-      // Safety gate: build check + commit on agent branches
-      if (needsBranchIsolation && success) {
+      // Safety gate: build check + commit on agent branch
+      if (success) {
         const buildPhaseStart = Date.now();
         console.log(`[perf:build] Starting build validation phase`);
 
@@ -742,13 +718,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
 
           if (agentBranch) {
-            const discardStart = Date.now();
-            await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
-            console.log(`[perf:build] Discard branch: ${Date.now() - discardStart}ms`);
+            abandonBranch(agentBranch, `build failed: ${errSnippet.slice(0, 100)}`);
             agentBranch = '';
           }
           success = false;
-          summary = `Build failed — branch discarded.\nBuild error:\n${errSnippet}`;
+          summary = `Build failed — branch abandoned.\nBuild error:\n${errSnippet}`;
 
           const buildPhaseMs = Date.now() - buildPhaseStart;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
@@ -808,23 +782,23 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.error('[autopilot] Self-improve error:', err);
     }
 
-    // Auto-merge successful branches back to main
-    if (needsBranchIsolation && agentBranch && originalBranch) {
+    // Auto-merge successful branches into main
+    if (agentBranch) {
       if (success && diffStats) {
-        // Build passed, code committed — merge it
-        const mergeResult = await mergeAgentBranch(agent.working_directory, agentBranch);
+        // Build passed, code committed — merge into main
+        const mergeResult = await mergeToMain(agent.working_directory, agentBranch);
         if (mergeResult.success) {
-          console.log(`[autopilot] Auto-merged ${agentBranch} into ${originalBranch}`);
+          console.log(`[autopilot] Auto-merged ${agentBranch} into main`);
           logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch}`, '', 0, true);
-          agentBranch = ''; // Already deleted by mergeAgentBranch
+          agentBranch = '';
         } else {
           console.log(`[autopilot] Merge failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);
           logToGoal(goalId, agentId, 'merge_failed', `Merge conflict: ${mergeResult.output.slice(0, 150)}`, '', 0, false);
-          await switchBack(agent.working_directory, originalBranch);
+          // Stay on agent branch — don't lose work
         }
       } else {
-        // Failed or no changes — discard and switch back
-        await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+        // Failed or no changes — abandon (don't delete, don't checkout main)
+        abandonBranch(agentBranch, success ? 'no changes to merge' : 'implementation failed');
         agentBranch = '';
       }
     }
@@ -833,9 +807,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     console.error(`[autopilot] Error during run for agent ${agentId}:`, err);
     logToGoal(goalId, agentId, 'autopilot_run', `Error: ${err.message || err}`, '', Date.now() - startTime, false);
 
-    // Clean up: switch back to original branch on error
-    if (agentBranch && originalBranch) {
-      await switchBack(agent.working_directory, originalBranch).catch(() => {});
+    // On error, stay on agent branch — don't touch main
+    if (agentBranch) {
+      abandonBranch(agentBranch, `error: ${err.message || err}`);
     }
   } finally {
     const finishedAt = new Date().toISOString();
