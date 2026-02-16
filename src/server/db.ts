@@ -114,6 +114,17 @@ export async function initDb(): Promise<Database> {
   `);
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS xp_events (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      source TEXT DEFAULT 'autopilot',
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS commands (
       id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,

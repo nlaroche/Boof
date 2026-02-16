@@ -19,7 +19,7 @@ import {
 import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
-  getAgentImprovements, getAgentAssessments,
+  getAgentImprovements, getAgentAssessments, getAgentXpEvents,
   skipImprovement, markImprovementRunning,
 } from './self-improve.js';
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
@@ -544,8 +544,9 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               // Award XP: 1 for completion, bonus for perfect scores
               if (succeeded) {
                 const xpGain = assessment.score >= 90 ? 2 : 1;
-                const newXp = awardXp(id, xpGain);
-                broadcast({ type: 'agent:xp', agentId: id, xp: newXp });
+                const reason = `Command completed (score ${assessment.score})`;
+                const { newXp, event } = awardXp(id, xpGain, reason, 'command');
+                broadcast({ type: 'agent:xp', agentId: id, xp: newXp, event });
               }
 
               // Async: identify improvements after agent goes idle
@@ -924,6 +925,12 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     case 'agent:assessments': {
       const assessments = getAgentAssessments(message.agentId);
       send(ws, { type: 'agent:assessments', agentId: message.agentId, assessments });
+      break;
+    }
+
+    case 'agent:xp-events': {
+      const events = getAgentXpEvents(message.agentId);
+      send(ws, { type: 'agent:xp-events', agentId: message.agentId, events });
       break;
     }
 

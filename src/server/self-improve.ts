@@ -1,5 +1,5 @@
 import { runQuery, getOne, getAll } from './db.js';
-import type { Assessment, Improvement, Agent, Command } from '../client/lib/types.js';
+import type { Assessment, Improvement, Agent, Command, XpEvent } from '../client/lib/types.js';
 
 // ── XP & Leveling ──
 
@@ -123,12 +123,28 @@ export function identifyImprovements(
 
 // ── Award XP ──
 
-export function awardXp(agentId: string, amount: number): number {
+export function awardXp(agentId: string, amount: number, reason: string = 'Task completed', source: string = 'manual'): { newXp: number; event: XpEvent } {
   const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
-  if (!agent) return 0;
-  const newXp = (agent.xp || 0) + amount;
+  const oldXp = agent?.xp || 0;
+  const newXp = oldXp + amount;
   runQuery('UPDATE agents SET xp = ? WHERE id = ?', [newXp, agentId]);
-  return newXp;
+
+  const eventId = generateId();
+  const now = new Date().toISOString();
+  runQuery(
+    'INSERT INTO xp_events (id, agent_id, amount, reason, source, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    [eventId, agentId, amount, reason, source, now]
+  );
+
+  const event: XpEvent = { id: eventId, agent_id: agentId, amount, reason, source, created_at: now };
+  return { newXp, event };
+}
+
+export function getAgentXpEvents(agentId: string): XpEvent[] {
+  return getAll<XpEvent>(
+    'SELECT * FROM xp_events WHERE agent_id = ? ORDER BY created_at DESC LIMIT 100',
+    [agentId]
+  );
 }
 
 // ── Skip / Complete Improvement ──

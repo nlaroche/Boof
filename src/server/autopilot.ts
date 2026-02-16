@@ -528,15 +528,32 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
     if (pendingTasks.length === 0) {
       // Planning phase: ask agent to create tasks
+      const planPhaseStart = Date.now();
       broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Planning phase — decomposing goal into tasks...\n' });
+
+      const promptBuildStart = Date.now();
       const planPrompt = buildPlanningPrompt(goal, memoryContext);
+      const promptBuildMs = Date.now() - promptBuildStart;
+      console.log(`[perf:planning] Prompt build: ${promptBuildMs}ms`);
+
+      const agentStepStart = Date.now();
       const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast, { skipWrap: true });
+      const agentStepMs = Date.now() - agentStepStart;
+      console.log(`[perf:planning] Agent execution: ${agentStepMs}ms`);
 
       if (planResult.code === 0) {
         console.log(`[autopilot] Planning output (${planResult.output.length} chars):\n${planResult.output.slice(0, 2000)}`);
+        const parseStart = Date.now();
         const taskCount = parseTasksFromOutput(planResult.output, goalId, agentId);
+        const parseMs = Date.now() - parseStart;
+        console.log(`[perf:planning] Task parsing: ${parseMs}ms (${taskCount} tasks)`);
+
+        const planPhaseMs = Date.now() - planPhaseStart;
+        console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (prompt:${promptBuildMs}ms, agent:${agentStepMs}ms, parse:${parseMs}ms)`);
         logToGoal(goalId, agentId, 'planning', `Decomposed goal into ${taskCount} tasks`, '', Date.now() - startTime, true);
       } else {
+        const planPhaseMs = Date.now() - planPhaseStart;
+        console.log(`[perf:planning] TOTAL: ${planPhaseMs}ms (FAILED)`);
         logToGoal(goalId, agentId, 'planning', 'Planning failed', '', Date.now() - startTime, false);
       }
 
@@ -577,76 +594,144 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       summary = result.summary;
 
       if (needsBranchIsolation) {
+        const buildPhaseStart = Date.now();
+        console.log(`[perf:build] Starting build validation phase (workflow mode)`);
+
+        const buildCheckStart = Date.now();
         const buildResult = await runBuildCheck(agent.working_directory);
+        const buildCheckMs = Date.now() - buildCheckStart;
+        console.log(`[perf:build] Build check: ${buildCheckMs}ms (success: ${buildResult.success})`);
+
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed after workflow, discarding branch`);
           const errSnippet = buildResult.output.slice(-500).trim();
           const tsError = errSnippet.match(/(TS\d+:[^\n]+)/)?.[1] || '';
+
+          const recordMistakeStart = Date.now();
           recordMistake(
             agent.working_directory,
             `Build failed after workflow "${workflowObj.name}" for goal "${goal.name}"${tsError ? `: ${tsError}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsError ? 'Check types and imports before committing' : ''
           );
+          console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
+
           if (agentBranch) {
+            const discardStart = Date.now();
             await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+            console.log(`[perf:build] Discard branch: ${Date.now() - discardStart}ms`);
             agentBranch = '';
           }
           success = false;
           summary = `Build failed after workflow — branch discarded.\nBuild error:\n${errSnippet}`;
+
+          const buildPhaseMs = Date.now() - buildPhaseStart;
+          console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else if (success) {
+          const commitStart = Date.now();
           diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          const commitMs = Date.now() - commitStart;
+          console.log(`[perf:build] Auto-commit: ${commitMs}ms`);
+
           summary += ' (committed on branch)';
           const wfFiles = diffStats.split('\n').filter(l => l.includes('|')).map(l => l.trim().split(/\s+/)[0]).filter(Boolean);
+
+          const recordPatternStart = Date.now();
           recordPattern(
             agent.working_directory,
             `Workflow "${workflowObj.name}" succeeded for goal "${goal.name}"${wfFiles.length ? ` — modified ${wfFiles.join(', ')}` : ''}`,
             'autopilot'
           );
+          console.log(`[perf:build] Record pattern: ${Date.now() - recordPatternStart}ms`);
+
+          const buildPhaseMs = Date.now() - buildPhaseStart;
+          console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (check:${buildCheckMs}ms, commit:${commitMs}ms)`);
         }
       }
     } else {
       // Simple mode: single prompt
+      const implPhaseStart = Date.now();
+      console.log(`[perf:implementation] Starting implementation phase for: ${currentTask.title}`);
+
+      const dbQueryStart = Date.now();
       const recentLogs = getAll<GoalLogEntry>(
         'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT 5',
         [goalId]
       );
+      const dbQueryMs = Date.now() - dbQueryStart;
+      console.log(`[perf:implementation] DB query: ${dbQueryMs}ms`);
 
       // Build a task-focused prompt
+      const promptBuildStart = Date.now();
       let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId);
       prompt += `\n\nFOCUS ON THIS TASK: ${currentTask.title}`;
       if (currentTask.description) prompt += `\nDetails: ${currentTask.description}`;
+      const promptBuildMs = Date.now() - promptBuildStart;
+      console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
 
+      const agentStepStart = Date.now();
       const runResult = await runAgentStep(agentId, agent, prompt, broadcast);
+      const agentStepMs = Date.now() - agentStepStart;
+      console.log(`[perf:implementation] Agent execution: ${agentStepMs}ms (exit code: ${runResult.code})`);
+
       success = runResult.code === 0;
       summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${runResult.code})`;
 
+      const implPhaseMs = Date.now() - implPhaseStart;
+      console.log(`[perf:implementation] TOTAL: ${implPhaseMs}ms (db:${dbQueryMs}ms, prompt:${promptBuildMs}ms, agent:${agentStepMs}ms)`)
+
       // Safety gate: build check + commit on agent branches
       if (needsBranchIsolation && success) {
+        const buildPhaseStart = Date.now();
+        console.log(`[perf:build] Starting build validation phase`);
+
+        const buildCheckStart = Date.now();
         const buildResult = await runBuildCheck(agent.working_directory);
+        const buildCheckMs = Date.now() - buildCheckStart;
+        console.log(`[perf:build] Build check: ${buildCheckMs}ms (success: ${buildResult.success})`);
+
         if (!buildResult.success) {
           console.log(`[autopilot] Build failed, discarding branch`);
           const errSnippet = buildResult.output.slice(-500).trim();
           const tsErr = errSnippet.match(/(TS\d+:[^\n]+)/)?.[1] || '';
+
+          const recordMistakeStart = Date.now();
           recordMistake(
             agent.working_directory,
             `Build failed while working on "${currentTask.title}"${tsErr ? `: ${tsErr}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsErr ? 'Validate types before committing' : ''
           );
+          console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
+
           if (agentBranch) {
+            const discardStart = Date.now();
             await discardAgentBranch(agent.working_directory, agentBranch, originalBranch);
+            console.log(`[perf:build] Discard branch: ${Date.now() - discardStart}ms`);
             agentBranch = '';
           }
           success = false;
           summary = `Build failed — branch discarded.\nBuild error:\n${errSnippet}`;
+
+          const buildPhaseMs = Date.now() - buildPhaseStart;
+          console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else {
+          const commitStart = Date.now();
           diffStats = await autoCommit(agent.working_directory, goalSlug, summary);
+          const commitMs = Date.now() - commitStart;
+          console.log(`[perf:build] Auto-commit: ${commitMs}ms`);
+
           summary += ' (committed on branch)';
           const taskFiles = diffStats.split('\n').filter(l => l.includes('|')).map(l => l.trim().split(/\s+/)[0]).filter(Boolean);
+
+          const recordPatternStart = Date.now();
           recordPattern(
             agent.working_directory,
             `Completed: "${currentTask.title}"${taskFiles.length ? ` — modified ${taskFiles.join(', ')}` : ''}`,
             'autopilot'
           );
+          console.log(`[perf:build] Record pattern: ${Date.now() - recordPatternStart}ms`);
+
+          const buildPhaseMs = Date.now() - buildPhaseStart;
+          console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (check:${buildCheckMs}ms, commit:${commitMs}ms)`);
         }
       }
     }
