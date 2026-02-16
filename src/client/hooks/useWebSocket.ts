@@ -35,6 +35,9 @@ export function useWebSocket() {
             s.setAgents(msg.agents);
             s.setGoals(msg.goals);
             s.setWorkflows(msg.workflows);
+            if (msg.commands) {
+              s.setCommands(msg.commands);
+            }
             break;
           case 'agent:output':
             s.appendOutput(msg.agentId, msg.chunk);
@@ -52,13 +55,16 @@ export function useWebSocket() {
             s.setRepos(msg.repos);
             break;
           case 'agent:history':
-            s.setCommands(msg.commands);
+            s.mergeCommands(msg.agentId, msg.commands);
             break;
           case 'task:updated':
             s.updateTask(msg.task);
             break;
           case 'folder:updated':
             s.updateFolder(msg.folder);
+            break;
+          case 'command:updated':
+            s.upsertCommand(msg.command);
             break;
           case 'agent:summary':
             s.updateCommand(msg.commandId, {
@@ -69,6 +75,9 @@ export function useWebSocket() {
             break;
           case 'notify':
             // Could trigger browser notification here
+            break;
+          case 'agent:activity':
+            s.setAgentActivity(msg.agentId, msg.entries);
             break;
           case 'goal:updated':
             s.updateGoal(msg.goal);

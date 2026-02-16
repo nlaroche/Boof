@@ -1,11 +1,11 @@
 import { useStore } from '../stores/store';
 
 const tabs = [
-  { id: 'home' as const, label: 'Home', icon: '\u2302' },
-  { id: 'goals' as const, label: 'Goals', icon: '\u25CE' },
-  { id: 'tasks' as const, label: 'Tasks', icon: '\u2611' },
-  { id: 'agents' as const, label: 'Agents', icon: '\u2699' },
-  { id: 'history' as const, label: 'History', icon: '\u23F0' },
+  { id: 'home' as const, label: 'Home', icon: '~' },
+  { id: 'goals' as const, label: 'Goals', icon: '*' },
+  { id: 'tasks' as const, label: 'Tasks', icon: '#' },
+  { id: 'agents' as const, label: 'Agents', icon: '>' },
+  { id: 'history' as const, label: 'History', icon: '%' },
 ];
 
 export function BottomNav() {
@@ -13,7 +13,7 @@ export function BottomNav() {
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   return (
-    <nav className="fixed bottom-0 left-0 right-0 bg-[#14141f] border-t border-[#1e1e2e] pb-[env(safe-area-inset-bottom)] z-50">
+    <nav className="bg-[#14141f] border-t border-[#1e1e2e] pb-[env(safe-area-inset-bottom)] z-50 shrink-0">
       <div className="flex justify-around items-center h-16">
         {tabs.map((tab) => (
           <button
@@ -25,7 +25,7 @@ export function BottomNav() {
                 : 'text-[#6b6b80] active:text-[#e2e2ef]'
             }`}
           >
-            <span className="text-xl">{tab.icon}</span>
+            <span className="text-base font-mono leading-none">{tab.icon}</span>
             <span className="text-xs mt-0.5">{tab.label}</span>
           </button>
         ))}

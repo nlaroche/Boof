@@ -5,10 +5,104 @@ import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
 import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
 import { createAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
+import { execSync } from 'child_process';
 import { triggerAutopilotRun } from './autopilot.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
+
+/** Commit any uncommitted changes in the agent's working directory */
+function commitAgentChanges(workingDirectory: string, prompt: string): boolean {
+  try {
+    const diff = execSync('git diff --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    if (!diff && !staged) return false; // nothing to commit
+
+    execSync('git add -A', { cwd: workingDirectory, timeout: 5000 });
+    const msg = prompt.slice(0, 72).replace(/"/g, "'");
+    execSync(`git commit -m "aider: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 const MAX_OUTPUT_BUFFER = 200; // lines per agent
+
+/** Strip all ANSI escape codes from text */
+function stripAnsi(str: string): string {
+  return str
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1b./g, '')
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+}
+
+/** Extract edited files from Aider output */
+function extractEditedFiles(rawOutput: string): string[] {
+  const clean = stripAnsi(rawOutput);
+  const files: string[] = [];
+  for (const line of clean.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('Applied edit to ')) {
+      files.push(trimmed.replace('Applied edit to ', '').trim());
+    }
+  }
+  return [...new Set(files)];
+}
+
+/** Generate a summary from Aider output */
+function generateSummary(rawOutput: string, prompt: string): string {
+  const clean = stripAnsi(rawOutput);
+  const lines = clean.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  const tail = lines.slice(-40);
+
+  // Extract structured info from Aider output
+  const commitLines: string[] = [];
+  const editedFiles: string[] = [];
+  const descriptionLines: string[] = [];
+
+  for (const line of tail) {
+    if (line.startsWith('Commit ') || line.match(/^[a-f0-9]{7,} /)) {
+      commitLines.push(line);
+      continue;
+    }
+    if (line.startsWith('Applied edit to ')) {
+      editedFiles.push(line.replace('Applied edit to ', '').trim());
+      continue;
+    }
+    // Skip noise
+    if (/^(Tokens|Cost|Model|Git repo|Repo-map|Use \/help)/i.test(line)) continue;
+    if (/tokens? [\d,]+/i.test(line)) continue;
+    if (/^[─━═\-]{3,}$/.test(line)) continue;
+    if (line.startsWith('>')) continue;
+    // Collect meaningful lines
+    if (line.length > 10) {
+      descriptionLines.push(line);
+    }
+  }
+
+  const parts: string[] = [];
+
+  // Description of what it did
+  if (descriptionLines.length > 0) {
+    parts.push(descriptionLines.slice(-3).join(' ').slice(0, 300));
+  }
+
+  // Files changed
+  if (editedFiles.length > 0) {
+    parts.push(`Changed: ${editedFiles.map(f => path.basename(f)).join(', ')}`);
+  }
+
+  // Commit info
+  if (commitLines.length > 0) {
+    parts.push(commitLines[commitLines.length - 1]);
+  }
+
+  if (parts.length > 0) return parts.join('\n').slice(0, 400);
+
+  // Last resort
+  const fallback = tail.slice(-5).join(' ').slice(0, 200);
+  return fallback || `Ran: ${prompt.slice(0, 100)}`;
+}
 
 interface ConnectedClient {
   ws: WebSocket;
@@ -21,6 +115,9 @@ const agentOutputBuffers: Map<string, string[]> = new Map();
 
 // Track current running command per agent (agentId → commandId)
 const currentCommandIds: Map<string, string> = new Map();
+
+// Track retry attempts per agent to avoid infinite loops (agentId → { count, originalPrompt })
+const retryState: Map<string, { count: number; maxRetries: number; originalPrompt: string }> = new Map();
 
 function appendAgentOutput(agentId: string, chunk: string): void {
   let buf = agentOutputBuffers.get(agentId);
@@ -210,7 +307,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const now = new Date().toISOString();
       const name = message.name || 'Agent';
       const profileId = message.profileId || 'robot';
-      const agentType = message.agentType || 'claude';
+      const agentType = 'aider';
 
       runQuery(
         `INSERT INTO agents (id, name, working_directory, profile_id, agent_type, status, created_at, last_activity)
@@ -253,20 +350,31 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
           const cmdId = currentCommandIds.get(id);
           if (cmdId) {
             const buf = agentOutputBuffers.get(id);
-            const rawOutput = buf ? buf.join('\n') : '';
+            const rawOutput = buf ? stripAnsi(buf.join('\n')) : '';
             const cmdStatus = code === 0 ? 'done' : 'error';
+            const summary = rawOutput ? generateSummary(rawOutput, '') : '';
+            const filesChanged = extractEditedFiles(rawOutput);
             runQuery(
-              `UPDATE commands SET status = ?, completed_at = ?, raw_output = ? WHERE id = ?`,
-              [cmdStatus, finishedAt, rawOutput, cmdId]
+              `UPDATE commands SET status = ?, completed_at = ?, raw_output = ?, summary = ?, files_changed = ? WHERE id = ?`,
+              [cmdStatus, finishedAt, rawOutput, summary, JSON.stringify(filesChanged), cmdId]
             );
+            const updatedCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [cmdId]);
+            if (updatedCmd) {
+              broadcast({ type: 'command:updated', command: updatedCmd });
+            }
             currentCommandIds.delete(id);
+            if (summary) {
+              const summaryLine = `\n--- Summary: ${summary} ---\n`;
+              appendAgentOutput(id, summaryLine);
+              broadcast({ type: 'agent:output', agentId: id, chunk: summaryLine });
+            }
           }
 
           runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, finishedAt, id]);
           broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
         };
 
-        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type || 'claude');
+        restartAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
         broadcast({ type: 'agent:status', agentId, status: 'running' });
       }
       break;
@@ -296,38 +404,138 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
           };
 
           const handleExit = (id: string, code: number) => {
-            const exitStatus = code === 0 ? 'idle' : 'dead';
             const finishedAt = new Date().toISOString();
+            let summary = '';
 
             const cmdId = currentCommandIds.get(id);
             if (cmdId) {
               const buf = agentOutputBuffers.get(id);
-              const rawOutput = buf ? buf.join('\n') : '';
+              const rawOutput = buf ? stripAnsi(buf.join('\n')) : '';
               const cmdStatus = code === 0 ? 'done' : 'error';
+              summary = rawOutput ? generateSummary(rawOutput, prompt) : '';
+              const filesChanged = extractEditedFiles(rawOutput);
               runQuery(
-                `UPDATE commands SET status = ?, completed_at = ?, raw_output = ? WHERE id = ?`,
-                [cmdStatus, finishedAt, rawOutput, cmdId]
+                `UPDATE commands SET status = ?, completed_at = ?, raw_output = ?, summary = ?, files_changed = ? WHERE id = ?`,
+                [cmdStatus, finishedAt, rawOutput, summary, JSON.stringify(filesChanged), cmdId]
               );
+              const updatedCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [cmdId]);
+              if (updatedCmd) {
+                broadcast({ type: 'command:updated', command: updatedCmd });
+              }
               currentCommandIds.delete(id);
+              if (summary) {
+                const summaryLine = `\n--- Summary: ${summary} ---\n`;
+                appendAgentOutput(id, summaryLine);
+                broadcast({ type: 'agent:output', agentId: id, chunk: summaryLine });
+              }
             }
 
+            // Auto-retry on failure: if the task failed, try to fix it
+            const retry = retryState.get(id);
+            const retryCount = retry?.count || 0;
+            const maxRetries = retry?.maxRetries || 2;
+
+            // Check if the output contains test failures even on exit code 0
+            const buf2 = agentOutputBuffers.get(id);
+            const rawTail = buf2 ? stripAnsi(buf2.slice(-50).join('\n')) : '';
+            const hasTestFailure = rawTail.includes('[FAIL]') || rawTail.includes('TSC_ERROR_START');
+            const effectiveFailure = code !== 0 || hasTestFailure;
+
+            if (effectiveFailure && retryCount < maxRetries) {
+              const nextRetry = retryCount + 1;
+              retryState.set(id, { count: nextRetry, maxRetries, originalPrompt: retry?.originalPrompt || prompt });
+
+              const retryMsg = `\n=== Auto-retry ${nextRetry}/${maxRetries} — fixing errors ===\n`;
+              appendAgentOutput(id, retryMsg);
+              broadcast({ type: 'agent:output', agentId: id, chunk: retryMsg });
+
+              // Extract specific error lines for a targeted fix prompt
+              const tscErrors = rawTail.match(/src\/[^\n]+error TS\d+:[^\n]+/g) || [];
+              const buildErrors = rawTail.includes('BUILD_ERROR_START') ?
+                rawTail.split('BUILD_ERROR_START')[1]?.split('BUILD_ERROR_END')[0]?.trim() || '' : '';
+
+              let fixPrompt: string;
+              if (tscErrors.length > 0) {
+                const errorList = tscErrors.slice(0, 10).join('\n');
+                fixPrompt = `TypeScript type errors found after your changes. Fix these specific errors:\n\n${errorList}\n\nIMPORTANT: If errors mention types not existing on an interface, check src/client/lib/types.ts and add the missing properties. If errors mention WSClientMessage or WSServerMessage, you need to add the missing message type to the union in types.ts.`;
+              } else if (buildErrors) {
+                fixPrompt = `Build failed with these errors:\n\n${buildErrors}\n\nFix the build errors.`;
+              } else {
+                const errorTail = rawTail.slice(-1000);
+                fixPrompt = `The previous task failed (exit code ${code}). Error output:\n\n${errorTail}\n\nFix the issues. Original task: ${retry?.originalPrompt || prompt}`;
+              }
+
+              // Create a new command for the retry
+              const retryCmdId = generateId();
+              const retryNow = new Date().toISOString();
+              runQuery(
+                `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
+                 VALUES (?, ?, ?, ?, 'running', ?)`,
+                [retryCmdId, agentId, taskId || null, `[Retry ${nextRetry}] Fix errors`, retryNow]
+              );
+              currentCommandIds.set(id, retryCmdId);
+              const retryCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [retryCmdId]);
+              if (retryCmd) broadcast({ type: 'command:updated', command: retryCmd });
+
+              sendToAgent(id, fixPrompt);
+              return; // Don't mark agent as idle yet
+            }
+
+            // Done (success or exhausted retries)
+            retryState.delete(id);
+            const succeeded = code === 0 && !hasTestFailure;
+
+            // Commit changes if successful (auto-commits is off, orchestrator handles it)
+            if (succeeded && agent) {
+              const committed = commitAgentChanges(agent.working_directory, prompt);
+              if (committed) {
+                const commitMsg = '\n--- Changes committed ---\n';
+                appendAgentOutput(id, commitMsg);
+                broadcast({ type: 'agent:output', agentId: id, chunk: commitMsg });
+              }
+
+              // Auto-verify UI if the change touched client files
+              const changedFiles = extractEditedFiles(rawTail);
+              const touchedUI = changedFiles.some(f => f.includes('src/client') || f.endsWith('.tsx') || f.endsWith('.css'));
+              if (touchedUI) {
+                try {
+                  const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: (process.env.LOCALAPPDATA || '') + '\\ms-playwright' };
+                  const verifyOutput = execSync(
+                    'powershell -ExecutionPolicy Bypass -File verify-ui.ps1',
+                    { cwd: agent.working_directory, encoding: 'utf-8', timeout: 30000, env }
+                  );
+                  appendAgentOutput(id, `\n${verifyOutput}\n`);
+                  broadcast({ type: 'agent:output', agentId: id, chunk: `\n${verifyOutput}\n` });
+                } catch {
+                  // UI verification is best-effort, don't fail the task
+                }
+              }
+            }
+
+            const exitStatus = succeeded ? 'idle' : 'dead';
             runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, finishedAt, id]);
             broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
             const agentName = agent?.name || 'Agent';
             broadcast({
               type: 'notify',
               agentId: id,
-              title: code === 0 ? `${agentName} finished` : `${agentName} failed`,
-              body: code === 0 ? 'Task completed successfully' : `Exited with code ${code}`,
+              title: succeeded ? `${agentName} finished` : `${agentName} failed`,
+              body: summary || (succeeded ? 'Task completed successfully' : `Exited with code ${code}`),
             });
           };
 
-          createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit, agent.agent_type || 'claude');
+          createAgent(agentId, agent.working_directory, agent.name, handleOutput, handleExit);
         }
 
         runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
         sendToAgent(agentId, prompt);
         broadcast({ type: 'agent:status', agentId, status: 'running' });
+
+        // Broadcast the new running command so client chat shows it immediately
+        const newCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [commandId]);
+        if (newCmd) {
+          broadcast({ type: 'command:updated', command: newCmd });
+        }
       }
       break;
     }
@@ -335,6 +543,33 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     case 'agent:interrupt': {
       const { agentId } = message;
       interruptAgent(agentId);
+      break;
+    }
+
+    case 'agent:verify-ui': {
+      const { agentId, url, navigate } = message;
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        const verifyUrl = url || 'http://localhost:3456';
+        const args = ['-ExecutionPolicy', 'Bypass', '-File', 'verify-ui.ps1', '-Url', verifyUrl];
+        if (navigate) args.push('-Navigate', navigate);
+
+        try {
+          const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.LOCALAPPDATA + '\\ms-playwright' };
+          const output = execSync(`powershell ${args.join(' ')}`, {
+            cwd: agent.working_directory,
+            encoding: 'utf-8',
+            timeout: 30000,
+            env,
+          });
+          appendAgentOutput(agentId, `\n--- UI Verification ---\n${output}\n`);
+          broadcast({ type: 'agent:output', agentId, chunk: `\n--- UI Verification ---\n${output}\n` });
+        } catch (e: any) {
+          const errOutput = e.stdout || e.message || 'Verification failed';
+          appendAgentOutput(agentId, `\n--- UI Verification FAILED ---\n${errOutput}\n`);
+          broadcast({ type: 'agent:output', agentId, chunk: `\n--- UI Verification FAILED ---\n${errOutput}\n` });
+        }
+      }
       break;
     }
 
@@ -371,10 +606,6 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       if (fields.profile_id !== undefined) {
         updates.push('profile_id = ?');
         values.push(fields.profile_id);
-      }
-      if (fields.agent_type !== undefined) {
-        updates.push('agent_type = ?');
-        values.push(fields.agent_type);
       }
       if (fields.workflow_id !== undefined) {
         updates.push('workflow_id = ?');
@@ -414,6 +645,16 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         [agentId, limit]
       );
       send(ws, { type: 'agent:history', agentId, commands });
+      break;
+    }
+
+    case 'agent:activity': {
+      const { agentId, limit = 50 } = message;
+      const entries = getAll<GoalLogEntry>(
+        'SELECT * FROM goal_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?',
+        [agentId, limit]
+      );
+      send(ws, { type: 'agent:activity', agentId, entries });
       break;
     }
 
@@ -598,13 +839,17 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
       const workflowRows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
       const workflows: Workflow[] = workflowRows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
-      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows });
+      const recentCommands = getAll<Command>(
+        'SELECT * FROM commands ORDER BY started_at DESC LIMIT 100'
+      );
+      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, commands: recentCommands });
 
-      // Replay buffered output for all agents
+      // Replay buffered output for all agents (last 100 lines max)
       for (const agent of agents) {
         const buf = agentOutputBuffers.get(agent.id);
         if (buf && buf.length > 0) {
-          send(ws, { type: 'agent:output', agentId: agent.id, chunk: buf.join('\n') });
+          const tail = buf.slice(-100);
+          send(ws, { type: 'agent:output', agentId: agent.id, chunk: tail.join('\n') });
         }
       }
       break;

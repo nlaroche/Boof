@@ -16,7 +16,6 @@ export function AgentsScreen({ onSend }: Props) {
   const [newName, setNewName] = useState('');
   const [search, setSearch] = useState('');
   const [selectedProfile, setSelectedProfile] = useState('robot');
-  const [agentType, setAgentType] = useState<'claude' | 'aider'>('claude');
   const [settingsAgent, setSettingsAgent] = useState<Agent | null>(null);
 
   useEffect(() => {
@@ -37,12 +36,10 @@ export function AgentsScreen({ onSend }: Props) {
       workingDirectory: repoPath,
       name: newName.trim() || repoName,
       profileId: selectedProfile,
-      agentType,
     });
     setNewName('');
     setSearch('');
     setSelectedProfile('robot');
-    setAgentType('claude');
     setShowNew(false);
   };
 
@@ -61,7 +58,7 @@ export function AgentsScreen({ onSend }: Props) {
   };
 
   return (
-    <div className="pb-20">
+    <div className="min-h-full pb-20">
       <div className="p-4 flex items-center justify-between">
         <h1 className="text-xl font-bold text-[#e2e2ef]">Agents</h1>
         <button
@@ -83,31 +80,6 @@ export function AgentsScreen({ onSend }: Props) {
           <div className="mb-3">
             <label className="text-xs text-[#6b6b80] mb-1.5 block">Profile</label>
             <ProfileSelector selected={selectedProfile} onSelect={setSelectedProfile} />
-          </div>
-          <div className="mb-3">
-            <label className="text-xs text-[#6b6b80] mb-1.5 block">Backend</label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setAgentType('claude')}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  agentType === 'claude'
-                    ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
-                    : 'bg-[#0a0a0f] text-[#6b6b80] border border-[#1e1e2e]'
-                }`}
-              >
-                Claude Code
-              </button>
-              <button
-                onClick={() => setAgentType('aider')}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  agentType === 'aider'
-                    ? 'bg-[#22c55e]/20 text-[#22c55e] border border-[#22c55e]/40'
-                    : 'bg-[#0a0a0f] text-[#6b6b80] border border-[#1e1e2e]'
-                }`}
-              >
-                Aider
-              </button>
-            </div>
           </div>
           <input
             value={search}
@@ -142,7 +114,7 @@ export function AgentsScreen({ onSend }: Props) {
 
       {agents.length === 0 ? (
         <div className="px-4 py-12 text-center text-[#6b6b80]">
-          <div className="text-4xl mb-2">&#9881;</div>
+          <div className="text-lg font-mono mb-2">--</div>
           <p>No agents yet</p>
           <p className="text-sm mt-1">Create one to get started</p>
         </div>

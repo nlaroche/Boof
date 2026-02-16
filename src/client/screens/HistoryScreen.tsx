@@ -9,14 +9,14 @@ export function HistoryScreen() {
     .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
 
   return (
-    <div className="pb-20">
+    <div className="min-h-full pb-20">
       <div className="p-4">
         <h1 className="text-xl font-bold text-[#e2e2ef]">History</h1>
       </div>
 
       {sortedCommands.length === 0 ? (
         <div className="px-4 py-12 text-center text-[#6b6b80]">
-          <div className="text-4xl mb-2">&#9200;</div>
+          <div className="text-lg font-mono mb-2">---</div>
           <p>No command history yet</p>
           <p className="text-sm mt-1">Send commands to agents to see them here</p>
         </div>

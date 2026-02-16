@@ -42,7 +42,7 @@ export function CommandInput({ onSend, onMicToggle, isListening, speechSupported
   };
 
   return (
-    <div className="flex items-end gap-2 p-3 bg-[#14141f] border-t border-[#1e1e2e]">
+    <div className="flex items-end gap-2 p-3 bg-[#14141f] border-t border-[#1e1e2e] shrink-0">
       <textarea
         ref={textareaRef}
         value={text}

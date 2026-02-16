@@ -1,9 +1,31 @@
 import { useStore } from '../stores/store';
 import { AgentCard } from '../components/AgentCard';
-import { SummaryCard } from '../components/SummaryCard';
+import type { Agent, Command } from '../lib/types';
 
 interface Props {
   onSendToAgent: (agentId: string, prompt: string) => void;
+}
+
+function sortAgents(agents: Agent[]): Agent[] {
+  return [...agents].sort((a, b) => {
+    // Running agents first
+    if (a.status === 'running' && b.status !== 'running') return -1;
+    if (b.status === 'running' && a.status !== 'running') return 1;
+    // Then by most recent activity
+    const aTime = new Date(a.last_activity).getTime();
+    const bTime = new Date(b.last_activity).getTime();
+    if (aTime !== bTime) return bTime - aTime;
+    // Dead/offline agents last
+    if (a.status === 'dead' && b.status !== 'dead') return 1;
+    if (b.status === 'dead' && a.status !== 'dead') return -1;
+    return 0;
+  });
+}
+
+function getLastCommand(agentId: string, commands: Command[]): Command | undefined {
+  return commands
+    .filter((c) => c.agent_id === agentId)
+    .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
 }
 
 export function HomeScreen({ onSendToAgent }: Props) {
@@ -11,13 +33,10 @@ export function HomeScreen({ onSendToAgent }: Props) {
   const commands = useStore((s) => s.commands);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
-  const recentCommands = commands
-    .filter((c) => c.status === 'done' && c.summary)
-    .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())
-    .slice(0, 5);
+  const sorted = sortAgents(agents);
 
   return (
-    <div className="pb-20">
+    <div className="min-h-full pb-20">
       <div className="p-4 flex items-center justify-between">
         <h1 className="text-2xl font-bold text-[#e2e2ef]">Boof</h1>
         <button
@@ -28,29 +47,21 @@ export function HomeScreen({ onSendToAgent }: Props) {
         </button>
       </div>
 
-      {agents.length > 0 ? (
-        <div className="px-3 mb-4">
-          <h3 className="text-sm font-medium text-[#6b6b80] mb-2 px-1">Active Agents</h3>
-          <div className="grid grid-cols-2 gap-2">
-            {agents.map((agent) => (
-              <AgentCard key={agent.id} agent={agent} />
-            ))}
-          </div>
+      {sorted.length > 0 ? (
+        <div className="px-3 space-y-2">
+          {sorted.map((agent) => (
+            <AgentCard
+              key={agent.id}
+              agent={agent}
+              lastCommand={getLastCommand(agent.id, commands)}
+            />
+          ))}
         </div>
       ) : (
-        <div className="px-4 py-8 text-center text-[#6b6b80]">
-          <div className="text-4xl mb-2">&#128296;</div>
-          <p>No agents running</p>
-          <p className="text-sm mt-1">Create one from the Agents tab</p>
-        </div>
-      )}
-
-      {recentCommands.length > 0 && (
-        <div className="p-3">
-          <h3 className="text-sm font-medium text-[#6b6b80] mb-2">Recent</h3>
-          {recentCommands.map((cmd) => (
-            <SummaryCard key={cmd.id} command={cmd} />
-          ))}
+        <div className="px-4 py-12 text-center text-[#6b6b80]">
+          <div className="text-lg font-mono mb-2">(._. )</div>
+          <p>No agents yet</p>
+          <p className="text-sm mt-1">Create one to get started</p>
         </div>
       )}
     </div>

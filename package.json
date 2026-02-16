@@ -17,12 +17,15 @@
   "license": "ISC",
   "description": "Mobile Claude Code Command Center PWA",
   "dependencies": {
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-switch": "^1.2.6",
     "ansi-to-html": "^0.7.2",
     "express": "^5.2.1",
     "node-pty": "^1.1.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "sql.js": "^1.14.0",
+    "vaul": "^1.1.2",
     "web-push": "^3.6.7",
     "ws": "^8.19.0",
     "zustand": "^5.0.11"

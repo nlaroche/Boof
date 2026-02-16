@@ -70,6 +70,8 @@ Write-Host ""
 Write-Host "--- TYPE CHECK ---"
 $tscPath = Join-Path $ProjectRoot "node_modules\.bin\tsc.cmd"
 if (Test-Path $tscPath) {
+    # Build server project first (generates .d.ts files needed by client via project references)
+    & $tscPath -p tsconfig.server.json 2>&1 | Out-Null
     $tscOutput = & $tscPath --noEmit 2>&1 | Out-String
     if ($LASTEXITCODE -ne 0) {
         Write-Step "TypeCheck" "FAIL" "TypeScript errors found"

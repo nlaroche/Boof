@@ -1,1 +1,62 @@
 @import "tailwindcss";
+
+/* Lock viewport to prevent scroll bounce */
+html, body, #root {
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+#root {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Vaul drawer styles */
+[vaul-overlay] {
+  background-color: rgba(0, 0, 0, 0.6) !important;
+}
+
+[vaul-drawer] {
+  background-color: #14141f !important;
+  border-top: 1px solid #1e1e2e;
+}
+
+/* Radix Select dark theme */
+[data-radix-popper-content-wrapper] {
+  z-index: 60 !important;
+}
+
+.radix-select-content {
+  background-color: #14141f;
+  border: 1px solid #1e1e2e;
+  border-radius: 0.5rem;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+}
+
+.radix-select-item {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  color: #e2e2ef;
+  cursor: pointer;
+  outline: none;
+}
+
+.radix-select-item[data-highlighted] {
+  background-color: #7c5bf5;
+  color: white;
+}
+
+.radix-select-item[data-state="checked"] {
+  color: #7c5bf5;
+}
+
+.radix-select-item[data-highlighted][data-state="checked"] {
+  color: white;
+}

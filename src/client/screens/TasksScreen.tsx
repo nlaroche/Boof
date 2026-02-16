@@ -50,7 +50,7 @@ export function TasksScreen({ onSend }: Props) {
   };
 
   return (
-    <div className="pb-20">
+    <div className="min-h-full pb-20">
       <div className="p-4">
         <h1 className="text-xl font-bold text-[#e2e2ef]">Tasks</h1>
       </div>

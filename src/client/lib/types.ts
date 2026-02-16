@@ -118,6 +118,7 @@ export type WSClientMessage =
   | { type: 'agent:restart'; agentId: string }
   | { type: 'agent:send'; agentId: string; prompt: string; taskId?: string }
   | { type: 'agent:interrupt'; agentId: string }
+  | { type: 'agent:verify-ui'; agentId: string; url?: string; navigate?: string }
   | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }

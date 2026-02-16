@@ -15,6 +15,7 @@ interface StoreState {
   repos: RepoInfo[];
   goals: Goal[];
   goalLogs: Record<string, GoalLogEntry[]>;
+  agentActivity: Record<string, GoalLogEntry[]>;
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
@@ -23,12 +24,14 @@ interface StoreState {
   setTasks: (tasks: Task[]) => void;
   setAgents: (agents: Agent[]) => void;
   setCommands: (commands: Command[]) => void;
+  mergeCommands: (agentId: string, commands: Command[]) => void;
   setRepos: (repos: RepoInfo[]) => void;
   setGoals: (goals: Goal[]) => void;
   updateGoal: (goal: Goal) => void;
   removeGoal: (goalId: string) => void;
   setGoalLog: (goalId: string, entries: GoalLogEntry[]) => void;
   addGoalLogEntry: (entry: GoalLogEntry) => void;
+  setAgentActivity: (agentId: string, entries: GoalLogEntry[]) => void;
   setWorkflows: (workflows: Workflow[]) => void;
   updateWorkflow: (workflow: Workflow) => void;
   removeWorkflow: (workflowId: string) => void;
@@ -40,6 +43,7 @@ interface StoreState {
   updateAgent: (agent: Agent) => void;
   removeAgent: (agentId: string) => void;
   addCommand: (command: Command) => void;
+  upsertCommand: (command: Command) => void;
   updateCommand: (commandId: string, fields: Partial<Command>) => void;
   setActiveScreen: (screen: UIState['activeScreen']) => void;
   setSelectedAgentId: (id: string | null) => void;
@@ -56,6 +60,7 @@ export const useStore = create<StoreState>((set) => ({
   repos: [],
   goals: [],
   goalLogs: {},
+  agentActivity: {},
   workflows: [],
   activeOutputs: {},
   ui: {
@@ -71,6 +76,13 @@ export const useStore = create<StoreState>((set) => ({
   setAgents: (agents) => set({ agents }),
 
   setCommands: (commands) => set({ commands }),
+
+  mergeCommands: (agentId, commands) =>
+    set((state) => {
+      // Replace commands for this agent, keep others
+      const others = state.commands.filter((c) => c.agent_id !== agentId);
+      return { commands: [...others, ...commands] };
+    }),
 
   setRepos: (repos) => set({ repos }),
 
@@ -104,6 +116,11 @@ export const useStore = create<StoreState>((set) => ({
         goalLogs: { ...state.goalLogs, [entry.goal_id]: [entry, ...existing] },
       };
     }),
+
+  setAgentActivity: (agentId, entries) =>
+    set((state) => ({
+      agentActivity: { ...state.agentActivity, [agentId]: entries },
+    })),
 
   setWorkflows: (workflows) => set({ workflows }),
 
@@ -196,6 +213,17 @@ export const useStore = create<StoreState>((set) => ({
     set((state) => ({
       commands: [...state.commands, command],
     })),
+
+  upsertCommand: (command) =>
+    set((state) => {
+      const index = state.commands.findIndex((c) => c.id === command.id);
+      if (index >= 0) {
+        const updated = [...state.commands];
+        updated[index] = command;
+        return { commands: updated };
+      }
+      return { commands: [...state.commands, command] };
+    }),
 
   updateCommand: (commandId, fields) =>
     set((state) => ({

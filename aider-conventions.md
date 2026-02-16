@@ -1,30 +1,37 @@
 # Aider Conventions for Boof
 
-You are working on a React 18 + TypeScript + Vite PWA with a Node.js Express backend. Follow these rules strictly.
+You are working on a React 19 + TypeScript + Vite PWA with a Node.js Express 5 backend. Follow these rules strictly.
 
 ## Architecture
-- **Server**: `src/server/` — Node.js, Express, ws, node-pty, better-sqlite3
-- **Client**: `src/client/` — React 18, TypeScript, Vite, Tailwind CSS, Zustand
+- **Server**: `src/server/` — Node.js, Express 5, ws, node-pty, sql.js
+- **Client**: `src/client/` — React 19, TypeScript, Vite, Tailwind CSS, Zustand
 - Server entry: `src/server/index.ts`
 - Client entry: `src/client/main.tsx`
 - Single-user personal tool — no auth, no multi-tenancy
 
 ## Server Structure
 - `src/server/index.ts` — Express + WebSocket server + static file serving
-- `src/server/db.ts` — SQLite setup + query helpers
-- `src/server/pty-manager.ts` — PTY lifecycle management (node-pty)
-- `src/server/summarizer.ts` — Claude API output summarization
+- `src/server/db.ts` — SQLite setup + query helpers (uses sql.js, NOT better-sqlite3)
+- `src/server/pty-manager.ts` — PTY lifecycle management (node-pty, Aider only)
 - `src/server/ws-handler.ts` — WebSocket message routing
-- `src/server/notifications.ts` — Web Push notification sender
+- `src/server/autopilot.ts` — Autonomous agent loop
+- `src/server/scheduler.ts` — Cron-based agent scheduling
 
 ## Client Structure
 - `src/client/main.tsx` — Entry point
 - `src/client/App.tsx` — Root layout + bottom nav + WebSocket provider
-- `src/client/hooks/` — useWebSocket, useSpeech, useNotifications, useHaptic
+- `src/client/hooks/` — useWebSocket, useSpeech
 - `src/client/stores/store.ts` — Zustand store (single source of truth)
-- `src/client/screens/` — HomeScreen, TasksScreen, AgentScreen, AgentsScreen, HistoryScreen
+- `src/client/screens/` — HomeScreen, TasksScreen, AgentScreen, AgentsScreen, GoalsScreen, HistoryScreen
 - `src/client/components/` — Reusable UI components
-- `src/client/lib/` — types.ts, ansi.ts, format.ts
+- `src/client/lib/types.ts` — ALL TypeScript types and WS message type unions
+
+## CRITICAL: Types
+- ALL WebSocket message types are defined in `src/client/lib/types.ts`
+- `WSClientMessage` = union of all client→server messages
+- `WSServerMessage` = union of all server→client messages
+- When adding new WS message types, you MUST update BOTH unions in types.ts
+- The server tsconfig (`tsconfig.server.json`) compiles types.ts to `dist/server/`. The client tsconfig references these. If you change types.ts, the compiled output in dist/server/ will be rebuilt by test.ps1.
 
 ## Code Style
 - TypeScript only (strict mode)
@@ -38,24 +45,21 @@ You are working on a React 18 + TypeScript + Vite PWA with a Node.js Express bac
 - Dark theme only. Near-black backgrounds (#0a0a0f, #14141f)
 - Primary accent: #7c5bf5 (purple)
 - Mobile-first. Bottom navigation. Large touch targets (min 48px)
-- Font: JetBrains Mono for terminal, Inter for UI
 - Border radius: 12px cards, 8px buttons
 
 ## File Rules
-- NEVER modify `package.json` scripts (they work as-is)
+- NEVER modify `package.json` scripts
 - NEVER modify `vite.config.ts` unless explicitly told to
 - NEVER modify `tailwind.config.ts` unless explicitly told to
 - NEVER add new dependencies without being explicitly told to
 - All state flows through Zustand store, hydrated via WebSocket
 
-## Build
-- The build must pass: `vite build` (runs automatically via test command)
-- Fix any build errors before finishing
+## Build & Validation
+- After making changes, run: `powershell -ExecutionPolicy Bypass -File test.ps1 -Quick`
+- This runs vite build AND TypeScript type checking
+- Fix ALL errors before finishing — do not leave broken code
 - Do not introduce unused imports or variables
-- Server code uses tsx for dev, compiles to JS for production
 
-## WebSocket Protocol
-- All client-server communication over a single WebSocket
-- Messages are JSON with a `type` field
-- Client sends: task:*, folder:*, agent:*, sync:request
-- Server sends: sync:state, agent:output, agent:status, agent:summary, task:updated, folder:updated, notify
+## Self-Improvement
+- If you encounter a recurring error pattern, add a note to this file so you avoid it next time
+- If a build/type error reveals a missing type definition, fix it in types.ts

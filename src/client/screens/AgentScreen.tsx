@@ -113,7 +113,9 @@ export function AgentScreen({ onSend }: Props) {
   };
 
   const handleNewChat = () => {
-    onSend({ type: 'agent:send', agentId: agent.id, prompt: '/new' });
+    if (selectedAgentId) {
+      clearOutput(selectedAgentId);
+    }
     setViewing('live');
     userScrolledUp.current = false;
   };

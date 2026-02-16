@@ -78,7 +78,7 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'schedule', 'TEXT DEFAULT NULL');
   addColumnIfMissing('agents', 'schedule_enabled', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'schedule_prompt', "TEXT DEFAULT ''");
-  addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'claude'");
+  addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'aider'");
 
   db.run(`
     CREATE TABLE IF NOT EXISTS commands (

@@ -57,7 +57,7 @@ export function App() {
       )}
 
       {/* Screen router */}
-      <div className="flex-1 overflow-y-auto">
+      <div className={`flex-1 ${activeScreen === 'agent' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
         <ErrorBoundary>
           {activeScreen === 'home' && <HomeScreen onSendToAgent={handleSendToAgent} />}
           {activeScreen === 'goals' && <GoalsScreen onSend={send} />}

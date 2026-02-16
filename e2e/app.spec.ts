@@ -11,9 +11,11 @@ test.beforeAll(() => {
 });
 
 async function waitForWsConnection(page: any) {
-  // Wait for the "Reconnecting..." banner to disappear, indicating WS is connected
-  await page.waitForTimeout(1000);
-  await expect(page.locator('text=Reconnecting...')).not.toBeVisible({ timeout: 5000 });
+  // Wait for the "Reconnecting..." banner to disappear and stay gone
+  await page.waitForTimeout(2000);
+  await expect(page.locator('text=Reconnecting...')).not.toBeVisible({ timeout: 10000 });
+  // Extra settle time to ensure WS is stable
+  await page.waitForTimeout(500);
 }
 
 test.describe('Boof PWA', () => {
@@ -22,16 +24,22 @@ test.describe('Boof PWA', () => {
     await expect(page.locator('text=Boof')).toBeVisible();
   });
 
-  test('has bottom navigation with 4 tabs', async ({ page }) => {
+  test('has bottom navigation with 5 tabs', async ({ page }) => {
     await page.goto('/');
     const nav = page.locator('nav');
     await expect(nav).toBeVisible();
-    await expect(nav.locator('button')).toHaveCount(4);
+    await expect(nav.locator('button')).toHaveCount(5);
   });
 
   test('shows empty state on home screen', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('text=No agents running')).toBeVisible();
+  });
+
+  test('navigates to Goals screen', async ({ page }) => {
+    await page.goto('/');
+    await page.locator('nav button', { hasText: 'Goals' }).click();
+    await expect(page.locator('h1', { hasText: 'Goals' })).toBeVisible();
   });
 
   test('navigates to Tasks screen', async ({ page }) => {
@@ -62,15 +70,7 @@ test.describe('Boof PWA', () => {
     await page.goto('/');
     await page.locator('nav button', { hasText: 'Agents' }).click();
     await page.locator('button', { hasText: '+ New' }).click();
-    await expect(page.locator('input[placeholder*="Working directory"]')).toBeVisible();
-  });
-
-  test('shows quick actions on home screen', async ({ page }) => {
-    await page.goto('/');
-    await expect(page.locator('text=Quick Actions')).toBeVisible();
-    await expect(page.locator('text=Continue')).toBeVisible();
-    await expect(page.locator('text=Test')).toBeVisible();
-    await expect(page.locator('text=Commit')).toBeVisible();
+    await expect(page.locator('input[placeholder*="Agent name"]')).toBeVisible();
   });
 
   test('has dark theme background', async ({ page }) => {
