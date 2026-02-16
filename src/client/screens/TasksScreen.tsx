@@ -137,10 +137,9 @@ export function TasksScreen({ onSend }: Props) {
           </div>
         </div>
       )}
+      <div className="fixed bottom-2 left-0 right-0 text-center">
+        <span className="text-xs text-[#4a4a5a]">Boof v1.0</span>
+      </div>
     </div>
-    <div className="fixed bottom-2 left-0 right-0 text-center">
-      <span className="text-xs text-[#4a4a5a]">Boof v1.0</span>
-    </div>
-  </div>
   );
 }

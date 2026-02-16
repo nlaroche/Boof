@@ -23,24 +23,30 @@ export function FolderList({
   onDeleteFolder,
 }: Props) {
   const [editingFolder, setEditingFolder] = useState<Folder | null>(null);
+  const [deleteFolder, setDeleteFolder] = useState<Folder | null>(null);
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState('');
   const [longPressTriggered, setLongPressTriggered] = useState(false);
 
   const handleLongPress = (folder: Folder) => {
     setLongPressTriggered(true);
-    const action = prompt(`${folder.name}\n\nChoose action:\n- Edit (type "edit")\n- Delete (type "delete")`);
-    if (action === 'edit') {
-      setEditingFolder(folder);
-      setEditName(folder.name);
-      setEditIcon(folder.icon);
-    } else if (action === 'delete') {
-      if (confirm(`Delete "${folder.name}" and all its tasks?`)) {
-        onDeleteFolder(folder.id);
-      }
-    }
+    setDeleteFolder(folder);
     // Reset the flag after a short delay to allow the click handler to check it
     setTimeout(() => setLongPressTriggered(false), 100);
+  };
+
+  const handleEditFolder = (folder: Folder) => {
+    setDeleteFolder(null);
+    setEditingFolder(folder);
+    setEditName(folder.name);
+    setEditIcon(folder.icon);
+  };
+
+  const handleConfirmDelete = () => {
+    if (deleteFolder) {
+      onDeleteFolder(deleteFolder.id);
+      setDeleteFolder(null);
+    }
   };
 
   const handleTouchStart = (folder: Folder, e: React.TouchEvent) => {
@@ -115,12 +121,21 @@ export function FolderList({
               onMouseDown={(e) => handleMouseDown(folder, e)}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
-              className={`p-3 rounded-xl text-left transition-colors border ${
+              className={`p-3 rounded-xl text-left transition-colors border relative ${
                 isSelected
                   ? 'bg-[#1e1e2e] border-[#7c5bf5]'
                   : 'bg-[#14141f] border-[#1e1e2e] active:bg-[#1e1e2e]'
               }`}
             >
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDeleteFolder(folder);
+                }}
+                className="absolute top-2 right-2 w-7 h-7 rounded-lg bg-[#0a0a0f] flex items-center justify-center text-sm opacity-60 hover:opacity-100 active:bg-[#2e2e3e]"
+              >
+                ⚙️
+              </button>
               <div className="text-lg mb-1">{folder.icon}</div>
               <div className="text-sm font-medium text-[#e2e2ef] truncate">{folder.name}</div>
               <div className="text-xs text-[#6b6b80]">
@@ -171,6 +186,38 @@ export function FolderList({
                 className="flex-1 bg-[#7c5bf5] text-white py-2 rounded-lg"
               >
                 Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Confirmation Modal */}
+      {deleteFolder && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#14141f] border border-[#1e1e2e] rounded-xl w-full max-w-sm p-4">
+            <h3 className="text-lg font-semibold text-[#e2e2ef] mb-2">Delete Folder?</h3>
+            <p className="text-sm text-[#6b6b80] mb-4">
+              Delete "{deleteFolder.name}" and all its tasks? This cannot be undone.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDeleteFolder(null)}
+                className="flex-1 bg-[#1e1e2e] text-[#e2e2ef] py-2 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleEditFolder}
+                className="flex-1 bg-[#3b3b4f] text-[#e2e2ef] py-2 rounded-lg"
+              >
+                Edit
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="flex-1 bg-[#ef4444] text-white py-2 rounded-lg"
+              >
+                Delete
               </button>
             </div>
           </div>
