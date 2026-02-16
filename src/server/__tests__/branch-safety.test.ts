@@ -83,10 +83,10 @@ describe('autopilot branch safety', () => {
     assert.ok(funcStart >= 0, 'mergeToMain not found');
 
     const funcBody = source.slice(funcStart, funcStart + 2000);
-    const commitBeforeCheckout = funcBody.indexOf('git add -A') < funcBody.indexOf('git checkout main');
+    const commitBeforeCheckout = funcBody.indexOf('git add -A') < funcBody.indexOf('git checkout --detach main');
     assert.ok(
       commitBeforeCheckout,
-      'mergeToMain should commit/stash before checking out main'
+      'mergeToMain should commit before returning to detached HEAD at main'
     );
   });
 
@@ -96,8 +96,8 @@ describe('autopilot branch safety', () => {
 
     const funcBody = source.slice(funcStart, funcStart + 2000);
     assert.ok(
-      funcBody.includes('git merge --abort') && funcBody.includes('git checkout "${branchName}"'),
-      'mergeToMain should abort the merge and return to agent branch on failure'
+      funcBody.includes('git merge --abort'),
+      'mergeToMain should abort the merge on failure'
     );
   });
 

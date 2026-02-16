@@ -1,5 +1,7 @@
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
+import fs from 'fs';
+import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
@@ -140,8 +142,8 @@ async function mergeToMain(
       timeout: 10_000,
     }).catch(() => {});
 
-    // Return worktree to main
-    await execAsync('git checkout main', {
+    // Return worktree to detached HEAD at main (can't checkout main — it's checked out in the main repo)
+    await execAsync('git checkout --detach main', {
       cwd: worktreePath,
       timeout: 30_000,
     }).catch(() => {});
@@ -630,6 +632,27 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   const updatedAgent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
   if (updatedAgent) {
     broadcast({ type: 'agent:updated', agent: updatedAgent });
+  }
+
+  // Retroactively create worktree for pre-existing agents that lack one
+  if (!agent.worktree_path) {
+    try {
+      const safeName = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
+      const wtPath = path.join(agent.working_directory + '-agents', `${safeName}-${agent.id.slice(0, 8)}`);
+      fs.mkdirSync(path.dirname(wtPath), { recursive: true });
+      execSync(`git worktree add --detach "${wtPath}" main`, { cwd: agent.working_directory, timeout: 30_000 });
+      const srcModules = path.join(agent.working_directory, 'node_modules');
+      const dstModules = path.join(wtPath, 'node_modules');
+      if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
+        execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+      }
+      runQuery('UPDATE agents SET worktree_path = ? WHERE id = ?', [wtPath, agent.id]);
+      agent.worktree_path = wtPath;
+      console.log(`[autopilot] Retroactively created worktree for agent ${agentId.slice(0, 6)} at ${wtPath}`);
+      broadcast({ type: 'agent:updated', agent: { ...agent, worktree_path: wtPath } as Agent });
+    } catch (wtErr: any) {
+      console.error(`[autopilot] Failed to create retroactive worktree:`, wtErr.message || wtErr);
+    }
   }
 
   // Initialize memory directory (in the worktree if available)

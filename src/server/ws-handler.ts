@@ -260,7 +260,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         const safeName = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
         const worktreePath = path.join(workDir + '-agents', `${safeName}-${id.slice(0, 8)}`);
         fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-        execSync(`git worktree add "${worktreePath}" main`, { cwd: workDir, timeout: 30_000 });
+        execSync(`git worktree add --detach "${worktreePath}" main`, { cwd: workDir, timeout: 30_000 });
         // Create node_modules junction so the agent can build
         const srcModules = path.join(workDir, 'node_modules');
         const dstModules = path.join(worktreePath, 'node_modules');
@@ -655,6 +655,15 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const delAgent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (delAgent?.worktree_path) {
         try {
+          // Remove node_modules junction first — git worktree remove can't delete junctions on Windows
+          const junctionPath = path.join(delAgent.worktree_path, 'node_modules');
+          try {
+            const stat = fs.lstatSync(junctionPath);
+            if (stat.isSymbolicLink() || stat.isDirectory()) {
+              // On Windows, junctions appear as directories but must be removed with rmdir (not recursive)
+              execSync(`cmd /c rmdir "${junctionPath}"`, { timeout: 5_000 });
+            }
+          } catch { /* junction doesn't exist, fine */ }
           execSync(`git worktree remove "${delAgent.worktree_path}" --force`, {
             cwd: delAgent.working_directory,
             timeout: 30_000,
