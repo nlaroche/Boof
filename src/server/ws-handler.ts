@@ -511,7 +511,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               } catch {}
             }
 
-            // Self-review pass: if successful and there are changes, ask MiniMax to review its own diff
+            // Self-review pass: re-use the SAME command, just send another Aider call
             const reviewState = reviewPending.get(id);
             if (succeeded && agent && !reviewState) {
               try {
@@ -523,18 +523,8 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
                   appendAgentOutput(id, reviewMsg);
                   broadcast({ type: 'agent:output', agentId: id, chunk: reviewMsg });
 
-                  const reviewCmdId = generateId();
-                  const reviewNow = new Date().toISOString();
-                  runQuery(
-                    `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
-                     VALUES (?, ?, ?, ?, 'running', ?)`,
-                    [reviewCmdId, agentId, taskId || null, '[Review] Self-review changes', reviewNow]
-                  );
-                  currentCommandIds.set(id, reviewCmdId);
-                  const reviewCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [reviewCmdId]);
-                  if (reviewCmd) broadcast({ type: 'command:updated', command: parseCommand(reviewCmd) });
-
-                  const reviewPrompt = `Review the changes you just made. Here is the diff:\n\n${diffContent}\n\nCheck for:\n1. Logic bugs (wrong conditions, off-by-one, stale closures in React hooks)\n2. Missing imports or exports\n3. Type mismatches that tsc might miss\n4. React hooks dependency issues\n5. Does this actually accomplish what was asked?\n\nIf you find issues, fix them. If the changes look correct, just say "LGTM" and do not edit any files.`;
+                  // Re-use the same command ID — no new command row
+                  const reviewPrompt = `Review the changes you just made for the task: "${prompt}"\n\nHere is the diff:\n\n${diffContent}\n\nCheck for:\n1. Logic bugs (wrong conditions, off-by-one, stale closures in React hooks)\n2. Missing imports or exports\n3. Does this actually accomplish what was asked? Did you edit the RIGHT file?\n4. Did you accidentally create a NEW file instead of editing an existing one?\n\nIf you find issues, fix them. If the changes look correct, do not edit any files.`;
                   sendToAgent(id, reviewPrompt);
                   return; // Don't finalize yet, wait for review to complete
                 }

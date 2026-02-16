@@ -160,61 +160,162 @@ function guessRelevantFiles(prompt: string, allFiles: string[], mentionedFiles: 
   return [...editable];
 }
 
-/** Extract search terms from a prompt and grep the repo for context.
- *  Returns a compact context block that gets appended to the Aider message. */
-function buildSearchContext(prompt: string, cwd: string): string {
-  const sections: string[] = [];
+/** Use grep to find which files actually contain code related to the prompt.
+ *  Much more reliable than keyword-matching filenames. */
+function selectFilesFromGrep(prompt: string, allFiles: string[], cwd: string): string[] {
+  const hitFiles = new Set<string>();
 
-  // Extract likely search terms: quoted strings, PascalCase identifiers, function/class names
-  const quoted = prompt.match(/["'`]([^"'`]{3,60})["'`]/g)?.map(s => s.slice(1, -1)) || [];
-  const pascalCase = prompt.match(/\b[A-Z][a-zA-Z0-9]{3,30}\b/g) || [];
-  const snakeOrCamel = prompt.match(/\b[a-z][a-zA-Z0-9]*(?:_[a-z][a-zA-Z0-9]*)+\b/g) || [];
-  const dotRefs = prompt.match(/\b\w+\.\w+(?:\.\w+)?\b/g)?.filter(r => !r.match(/^\d/)) || [];
+  // Always include types.ts and store.ts (frequently needed)
+  for (const f of allFiles) {
+    const base = path.basename(f).toLowerCase();
+    if (base === 'types.ts' || base === 'store.ts') hitFiles.add(f);
+  }
 
-  const searchTerms = [...new Set([...quoted, ...pascalCase, ...snakeOrCamel, ...dotRefs])];
-  if (searchTerms.length === 0) return '';
+  // Extract explicit file paths mentioned in prompt
+  const mentionedFiles = extractFilePaths(prompt, cwd);
+  for (const f of mentionedFiles) hitFiles.add(f);
 
-  // Grep for each term (max 5 terms, max 5 matches each)
-  const grepResults: string[] = [];
-  for (const term of searchTerms.slice(0, 5)) {
+  // Extract search terms from the prompt
+  const terms: string[] = [];
+  // Quoted strings
+  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
+  terms.push(...quoted);
+  // PascalCase identifiers (component names, class names)
+  const pascal = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
+  terms.push(...pascal);
+  // UI elements and common words → grep for their JSX usage
+  const uiWords = prompt.toLowerCase().match(/\b(?:button|modal|header|footer|nav|input|chat|card|list|tab|menu|icon|title|form|dialog|drawer|toggle|sidebar|toolbar|banner)\b/g) || [];
+  // Action words → grep for handlers
+  const actions = prompt.toLowerCase().match(/\b(?:remove|add|fix|change|move|hide|show|delete|update|replace|rename)\b/g) || [];
+
+  // Grep each term and collect which files have hits
+  const searchTerms = [...new Set([...quoted, ...pascal])];
+  for (const term of searchTerms.slice(0, 6)) {
     try {
+      const escaped = term.replace(/"/g, '\\"').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       const result = execSync(
-        `git grep -n --max-count=5 "${term.replace(/"/g, '\\"')}" -- "*.ts" "*.tsx" "*.js" "*.jsx"`,
+        `git grep -l "${escaped}" -- "*.ts" "*.tsx"`,
         { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
       if (result) {
-        grepResults.push(`## grep "${term}"\n${result}`);
+        for (const f of result.split('\n').filter(Boolean)) {
+          if (allFiles.includes(f)) hitFiles.add(f);
+        }
       }
-    } catch {
-      // No matches or error — skip
-    }
+    } catch {}
   }
 
-  if (grepResults.length > 0) {
-    sections.push(grepResults.join('\n\n'));
-  }
-
-  // Find type definitions for mentioned identifiers
-  for (const name of pascalCase.slice(0, 3)) {
+  // Grep for UI element text in JSX (e.g., "New Chat", "header", "button")
+  // Combine UI words with nearby nouns from the prompt for specific searches
+  const promptWords = prompt.match(/\b[a-zA-Z]{3,20}\b/g) || [];
+  const specificPhrases = uiWords.flatMap(ui =>
+    promptWords.filter(w => w.toLowerCase() !== ui && !/^(the|and|for|that|this|with|from|its|should|would|could|please|want|like|just|also|remove|add|fix|change|dont|make)$/i.test(w))
+      .slice(0, 2)
+      .map(w => `${w}.*${ui}|${ui}.*${w}`)
+  );
+  for (const phrase of [...new Set(specificPhrases)].slice(0, 4)) {
     try {
       const result = execSync(
-        `git grep -n "\\b\\(interface\\|type\\|class\\|enum\\)\\s\\+${name}\\b" -- "*.ts" "*.tsx"`,
+        `git grep -l -i -E "${phrase}" -- "*.tsx"`,
         { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       ).trim();
-      if (result && !grepResults.some(r => r.includes(result))) {
-        sections.push(`## type definition: ${name}\n${result}`);
+      if (result) {
+        for (const f of result.split('\n').filter(Boolean)) {
+          if (allFiles.includes(f)) hitFiles.add(f);
+        }
       }
-    } catch {
-      // No matches
-    }
+    } catch {}
   }
 
-  if (sections.length === 0) return '';
+  // If still nothing, fall back to the old guessRelevantFiles approach
+  if (hitFiles.size <= 2) {
+    const guessed = guessRelevantFiles(prompt, allFiles, mentionedFiles);
+    for (const f of guessed) hitFiles.add(f);
+  }
+
+  // Cap at 10 files to stay under context limits
+  return [...hitFiles].slice(0, 10);
+}
+
+/** Enrich a vague user prompt with specific file paths, line numbers, and grep results.
+ *  This transforms "remove the button" into "In AgentScreen.tsx (lines 154-159), remove..." */
+function enrichPrompt(prompt: string, editableFiles: string[], cwd: string): string {
+  const sections: string[] = [];
+
+  // 1. Extract search keywords from the prompt
+  const lower = prompt.toLowerCase();
+  // UI-related keywords to grep for
+  const uiKeywords: string[] = [];
+  const uiTerms = lower.match(/\b(?:button|modal|header|footer|nav|input|chat|screen|card|list|tab|menu|icon|label|title|form|dialog|drawer|toggle|switch|select)\b/g);
+  if (uiTerms) uiKeywords.push(...new Set(uiTerms));
+
+  // Quoted strings and specific identifiers
+  const quoted = prompt.match(/["'`]([^"'`]{2,40})["'`]/g)?.map(s => s.slice(1, -1)) || [];
+  const identifiers = prompt.match(/\b[A-Z][a-zA-Z0-9]{2,30}\b/g) || [];
+  const allTerms = [...new Set([...quoted, ...identifiers])];
+
+  // 2. Grep for relevant code patterns in editable files
+  const grepHits: string[] = [];
+  for (const term of allTerms.slice(0, 5)) {
+    try {
+      const escaped = term.replace(/"/g, '\\"').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const result = execSync(
+        `git grep -n --max-count=3 "${escaped}" -- "*.ts" "*.tsx"`,
+        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+      if (result) grepHits.push(result);
+    } catch {}
+  }
+
+  // Also search for UI element text mentioned in the prompt
+  for (const kw of uiKeywords.slice(0, 3)) {
+    try {
+      const result = execSync(
+        `git grep -n -i "${kw}" -- "*.tsx"`,
+        { cwd, timeout: 5000, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      ).trim();
+      if (result) {
+        // Only keep lines that seem relevant (JSX, className, onClick, etc.)
+        const relevant = result.split('\n')
+          .filter(l => /<|className|onClick|{.*}|text|label/i.test(l))
+          .slice(0, 5);
+        if (relevant.length > 0) grepHits.push(relevant.join('\n'));
+      }
+    } catch {}
+  }
+
+  if (grepHits.length > 0) {
+    const deduped = [...new Set(grepHits.join('\n').split('\n'))].slice(0, 20);
+    sections.push(`GREP RESULTS (where relevant code lives):\n${deduped.join('\n')}`);
+  }
+
+  // 3. List ALL source files so MiniMax knows what exists
+  try {
+    const allSrc = execSync('git ls-files -- "*.ts" "*.tsx"', { cwd, timeout: 5000, encoding: 'utf-8' })
+      .trim().split('\n')
+      .filter(f => f.startsWith('src/') && !f.includes('.d.ts'))
+      .join('\n');
+    sections.push(`ALL SOURCE FILES:\n${allSrc}`);
+  } catch {}
+
+  // 4. For each editable file, show a brief summary of what it contains
+  for (const file of editableFiles.slice(0, 5)) {
+    try {
+      const fullPath = path.resolve(cwd, file);
+      const content = fs.readFileSync(fullPath, 'utf-8');
+      const lineCount = content.split('\n').length;
+      // Extract exports and component/function names
+      const exports = content.match(/export (?:function|const|class|interface|type) \w+/g) || [];
+      sections.push(`FILE: ${file} (${lineCount} lines)\nExports: ${exports.join(', ') || 'none'}`);
+    } catch {}
+  }
+
+  if (sections.length === 0) return prompt;
 
   const context = sections.join('\n\n');
-  // Truncate if too large
-  const truncated = context.length > 3000 ? context.slice(0, 3000) + '\n...(truncated)' : context;
-  return `\n\n--- SEARCH CONTEXT (auto-generated, for reference) ---\n${truncated}\n--- END SEARCH CONTEXT ---`;
+  const truncated = context.length > 4000 ? context.slice(0, 4000) + '\n...(truncated)' : context;
+
+  return `${prompt}\n\n--- CONTEXT (auto-generated) ---\n${truncated}\n--- END CONTEXT ---\n\nIMPORTANT: Edit the files that are loaded in the chat. Do NOT create new files unless the task explicitly asks for it. Use the grep results above to find the exact lines to modify.`;
 }
 
 function spawnAider(id: string, state: AgentState, text: string): void {
@@ -228,26 +329,20 @@ function spawnAider(id: string, state: AgentState, text: string): void {
   // suggest-shell-commands, detect-urls, cache-prompts, auto-commits)
   // is handled by .aider.conf.yml in the working directory
 
-  // Add files: only files relevant to the prompt
-  // Editable files = positional args, NO read-only bloat (repo-map handles context)
-  const mentionedFiles = extractFilePaths(text, state.workingDirectory);
+  // Smart file selection: use grep to find which files contain relevant code
+  // Cap at 10 files to stay under 25k token context limit
   const allFiles = getSourceFiles(state.workingDirectory);
-  const editableFiles = guessRelevantFiles(text, allFiles, mentionedFiles);
-
-  // Only add editable files as positional args — repo-map provides the rest
+  const editableFiles = selectFilesFromGrep(text, allFiles, state.workingDirectory);
   for (const f of editableFiles) {
     args.push(f);
   }
   console.log(`[agent ${id.slice(0,6)}] ${editableFiles.length} editable files: ${editableFiles.map(f => path.basename(f)).join(', ')}`);
 
-  // Pre-search the repo for context relevant to the prompt
-  const searchContext = buildSearchContext(text, state.workingDirectory);
-  const fullMessage = searchContext ? text + searchContext : text;
-  if (searchContext) {
-    console.log(`[agent ${id.slice(0,6)}] appended ${searchContext.length} chars of search context`);
-  }
+  // Enrich the prompt with grep results, file list, and "edit existing files" instruction
+  const enrichedPrompt = enrichPrompt(text, editableFiles, state.workingDirectory);
+  console.log(`[agent ${id.slice(0,6)}] prompt: ${enrichedPrompt.slice(0, 120)}...`);
 
-  args.push('--message', fullMessage);
+  args.push('--message', enrichedPrompt);
 
   const shell = isWindows ? 'cmd.exe' : 'aider';
 

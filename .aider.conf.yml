@@ -19,7 +19,7 @@ dirty-commits: true
 
 # --- Repo Map ---
 subtree-only: false
-map-tokens: 1024
+map-tokens: 512
 
 # --- Autonomous mode optimizations ---
 suggest-shell-commands: true
