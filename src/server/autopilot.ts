@@ -5,7 +5,8 @@ import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js'
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
-import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage } from '../client/lib/types.js';
+import { assessPerformance, identifyImprovements, awardXp } from './self-improve.js';
+import type { Agent, Goal, GoalLogEntry, Improvement, Workflow, WSServerMessage } from '../client/lib/types.js';
 
 const execAsync = promisify(exec);
 
