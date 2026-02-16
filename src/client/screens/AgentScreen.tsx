@@ -283,15 +283,15 @@ export function AgentScreen({ onSend }: Props) {
             )}
           </div>
 
-          {/* Input on history view */}
-          <CommandInput
-            onSend={handleSend}
-            onMicToggle={handleMicToggle}
-            isListening={isListening}
-            speechSupported={supported}
-            externalText={transcript}
-            disabled={isRunning}
-          />
+          {/* New Chat button on history view */}
+          <div className="p-3 bg-[#14141f] border-t border-[#1e1e2e] shrink-0">
+            <button
+              onClick={handleNewChat}
+              className="w-full py-2.5 bg-[#1e1e2e] text-[#e2e2ef] rounded-lg text-sm active:bg-[#2e2e3e]"
+            >
+              + New Chat
+            </button>
+          </div>
         </>
       )}
 
@@ -335,15 +335,15 @@ export function AgentScreen({ onSend }: Props) {
             </div>
           </div>
 
-          {/* Input so they can continue the conversation */}
-          <CommandInput
-            onSend={handleSend}
-            onMicToggle={handleMicToggle}
-            isListening={isListening}
-            speechSupported={supported}
-            externalText={transcript}
-            disabled={isRunning}
-          />
+          {/* Back to list button */}
+          <div className="p-3 bg-[#14141f] border-t border-[#1e1e2e] shrink-0">
+            <button
+              onClick={() => { setViewing(null); userScrolledUp.current = false; }}
+              className="w-full py-2.5 bg-[#1e1e2e] text-[#e2e2ef] rounded-lg text-sm active:bg-[#2e2e3e]"
+            >
+              Back to messages
+            </button>
+          </div>
         </>
       )}
 

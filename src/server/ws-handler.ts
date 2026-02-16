@@ -27,6 +27,17 @@ function commitAgentChanges(workingDirectory: string, prompt: string): boolean {
 }
 const MAX_OUTPUT_BUFFER = 200; // lines per agent
 
+/** Parse files_changed from JSON string (SQLite stores it as TEXT) */
+function parseCommand(cmd: Command): Command {
+  if (typeof cmd.files_changed === 'string') {
+    try { cmd.files_changed = JSON.parse(cmd.files_changed as string); } catch { cmd.files_changed = []; }
+  }
+  return cmd;
+}
+function parseCommands(cmds: Command[]): Command[] {
+  return cmds.map(parseCommand);
+}
+
 /** Strip all ANSI escape codes from text */
 function stripAnsi(str: string): string {
   return str
@@ -360,7 +371,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
             );
             const updatedCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [cmdId]);
             if (updatedCmd) {
-              broadcast({ type: 'command:updated', command: updatedCmd });
+              broadcast({ type: 'command:updated', command: parseCommand(updatedCmd) });
             }
             currentCommandIds.delete(id);
             if (summary) {
@@ -420,7 +431,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               );
               const updatedCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [cmdId]);
               if (updatedCmd) {
-                broadcast({ type: 'command:updated', command: updatedCmd });
+                broadcast({ type: 'command:updated', command: parseCommand(updatedCmd) });
               }
               currentCommandIds.delete(id);
               if (summary) {
@@ -475,7 +486,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               );
               currentCommandIds.set(id, retryCmdId);
               const retryCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [retryCmdId]);
-              if (retryCmd) broadcast({ type: 'command:updated', command: retryCmd });
+              if (retryCmd) broadcast({ type: 'command:updated', command: parseCommand(retryCmd) });
 
               sendToAgent(id, fixPrompt);
               return; // Don't mark agent as idle yet
@@ -534,7 +545,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         // Broadcast the new running command so client chat shows it immediately
         const newCmd = getOne<Command>('SELECT * FROM commands WHERE id = ?', [commandId]);
         if (newCmd) {
-          broadcast({ type: 'command:updated', command: newCmd });
+          broadcast({ type: 'command:updated', command: parseCommand(newCmd) });
         }
       }
       break;
@@ -644,7 +655,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         'SELECT * FROM commands WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?',
         [agentId, limit]
       );
-      send(ws, { type: 'agent:history', agentId, commands });
+      send(ws, { type: 'agent:history', agentId, commands: parseCommands(commands) });
       break;
     }
 
@@ -842,7 +853,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const recentCommands = getAll<Command>(
         'SELECT * FROM commands ORDER BY started_at DESC LIMIT 100'
       );
-      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, commands: recentCommands });
+      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, commands: parseCommands(recentCommands) });
 
       // Replay buffered output for all agents (last 100 lines max)
       for (const agent of agents) {

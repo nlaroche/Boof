@@ -60,6 +60,16 @@ You are working on a React 19 + TypeScript + Vite PWA with a Node.js Express 5 b
 - Fix ALL errors before finishing — do not leave broken code
 - Do not introduce unused imports or variables
 
+## Searching the Codebase
+- You CAN run shell commands to search. Use `/run` followed by the command.
+- To find where something is defined: `/run git grep -n "functionName" -- "*.ts" "*.tsx"`
+- To find all usages of a type: `/run git grep -n "TypeName" -- "*.ts" "*.tsx"`
+- To see a file's contents: `/run cat src/client/lib/types.ts`
+- To find files by name: `/run git ls-files | grep -i "keyword"`
+- To check what changed: `/run git diff --stat`
+- ALWAYS search before guessing. If you need to know where something is defined or used, search first.
+- The SEARCH CONTEXT block appended to your prompt contains auto-generated grep results — use them.
+
 ## Self-Improvement
 - If you encounter a recurring error pattern, add a note to this file so you avoid it next time
 - If a build/type error reveals a missing type definition, fix it in types.ts

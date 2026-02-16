@@ -22,7 +22,7 @@ subtree-only: false
 map-tokens: 1024
 
 # --- Autonomous mode optimizations ---
-suggest-shell-commands: false
+suggest-shell-commands: true
 detect-urls: false
 stream: false
 pretty: false
