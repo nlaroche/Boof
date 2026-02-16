@@ -3,7 +3,7 @@ import { promisify } from 'util';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import { initBoofDir, getMemoryContext, recordMistake, recordPattern } from './agent-memory.js';
+import { initBoofDir, getMemoryContext, recordMistake, recordPattern, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import { assessPerformance, identifyImprovements, awardXp } from './self-improve.js';
 import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement } from '../client/lib/types.js';
@@ -326,6 +326,10 @@ function logToGoal(
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, now]
   );
+
+  // Invalidate cache for this goal since we just added a new entry
+  invalidateGoalLogCache(goalId);
+
   const entry = getOne<GoalLogEntry>('SELECT * FROM goal_log WHERE id = ?', [logId]);
   if (entry) {
     broadcast({ type: 'goal:log:entry', entry });
@@ -679,12 +683,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.log(`[perf:implementation] Starting implementation phase for: ${currentTask.title}`);
 
       const dbQueryStart = Date.now();
-      const recentLogs = getAll<GoalLogEntry>(
-        'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT 5',
-        [goalId]
-      );
+      const recentLogs = getGoalLogCached(goalId, 5);
       const dbQueryMs = Date.now() - dbQueryStart;
-      console.log(`[perf:implementation] DB query: ${dbQueryMs}ms`);
+      console.log(`[perf:implementation] DB query (cached): ${dbQueryMs}ms`);
 
       // Build a task-focused prompt
       const promptBuildStart = Date.now();

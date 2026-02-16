@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { getAll } from './db.js';
 
 export interface AgentMemory {
   patterns: { pattern: string; learned_at: string; source: string }[];
@@ -8,6 +9,61 @@ export interface AgentMemory {
 }
 
 const EMPTY_MEMORY: AgentMemory = { patterns: [], mistakes: [], preferences: [] };
+
+// ── Goal Log Cache ──────────────────────────────────────────────────────
+
+interface GoalLogEntry {
+  id: string;
+  goal_id: string;
+  agent_id: string;
+  action: string;
+  summary: string;
+  diff_stats: string;
+  cost_usd: number;
+  duration_ms: number;
+  success: number;
+  created_at: string;
+}
+
+interface CacheEntry<T> {
+  data: T;
+  timestamp: number;
+}
+
+const CACHE_TTL_MS = 30000; // 30 seconds
+const goalLogCache = new Map<string, CacheEntry<GoalLogEntry[]>>();
+
+export function getGoalLogCached(goalId: string, limit = 5): GoalLogEntry[] {
+  const cacheKey = `${goalId}:${limit}`;
+  const now = Date.now();
+
+  const cached = goalLogCache.get(cacheKey);
+  if (cached && (now - cached.timestamp) < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const results = getAll<GoalLogEntry>(
+    'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT ?',
+    [goalId, limit]
+  );
+
+  goalLogCache.set(cacheKey, { data: results, timestamp: now });
+  return results;
+}
+
+export function invalidateGoalLogCache(goalId?: string): void {
+  if (goalId) {
+    // Invalidate all entries for this goal_id
+    for (const key of goalLogCache.keys()) {
+      if (key.startsWith(`${goalId}:`)) {
+        goalLogCache.delete(key);
+      }
+    }
+  } else {
+    // Clear entire cache
+    goalLogCache.clear();
+  }
+}
 
 export function initBoofDir(repoPath: string): void {
   const boofDir = path.join(repoPath, '.boof');
