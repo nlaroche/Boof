@@ -246,20 +246,13 @@ function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
   if (memoryContext) {
     prompt += memoryContext;
   }
-  prompt += `You are planning tasks for the goal: "${goal.name}"\n`;
-  prompt += `Description: ${goal.description || 'No description provided.'}\n\n`;
-  prompt += `Look at the file structure (use Glob on src/server/) then IMMEDIATELY output 3-5 task lines.\n`;
-  prompt += `Do NOT read file contents — just use the file listing to plan.\n`;
-  prompt += `Keep exploration to 1-2 tool calls MAX, then output your tasks.\n\n`;
-  prompt += `OUTPUT FORMAT — each task MUST be on its own line:\n`;
-  prompt += `TASK: <short title> | <one-line description with specific file names>\n\n`;
-  prompt += `Example:\n`;
-  prompt += `TASK: Add scheduler tests | Create src/server/__tests__/scheduler.test.ts testing matchesCron and matchField\n`;
-  prompt += `TASK: Test agent-memory | Create src/server/__tests__/agent-memory.test.ts testing recordMistake and getMemoryContext\n\n`;
-  prompt += `Rules:\n`;
-  prompt += `- Each task = one agent run (1-2 file changes)\n`;
-  prompt += `- Name exact files\n`;
-  prompt += `- Do NOT implement — just plan\n`;
+  prompt += `Planning tasks for goal: "${goal.name}"\n${goal.description || 'No description.'}\n\n`;
+  prompt += `Use Glob on src/server/, then output 3-5 tasks. Max 1-2 tool calls. Do NOT read files.\n\n`;
+  prompt += `FORMAT (one per line):\nTASK: <title> | <description with file names>\n\n`;
+  prompt += `Examples:\n`;
+  prompt += `TASK: Add scheduler tests | Create src/server/__tests__/scheduler.test.ts testing matchesCron\n`;
+  prompt += `TASK: Test agent-memory | Create src/server/__tests__/agent-memory.test.ts testing recordMistake\n\n`;
+  prompt += `Each task = 1 run (1-2 file edits). Name exact files. Plan only, don't implement.\n`;
   return prompt;
 }
 
