@@ -6,7 +6,7 @@ import path from 'path';
 import { initDb } from '../db.js';
 import { runQuery, getOne, getAll } from '../db.js';
 import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
-import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkAndCycleGoal } from '../autopilot.js';
+import { MAX_GOALS_PER_SESSION, MAX_CYCLES_PER_HOUR, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkCycleRateLimit, checkAndCycleGoal } from '../autopilot.js';
 import { initScheduler, stopScheduler } from '../scheduler.js';
 
 const TEST_DB_PATH = './test-goal-cycling.db';
@@ -577,6 +577,68 @@ describe('overnight autonomy safeguards', () => {
     );
     assert.equal(nextGoal?.id, highPriGoalId, 'Should pick highest priority active goal');
     assert.equal(nextGoal?.priority, 5);
+  });
+
+  it('MAX_CYCLES_PER_HOUR is a positive integer', () => {
+    assert.ok(typeof MAX_CYCLES_PER_HOUR === 'number', 'Should be a number');
+    assert.ok(MAX_CYCLES_PER_HOUR > 0, 'Should be positive');
+    assert.ok(Number.isInteger(MAX_CYCLES_PER_HOUR), 'Should be an integer');
+  });
+
+  it('checkCycleRateLimit allows up to MAX_CYCLES_PER_HOUR cycles', () => {
+    const agentId = generateId();
+    resetAgentSessionCounters(agentId);
+
+    // Should allow MAX_CYCLES_PER_HOUR cycles without triggering limit
+    for (let i = 0; i < MAX_CYCLES_PER_HOUR; i++) {
+      const limited = checkCycleRateLimit(agentId);
+      assert.equal(limited, false, `Cycle ${i + 1} should not be rate-limited`);
+    }
+  });
+
+  it('checkCycleRateLimit blocks the (MAX_CYCLES_PER_HOUR + 1)th cycle', () => {
+    const agentId = generateId();
+    resetAgentSessionCounters(agentId);
+
+    // Consume the full quota
+    for (let i = 0; i < MAX_CYCLES_PER_HOUR; i++) {
+      checkCycleRateLimit(agentId);
+    }
+
+    // Next call should be rate-limited
+    const limited = checkCycleRateLimit(agentId);
+    assert.equal(limited, true, 'Should be rate-limited after exceeding MAX_CYCLES_PER_HOUR');
+  });
+
+  it('checkCycleRateLimit uses independent buckets per agent', () => {
+    const agent1 = generateId();
+    const agent2 = generateId();
+    resetAgentSessionCounters(agent1);
+    resetAgentSessionCounters(agent2);
+
+    // Exhaust agent1's quota
+    for (let i = 0; i < MAX_CYCLES_PER_HOUR; i++) {
+      checkCycleRateLimit(agent1);
+    }
+    assert.equal(checkCycleRateLimit(agent1), true, 'agent1 should be rate-limited');
+
+    // agent2 should still be clean
+    assert.equal(checkCycleRateLimit(agent2), false, 'agent2 should not be rate-limited');
+  });
+
+  it('resetAgentSessionCounters clears rate-limit bucket', () => {
+    const agentId = generateId();
+    resetAgentSessionCounters(agentId);
+
+    // Exhaust quota
+    for (let i = 0; i < MAX_CYCLES_PER_HOUR; i++) {
+      checkCycleRateLimit(agentId);
+    }
+    assert.equal(checkCycleRateLimit(agentId), true, 'Should be rate-limited before reset');
+
+    // Reset and verify quota is cleared
+    resetAgentSessionCounters(agentId);
+    assert.equal(checkCycleRateLimit(agentId), false, 'Should not be rate-limited after reset');
   });
 
   it('autopilot disables when agent has no active goals and no tasks', () => {

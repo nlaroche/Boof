@@ -31,6 +31,9 @@ const LOOP_INTERVAL_MS = 30_000;
 /** Max goals an agent may cycle through in one session before pausing. */
 export const MAX_GOALS_PER_SESSION = 10;
 
+/** Max goal cycles allowed per hour (time-based rate limit to prevent runaway loops). */
+export const MAX_CYCLES_PER_HOUR = 6;
+
 /** How long (ms) to back off between loop checks when no goals remain. */
 export const IDLE_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -40,10 +43,37 @@ const goalsCycledThisSession = new Map<string, number>();
 /** Timestamps when each agent ran out of goals (for idle backoff). */
 const agentIdleSince = new Map<string, number>();
 
+/**
+ * Per-agent sliding-window of goal-cycle timestamps (last 1 hour).
+ * Used to enforce MAX_CYCLES_PER_HOUR.
+ */
+const agentCycleTimestamps = new Map<string, number[]>();
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Check whether an agent has exceeded the per-hour cycle rate limit.
+ * Returns true if the agent is rate-limited (should NOT cycle now).
+ * Records the current timestamp if not rate-limited.
+ */
+export function checkCycleRateLimit(agentId: string): boolean {
+  const now = Date.now();
+  const timestamps = agentCycleTimestamps.get(agentId) ?? [];
+  // Prune timestamps older than 1 hour
+  const recent = timestamps.filter(t => now - t < ONE_HOUR_MS);
+  if (recent.length >= MAX_CYCLES_PER_HOUR) {
+    return true; // rate-limited
+  }
+  recent.push(now);
+  agentCycleTimestamps.set(agentId, recent);
+  return false; // not rate-limited
+}
+
 /** Reset session counters for an agent (e.g. when new goals are assigned). */
 export function resetAgentSessionCounters(agentId: string): void {
   goalsCycledThisSession.delete(agentId);
   agentIdleSince.delete(agentId);
+  agentCycleTimestamps.delete(agentId);
 }
 
 // ── Worktree helpers ────────────────────────────────────────────────────
@@ -699,6 +729,18 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
   }
 
   console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
+
+  // ── Overnight safeguard: enforce per-hour cycle rate limit ──
+  if (checkCycleRateLimit(agentId)) {
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} exceeded ${MAX_CYCLES_PER_HOUR} cycles/hour rate limit. Pausing.`);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Rate limit: exceeded ${MAX_CYCLES_PER_HOUR} goal cycles per hour. Pausing to prevent runaway loops.\n`,
+    });
+    runQuery('UPDATE agents SET autopilot = 0, autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+    return true;
+  }
 
   // ── Overnight safeguard: enforce per-session goal cap ──
   const cycled = (goalsCycledThisSession.get(agentId) ?? 0) + 1;
