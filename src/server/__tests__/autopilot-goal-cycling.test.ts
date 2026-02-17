@@ -6,7 +6,8 @@ import path from 'path';
 import { initDb } from '../db.js';
 import { runQuery, getOne, getAll } from '../db.js';
 import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
-import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters } from '../autopilot.js';
+import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkAndCycleGoal } from '../autopilot.js';
+import { initScheduler, stopScheduler } from '../scheduler.js';
 
 const TEST_DB_PATH = './test-goal-cycling.db';
 
@@ -593,5 +594,132 @@ describe('overnight autonomy safeguards', () => {
 
     const agent = getOne<{ autopilot_goal_id: string | null }>('SELECT autopilot_goal_id FROM agents WHERE id = ?', [agentId]);
     assert.equal(agent?.autopilot_goal_id, null, 'autopilot_goal_id should be cleared when no goals remain');
+  });
+});
+
+describe('scheduler goal-cycling integration', () => {
+  beforeEach(async () => {
+    goalCounter = 0;
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+  });
+
+  afterEach(() => {
+    stopScheduler();
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+  });
+
+  it('initScheduler registers a cron tick without throwing', () => {
+    const broadcasts: any[] = [];
+    // initScheduler should not throw and should set up an interval
+    assert.doesNotThrow(() => initScheduler((msg) => broadcasts.push(msg)));
+    // Clean up immediately
+    stopScheduler();
+  });
+
+  it('stopScheduler is idempotent — calling twice does not throw', () => {
+    initScheduler(() => {});
+    stopScheduler();
+    assert.doesNotThrow(() => stopScheduler());
+  });
+
+  it('checkAndCycleGoal cycles goal on scheduler cron tick (simulated)', async () => {
+    // Set up: one agent with an active goal, all tasks done
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Scheduler Agent', '.', 1, NULL, 'idle', ?, ?)`,
+      [agentId, now, now]
+    );
+
+    const goalId = createGoal('Scheduler Goal', 3);
+    createTask(goalId, 'Only Task', 'done');
+
+    // Bind goal to agent
+    runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [goalId, agentId]);
+
+    // Simulate what happens when the scheduler cron tick fires and reaches checkAndCycleGoal:
+    // All tasks done → goal auto-marked completed → autopilot_goal_id cleared
+    const broadcasts: any[] = [];
+    initScheduler((msg) => broadcasts.push(msg));
+
+    const cycled = await checkAndCycleGoal(agentId, goalId);
+    assert.equal(cycled, true, 'checkAndCycleGoal should return true when goal is cycled');
+
+    // Verify goal is now completed in DB
+    const goal = getOne<{ status: string; completed_at: string | null }>(
+      'SELECT status, completed_at FROM goals WHERE id = ?',
+      [goalId]
+    );
+    assert.equal(goal?.status, 'completed', 'Goal should be auto-marked completed');
+    assert.ok(goal?.completed_at !== null, 'completed_at should be set after cycling');
+
+    // Verify agent's goal was cleared (no next active goal)
+    const agent = getOne<{ autopilot_goal_id: string | null }>(
+      'SELECT autopilot_goal_id FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, null, 'Agent autopilot_goal_id cleared when no next goal');
+  });
+
+  it('scheduler cron tick cycles to next highest-priority goal', async () => {
+    // Set up: agent with active goal A (done) and goal B (active, lower priority)
+    const agentId = generateId();
+    const now = new Date().toISOString();
+
+    const goalA = createGoal('Goal A (high)', 5);
+    const goalB = createGoal('Goal B (low)', 1);
+
+    createTask(goalA, 'Task for A', 'done'); // A is complete
+
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Scheduler Cycle Agent', '.', 1, ?, 'idle', ?, ?)`,
+      [agentId, goalA, now, now]
+    );
+
+    // Simulate the scheduler triggering checkAndCycleGoal for goal A
+    const broadcasts: any[] = [];
+    initScheduler((msg) => broadcasts.push(msg));
+
+    const cycled = await checkAndCycleGoal(agentId, goalA);
+    assert.equal(cycled, true, 'Should return true when cycling from A to B');
+
+    // Verify goalA is completed
+    const completedGoal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalA]);
+    assert.equal(completedGoal?.status, 'completed', 'Goal A should be completed');
+
+    // Verify agent now points to goalB (next highest priority)
+    const agent = getOne<{ autopilot_goal_id: string | null }>(
+      'SELECT autopilot_goal_id FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, goalB, 'Agent should switch to Goal B after Goal A completes');
+  });
+
+  it('checkAndCycleGoal returns false when active tasks remain (scheduler does not cycle)', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+
+    const goalId = createGoal('Incomplete Goal', 3);
+    createTask(goalId, 'Pending Task', 'todo'); // still pending
+
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Busy Agent', '.', 1, ?, 'idle', ?, ?)`,
+      [agentId, goalId, now, now]
+    );
+
+    const broadcasts: any[] = [];
+    initScheduler((msg) => broadcasts.push(msg));
+
+    const cycled = await checkAndCycleGoal(agentId, goalId);
+    assert.equal(cycled, false, 'Should not cycle when tasks are still pending');
+
+    // Goal should still be active
+    const goal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalId]);
+    assert.equal(goal?.status, 'active', 'Goal should remain active when tasks are pending');
   });
 });
