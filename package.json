@@ -9,7 +9,7 @@
     "build": "vite build && tsc -p tsconfig.server.json",
     "start": "node dist/server/index.js",
     "setup": "node scripts/setup.js",
-    "test:unit": "node --import tsx --test src/server/__tests__/*.test.ts"
+    "test:unit": "node --import tsx --test src/server/__tests__/*.test.ts src/server/engine/__tests__/*.test.ts"
   },
   "repository": {
     "type": "git",
