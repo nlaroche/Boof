@@ -153,6 +153,14 @@ export function recordPattern(repoPath: string, pattern: string, source: string)
   saveMemory(repoPath, memory);
 }
 
+/**
+ * Return all patterns recorded in agent memory for a repo.
+ * Used to verify reinforcement entries after goal completion.
+ */
+export function getPatterns(repoPath: string): { pattern: string; learned_at: string; source: string }[] {
+  return loadMemory(repoPath).patterns;
+}
+
 export function getMemoryContext(repoPath: string, taskDescription?: string): string {
   const memory = loadMemory(repoPath);
   const parts: string[] = [];
