@@ -3,7 +3,8 @@ import { createServer } from 'http';
 import path from 'path';
 import { initDb } from './db.js';
 import { setupWebSocket } from './ws-handler.js';
-import { startAutopilotLoop } from './autopilot.js';
+import { startAutopilotLoop, stopAutopilotLoop } from './autopilot.js';
+import { killAllAgents } from './pty-manager.js';
 
 const PORT = process.env.PORT || 3456;
 
@@ -38,3 +39,15 @@ async function start() {
 }
 
 start();
+
+// Kill all agent child processes on shutdown to prevent orphans
+function cleanup() {
+  console.log('[server] Shutting down — killing agent processes...');
+  stopAutopilotLoop();
+  killAllAgents();
+  process.exit(0);
+}
+
+process.on('SIGTERM', cleanup);
+process.on('SIGINT', cleanup);
+process.on('SIGHUP', cleanup);

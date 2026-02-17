@@ -450,6 +450,17 @@ export function killAgent(id: string): void {
   }
 }
 
+/** Kill all agent processes. Call on server shutdown to prevent orphans. */
+export function killAllAgents(): void {
+  for (const [id, state] of agents) {
+    if (state.activePty) {
+      try { state.activePty.kill(); } catch {}
+    }
+    console.log(`Agent ${id} killed (shutdown)`);
+  }
+  agents.clear();
+}
+
 export function restartAgent(
   id: string,
   workingDirectory: string,
