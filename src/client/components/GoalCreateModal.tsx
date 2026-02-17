@@ -77,7 +77,6 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Improve Boof UI polish"
-            autoFocus
             className="mb-4"
           />
 

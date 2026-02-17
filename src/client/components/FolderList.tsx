@@ -156,7 +156,6 @@ export function FolderList({
               onChange={(e) => setEditName(e.target.value)}
               placeholder="Folder name"
               className="mb-3"
-              autoFocus
             />
             <div className="mb-4">
               <div className="text-xs text-[#6b6b80] mb-2">Icon</div>
