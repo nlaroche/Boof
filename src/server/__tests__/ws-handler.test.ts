@@ -635,3 +635,133 @@ describe('getBroadcast', () => {
     });
   });
 });
+
+describe('goal stats WebSocket messages', () => {
+  let ws: MockWebSocket;
+
+  beforeEach(() => {
+    ws = createMockWebSocket();
+  });
+
+  it('handles goal:get-stats message and returns goal:stats response', async () => {
+    const message: WSClientMessage = {
+      type: 'goal:get-stats',
+      goalId: 'nonexistent-goal-id'
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0, 'Should send a response');
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'goal:stats', 'Response type should be goal:stats');
+    assert.equal(response.goalId, 'nonexistent-goal-id', 'Response should include goalId');
+    assert.equal(response.stats, null, 'Stats should be null for nonexistent goal');
+  });
+
+  it('goal:stats response has correct shape when stats exist', async () => {
+    const { runQuery: rq, getOne: go } = await import('../db.js');
+
+    // Insert a goal and its stats
+    const goalId = 'test-stats-goal-' + Date.now();
+    const now = new Date().toISOString();
+    rq(
+      `INSERT INTO goals (id, name, description, status, priority, created_at, updated_at)
+       VALUES (?, 'Stats Test Goal', '', 'active', 3, ?, ?)`,
+      [goalId, now, now]
+    );
+    rq(
+      `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at)
+       VALUES (?, 5, 4, 1, 7500, ?)`,
+      [goalId, now]
+    );
+
+    const message: WSClientMessage = {
+      type: 'goal:get-stats',
+      goalId
+    };
+
+    handleWsMessage(ws as any, JSON.stringify(message));
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    assert.ok(ws.sentMessages.length > 0, 'Should send a response');
+    const response = JSON.parse(ws.sentMessages[0]);
+    assert.equal(response.type, 'goal:stats');
+    assert.equal(response.goalId, goalId);
+    assert.ok(response.stats !== null, 'Stats should not be null');
+    assert.equal(response.stats.total_runs, 5, 'Should return correct total_runs');
+    assert.equal(response.stats.tasks_completed, 4, 'Should return correct tasks_completed');
+    assert.equal(response.stats.tasks_failed, 1, 'Should return correct tasks_failed');
+    assert.equal(response.stats.avg_duration_ms, 7500, 'Should return correct avg_duration_ms');
+  });
+
+  it('getBroadcast broadcasts goal:completed with correct structure', () => {
+    const broadcast = getBroadcast();
+
+    // Should not throw when broadcasting goal completion
+    assert.doesNotThrow(() => {
+      broadcast({
+        type: 'goal:completed',
+        goalId: 'goal-123',
+        agentId: 'agent-456',
+        goal: {
+          id: 'goal-123',
+          name: 'Test Goal',
+          description: 'A test goal',
+          status: 'completed',
+          priority: 3,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+          completed_at: new Date().toISOString(),
+        } as any
+      });
+    });
+  });
+
+  it('getBroadcast broadcasts goal:switched with correct structure', () => {
+    const broadcast = getBroadcast();
+
+    assert.doesNotThrow(() => {
+      broadcast({
+        type: 'goal:switched',
+        agentId: 'agent-456',
+        previousGoalId: 'goal-old',
+        newGoalId: 'goal-new',
+        goal: {
+          id: 'goal-new',
+          name: 'Next Goal',
+          description: 'The next goal to work on',
+          status: 'active',
+          priority: 5,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        } as any
+      });
+    });
+  });
+
+  it('getBroadcast broadcasts goal:proposed-auto with array of goals', () => {
+    const broadcast = getBroadcast();
+
+    assert.doesNotThrow(() => {
+      broadcast({
+        type: 'goal:proposed-auto',
+        agentId: 'agent-456',
+        goals: [
+          {
+            id: 'proposed-1',
+            name: 'Improve test coverage',
+            description: 'Identified from patterns',
+            status: 'active',
+            priority: 2,
+            proposal_status: 'pending',
+            proposed_by: 'agent-456',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          } as any
+        ]
+      });
+    });
+  });
+});
