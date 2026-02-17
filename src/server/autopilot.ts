@@ -6,8 +6,14 @@ import { runQuery, getOne, getAll, generateId, getNow, estimateTokens } from './
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
-import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
+// branch-guard is used by systems/git-ops.ts directly
 import { stripAnsi } from './git-utils.js';
+import {
+  hasUncommittedChanges, getCurrentBranch, slugify,
+  createAgentBranch, abandonBranch, mergeToMain,
+  listAgentBranches as gitListAgentBranches, autoCommit,
+} from './systems/git-ops.js';
+import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
   persistRunMetrics, updateRunMetricMerge, storeReflection, buildReflectionPrompt, parseReflectionResponse,
@@ -94,136 +100,9 @@ export function getAgentCwd(agent: Agent): string {
 // Track running autopilot agents to avoid double-triggering
 const runningAutopilots = new Set<string>();
 
-// ── Branch-based isolation ──────────────────────────────────────────────
-
-async function hasUncommittedChanges(workingDirectory: string): Promise<boolean> {
-  try {
-    const { stdout } = await execAsync('git status --porcelain', {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    });
-    // Filter out untracked files in .boof/ — those are ours and safe to ignore
-    const significant = stdout
-      .split('\n')
-      .filter((line) => line.trim() && !line.includes('.boof/'))
-      .filter((line) => line.trim() && !line.includes('boof.db'));
-    return significant.length > 0;
-  } catch {
-    return false;
-  }
-}
-
-async function getCurrentBranch(workingDirectory: string): Promise<string> {
-  const { stdout } = await execAsync('git branch --show-current', {
-    cwd: workingDirectory,
-    timeout: 10_000,
-  });
-  const branch = stdout.trim();
-  if (!branch) {
-    throw new Error('Could not determine current branch (detached HEAD or git failure)');
-  }
-  return branch;
-}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40);
-}
-
-async function createAgentBranch(
-  worktreePath: string,
-  agentName: string,
-  goalSlug: string
-): Promise<string> {
-  const timestamp = Date.now();
-  const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  // In the worktree, create a new branch from main — no stash needed, it's the agent's private space
-  await execAsync(`git checkout -b "${branchName}" main`, {
-    cwd: worktreePath,
-    timeout: 30_000,
-  });
-  // Verify we're actually on the new branch
-  const { stdout } = await execAsync('git branch --show-current', {
-    cwd: worktreePath,
-    timeout: 10_000,
-  });
-  const actual = stdout.trim();
-  if (actual !== branchName) {
-    throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
-  }
-  console.log(`[autopilot] Created branch: ${branchName} (from main) in worktree ${worktreePath}`);
-  return branchName;
-}
-
-/** Abandon a failed branch — just log it, don't checkout or delete anything. */
-function abandonBranch(branchName: string, reason: string): void {
-  console.log(`[autopilot] Abandoning branch ${branchName}: ${reason}`);
-  // Branch stays in the repo. Can be cleaned up later via UI or gc sweep.
-}
-
-/**
- * Merge an agent branch into main.
- * Commits in the worktree, merges from the main repo dir.
- * The worktree returns to main after merge.
- */
-async function mergeToMain(
-  mainRepoDir: string,
-  worktreePath: string,
-  branchName: string
-): Promise<{ success: boolean; output: string }> {
-  try {
-    // Commit any uncommitted agent work in the worktree
-    await execAsync('git add -A && git diff --cached --quiet || git commit -m "WIP: uncommitted agent work"', {
-      cwd: worktreePath,
-      timeout: 30_000,
-    }).catch(() => {}); // ignore if nothing to commit
-
-    // Merge from the main repo dir (main stays checked out there)
-    const { stdout, stderr } = await execAsync(
-      `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
-      { cwd: mainRepoDir, timeout: 60_000 }
-    );
-
-    // Delete the merged branch
-    await execAsync(`git branch -d "${branchName}"`, {
-      cwd: mainRepoDir,
-      timeout: 10_000,
-    }).catch(() => {});
-
-    // Return worktree to detached HEAD at main (can't checkout main — it's checked out in the main repo)
-    await execAsync('git checkout --detach main', {
-      cwd: worktreePath,
-      timeout: 30_000,
-    }).catch(() => {});
-
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    // Abort failed merge in the main repo
-    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: 10_000 }).catch(() => {});
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
-}
-
-/** List all agent branches for a given working directory */
-export async function listAgentBranches(workingDirectory: string): Promise<string[]> {
-  try {
-    const { stdout } = await execAsync('git branch --list "agent/*"', {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    });
-    return stdout
-      .split('\n')
-      .map(b => b.trim().replace(/^\*\s*/, ''))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-/** Merge an agent branch into main (called from UI) */
+// ── Branch-based isolation (delegated to systems/git-ops.ts) ──
+// Re-export for ws-handler compatibility
+export { gitListAgentBranches as listAgentBranches };
 export async function mergeAgentBranch(
   mainRepoDir: string,
   worktreePath: string,
@@ -379,70 +258,8 @@ function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
   return prompt;
 }
 
-async function runBuildCheck(workingDirectory: string): Promise<{ success: boolean; output: string }> {
-  try {
-    const buildCmd = 'node node_modules/vite/bin/vite.js build';
-    const { stdout, stderr } = await execAsync(buildCmd, {
-      cwd: workingDirectory,
-      timeout: 120_000,
-      env: { ...process.env },
-    });
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
-}
-
-async function runTestCheck(workingDirectory: string): Promise<{ success: boolean; output: string; failures: string[] }> {
-  try {
-    const testCmd = 'node --import tsx --test src/server/__tests__/*.test.ts';
-    const { stdout, stderr } = await execAsync(testCmd, {
-      cwd: workingDirectory,
-      timeout: 180_000,
-      env: { ...process.env },
-    });
-    const output = stdout + stderr;
-    // Parse "not ok" lines for failures
-    const failures = output.match(/not ok \d+ - .*/g) || [];
-    return { success: failures.length === 0, output, failures };
-  } catch (err: any) {
-    const output = err.stderr || err.stdout || String(err);
-    const failures = output.match(/not ok \d+ - .*/g) || [];
-    return { success: false, output, failures };
-  }
-}
-
-async function autoCommit(workingDirectory: string, goalSlug: string, summary: string): Promise<string> {
-  try {
-    // Guard: refuse to commit on protected or non-agent branches
-    const { stdout: branchOut } = await execAsync('git branch --show-current', {
-      cwd: workingDirectory,
-      timeout: 10_000,
-    });
-    const currentBranch = branchOut.trim();
-    if (isProtectedBranch(currentBranch)) {
-      console.error(`[autopilot] Refusing to commit on protected branch: ${currentBranch}`);
-      return '';
-    }
-    if (!currentBranch.startsWith('agent/')) {
-      console.error(`[autopilot] Refusing to commit on non-agent branch: ${currentBranch}`);
-      return '';
-    }
-    await execAsync('git add -A', { cwd: workingDirectory, timeout: 30_000 });
-    const msg = `agent(${goalSlug}): ${summary.slice(0, 150)}`.replace(/"/g, '\\"');
-    await execAsync(`git commit -m "${msg}"`, {
-      cwd: workingDirectory,
-      timeout: 30_000,
-    });
-    const { stdout } = await execAsync('git diff --stat HEAD~1', {
-      cwd: workingDirectory,
-      timeout: 30_000,
-    });
-    return stdout.trim();
-  } catch (err: any) {
-    return err.stdout || '';
-  }
-}
+// runBuildCheck, runTestCheck imported from systems/build-runner.ts
+// autoCommit, hasUncommittedChanges, etc. imported from systems/git-ops.ts
 
 function logToGoal(
   goalId: string,

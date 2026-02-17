@@ -4,6 +4,9 @@
  *
  * This is a static analysis test — it reads the source code and verifies
  * the invariant structurally. No git repos needed.
+ *
+ * Git operations live in systems/git-ops.ts (extracted from autopilot.ts).
+ * Autopilot.ts delegates to git-ops.ts for all git branch operations.
  */
 import { describe, it } from 'node:test';
 import * as assert from 'node:assert';
@@ -13,7 +16,9 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AUTOPILOT_PATH = path.resolve(__dirname, '..', 'autopilot.ts');
+const GIT_OPS_PATH = path.resolve(__dirname, '..', 'systems', 'git-ops.ts');
 const source = fs.readFileSync(AUTOPILOT_PATH, 'utf-8');
+const gitOpsSource = fs.readFileSync(GIT_OPS_PATH, 'utf-8');
 
 describe('autopilot branch safety', () => {
 
@@ -39,17 +44,17 @@ describe('autopilot branch safety', () => {
   });
 
   it('should only have git checkout in createAgentBranch and mergeToMain', () => {
-    const lines = source.split('\n');
+    // Git operations are in git-ops.ts — check both files
+    const allSource = source + '\n' + gitOpsSource;
+    const lines = allSource.split('\n');
     const violations: string[] = [];
 
     let currentFunction = '';
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      // Track which function we're in
       const funcMatch = line.match(/(?:async\s+)?function\s+(\w+)/);
       if (funcMatch) currentFunction = funcMatch[1];
 
-      // Check for git checkout commands
       if (line.includes('git checkout') && !line.trim().startsWith('//')) {
         const allowed = ['createAgentBranch', 'mergeToMain'];
         if (!allowed.includes(currentFunction)) {
@@ -65,12 +70,11 @@ describe('autopilot branch safety', () => {
   });
 
   it('createAgentBranch should always branch from main', () => {
-    // Find the createAgentBranch function body
-    const funcStart = source.indexOf('async function createAgentBranch');
-    assert.ok(funcStart >= 0, 'createAgentBranch not found');
+    // Function is now in git-ops.ts
+    const funcStart = gitOpsSource.indexOf('export async function createAgentBranch');
+    assert.ok(funcStart >= 0, 'createAgentBranch not found in git-ops.ts');
 
-    // Find the checkout command within it
-    const funcBody = source.slice(funcStart, funcStart + 2000);
+    const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
     const checkoutMatch = funcBody.match(/git checkout -b.*?main/);
     assert.ok(
       checkoutMatch,
@@ -79,10 +83,11 @@ describe('autopilot branch safety', () => {
   });
 
   it('mergeToMain should commit uncommitted work before checkout', () => {
-    const funcStart = source.indexOf('async function mergeToMain');
-    assert.ok(funcStart >= 0, 'mergeToMain not found');
+    // Function is now in git-ops.ts
+    const funcStart = gitOpsSource.indexOf('export async function mergeToMain');
+    assert.ok(funcStart >= 0, 'mergeToMain not found in git-ops.ts');
 
-    const funcBody = source.slice(funcStart, funcStart + 2000);
+    const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
     const commitBeforeCheckout = funcBody.indexOf('git add -A') < funcBody.indexOf('git checkout --detach main');
     assert.ok(
       commitBeforeCheckout,
@@ -91,10 +96,11 @@ describe('autopilot branch safety', () => {
   });
 
   it('mergeToMain should return to agent branch on merge failure', () => {
-    const funcStart = source.indexOf('async function mergeToMain');
-    assert.ok(funcStart >= 0, 'mergeToMain not found');
+    // Function is now in git-ops.ts
+    const funcStart = gitOpsSource.indexOf('export async function mergeToMain');
+    assert.ok(funcStart >= 0, 'mergeToMain not found in git-ops.ts');
 
-    const funcBody = source.slice(funcStart, funcStart + 2000);
+    const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
     assert.ok(
       funcBody.includes('git merge --abort'),
       'mergeToMain should abort the merge on failure'
@@ -102,10 +108,11 @@ describe('autopilot branch safety', () => {
   });
 
   it('abandonBranch should not do any git operations', () => {
-    const funcStart = source.indexOf('function abandonBranch');
-    assert.ok(funcStart >= 0, 'abandonBranch not found');
+    // Function is now in git-ops.ts
+    const funcStart = gitOpsSource.indexOf('export function abandonBranch');
+    assert.ok(funcStart >= 0, 'abandonBranch not found in git-ops.ts');
 
-    const funcBody = source.slice(funcStart, funcStart + 500);
+    const funcBody = gitOpsSource.slice(funcStart, funcStart + 500);
     const funcEnd = funcBody.indexOf('\n}');
     const body = funcBody.slice(0, funcEnd);
 
