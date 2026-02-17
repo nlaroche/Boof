@@ -327,4 +327,45 @@ describe('overnight autonomy loop: end-to-end integration', () => {
     // Calling reset on unknown agent is also safe
     assert.doesNotThrow(() => resetAgentSessionCounters('unknown-agent'), 'Should handle unknown agents safely');
   });
+
+  it('self-improve: triggers goal proposal when active goal list is empty', async () => {
+    const agentId = makeId();
+    const now = new Date().toISOString();
+
+    // Create an agent with self_improve enabled
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, self_improve, created_at, last_activity) VALUES (?, 'Self-Improve Agent', ?, 'idle', 1, ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // Verify self_improve is set
+    const agent = getOne<{ id: string; self_improve: number }>('SELECT id, self_improve FROM agents WHERE id = ?', [agentId]);
+    assert.equal(agent?.self_improve, 1, 'Agent should have self_improve enabled');
+
+    // No active goals exist
+    const activeGoals = getAll<{ id: string }>("SELECT id FROM goals WHERE status = 'active'", []);
+    assert.equal(activeGoals.length, 0, 'No active goals should exist before proposal');
+
+    // Seed memory with patterns so proposals have material
+    recordPattern(memDir, 'Improve error handling in REST endpoints', 'self-improve');
+    recordPattern(memDir, 'Add test coverage for WebSocket handlers', 'self-improve');
+
+    // When no goals remain, proposeGoals should generate new ones
+    // (This mirrors what checkAndCycleGoal does when active goals are exhausted)
+    const proposed = await proposeGoals(agentId, memDir);
+
+    assert.ok(proposed.length > 0, 'Self-improve agent should propose new goals when none remain');
+    assert.ok(proposed.length <= 3, 'Should not propose more than 3 goals at once');
+
+    // All proposed goals should be saved and associated with this agent
+    for (const g of proposed) {
+      const saved = getOne<{ proposal_status: string; proposed_by: string; status: string }>(
+        'SELECT proposal_status, proposed_by, status FROM goals WHERE id = ?',
+        [g.id]
+      );
+      assert.equal(saved?.proposal_status, 'pending', 'Proposed goals should have pending proposal_status');
+      assert.equal(saved?.proposed_by, agentId, 'Proposed goals should reference the self-improve agent');
+      assert.equal(saved?.status, 'active', 'Proposed goals start as active for cycling');
+    }
+  });
 });
