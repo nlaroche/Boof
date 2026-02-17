@@ -24,6 +24,27 @@ const execAsync = promisify(exec);
 let loopInterval: ReturnType<typeof setInterval> | null = null;
 const LOOP_INTERVAL_MS = 30_000;
 
+// ── Overnight Autonomy Safeguards ────────────────────────────────────────
+// Prevent runaway goal cycling during overnight unattended runs.
+
+/** Max goals an agent may cycle through in one session before pausing. */
+export const MAX_GOALS_PER_SESSION = 10;
+
+/** How long (ms) to back off between loop checks when no goals remain. */
+export const IDLE_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Tracks how many goals each agent has cycled through this session. */
+const goalsCycledThisSession = new Map<string, number>();
+
+/** Timestamps when each agent ran out of goals (for idle backoff). */
+const agentIdleSince = new Map<string, number>();
+
+/** Reset session counters for an agent (e.g. when new goals are assigned). */
+export function resetAgentSessionCounters(agentId: string): void {
+  goalsCycledThisSession.delete(agentId);
+  agentIdleSince.delete(agentId);
+}
+
 // ── Worktree helpers ────────────────────────────────────────────────────
 
 /** Return the effective working directory for an agent (worktree or fallback) */
@@ -678,6 +699,24 @@ async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boole
 
   console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
 
+  // ── Overnight safeguard: enforce per-session goal cap ──
+  const cycled = (goalsCycledThisSession.get(agentId) ?? 0) + 1;
+  goalsCycledThisSession.set(agentId, cycled);
+
+  if (cycled >= MAX_GOALS_PER_SESSION) {
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} reached max goals per session (${MAX_GOALS_PER_SESSION}). Pausing autopilot.`);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Reached max goals per session (${MAX_GOALS_PER_SESSION}). Pausing to avoid runaway loops. Restart autopilot to continue.\n`,
+    });
+    // Disable autopilot on this agent to require human re-enable
+    runQuery('UPDATE agents SET autopilot = 0, autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+    goalsCycledThisSession.delete(agentId);
+    agentIdleSince.delete(agentId);
+    return true;
+  }
+
   // Find next highest-priority active goal (not this one)
   const nextGoal = getOne<Goal>(
     "SELECT * FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
@@ -704,8 +743,9 @@ async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boole
     }
   }
 
-  // Clear goal from agent since no active goals exist
+  // Clear goal from agent since no active goals exist; record idle start time
   runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+  agentIdleSince.set(agentId, Date.now());
   return true;
 }
 
@@ -1298,6 +1338,18 @@ function checkAutopilotAgents(): void {
   const now = Date.now();
 
   for (const agent of agents) {
+    // ── Idle backoff: if agent recently ran out of goals, slow down checks ──
+    const idleSince = agentIdleSince.get(agent.id);
+    if (idleSince !== undefined && now - idleSince < IDLE_BACKOFF_MS) {
+      const remainingSecs = Math.ceil((IDLE_BACKOFF_MS - (now - idleSince)) / 1000);
+      console.log(`[autopilot] Agent ${agent.id.slice(0, 6)} idle backoff — ${remainingSecs}s remaining`);
+      continue;
+    }
+    // Clear backoff once it's elapsed
+    if (idleSince !== undefined) {
+      agentIdleSince.delete(agent.id);
+    }
+
     const intervalMs = (agent.autopilot_interval || 600) * 1000;
     const lastRun = agent.autopilot_last_run ? new Date(agent.autopilot_last_run).getTime() : 0;
 

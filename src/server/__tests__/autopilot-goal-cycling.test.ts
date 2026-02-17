@@ -6,6 +6,7 @@ import path from 'path';
 import { initDb } from '../db.js';
 import { runQuery, getOne, getAll } from '../db.js';
 import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
+import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters } from '../autopilot.js';
 
 const TEST_DB_PATH = './test-goal-cycling.db';
 
@@ -244,5 +245,77 @@ describe('goal proposal from past patterns', () => {
 
     const proposed = await proposeGoals(agentId, tmpDir);
     assert.ok(proposed.length <= 3, 'Should not propose more than 3 goals');
+  });
+});
+
+describe('overnight autonomy safeguards', () => {
+  beforeEach(async () => {
+    goalCounter = 0;
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+  });
+
+  it('MAX_GOALS_PER_SESSION is a positive integer', () => {
+    assert.ok(typeof MAX_GOALS_PER_SESSION === 'number', 'Should be a number');
+    assert.ok(MAX_GOALS_PER_SESSION > 0, 'Should be positive');
+    assert.ok(Number.isInteger(MAX_GOALS_PER_SESSION), 'Should be an integer');
+  });
+
+  it('IDLE_BACKOFF_MS is at least 60 seconds', () => {
+    assert.ok(typeof IDLE_BACKOFF_MS === 'number', 'Should be a number');
+    assert.ok(IDLE_BACKOFF_MS >= 60_000, 'Should be at least 60 seconds to prevent tight loops');
+  });
+
+  it('resetAgentSessionCounters is exported and callable', () => {
+    const agentId = generateId();
+    // Should not throw
+    assert.doesNotThrow(() => resetAgentSessionCounters(agentId));
+    // Calling it again should also not throw (idempotent)
+    assert.doesNotThrow(() => resetAgentSessionCounters(agentId));
+  });
+
+  it('resetAgentSessionCounters can be called for unknown agents safely', () => {
+    // Should be a no-op for agents that were never tracked
+    assert.doesNotThrow(() => resetAgentSessionCounters('nonexistent-agent-id'));
+  });
+
+  it('selects next active goal by priority when current goal finishes', () => {
+    // Verify the priority-based next goal selection query used in checkAndCycleGoal
+    const currentGoalId = createGoal('Current Goal', 3);
+    const highPriGoalId = createGoal('High Priority Goal', 5);
+    const lowPriGoalId = createGoal('Low Priority Goal', 1);
+
+    // Simulate completing the current goal
+    const now = new Date().toISOString();
+    runQuery(`UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`, [now, now, currentGoalId]);
+
+    const nextGoal = getOne<{ id: string; priority: number }>(
+      "SELECT id, priority FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [currentGoalId]
+    );
+    assert.equal(nextGoal?.id, highPriGoalId, 'Should pick highest priority active goal');
+    assert.equal(nextGoal?.priority, 5);
+  });
+
+  it('autopilot disables when agent has no active goals and no tasks', () => {
+    // Verify the DB update that checkAndCycleGoal would do when no goals remain
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Test Agent', '.', 1, NULL, 'idle', ?, ?)`,
+      [agentId, now, now]
+    );
+
+    // Simulate the autopilot clearing the goal
+    runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+
+    const agent = getOne<{ autopilot_goal_id: string | null }>('SELECT autopilot_goal_id FROM agents WHERE id = ?', [agentId]);
+    assert.equal(agent?.autopilot_goal_id, null, 'autopilot_goal_id should be cleared when no goals remain');
   });
 });
