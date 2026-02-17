@@ -331,7 +331,7 @@ async function runBuildCheck(workingDirectory: string): Promise<{ success: boole
 
 async function runTestCheck(workingDirectory: string): Promise<{ success: boolean; output: string; failures: string[] }> {
   try {
-    const testCmd = 'node --test src/server/__tests__/*.test.ts';
+    const testCmd = 'node --import tsx --test src/server/__tests__/*.test.ts';
     const { stdout, stderr } = await execAsync(testCmd, {
       cwd: workingDirectory,
       timeout: 180_000,
