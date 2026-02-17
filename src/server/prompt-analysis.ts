@@ -226,6 +226,63 @@ export function generatePromptReport(prompt: string): string {
   return report;
 }
 
+// ============================================================================
+// Goal Pattern Extraction
+// ============================================================================
+
+export interface GoalPatternHint {
+  pattern: string;
+  frequency: number;
+  suggestedGoal: string;
+}
+
+/**
+ * Parse completed-goal history entries from the LEARNED PATTERNS section
+ * of a prompt or memory context and extract proposal hints.
+ *
+ * Input format (typical entries):
+ *   - Completed: "Goal name" — modified file1.ts, file2.ts
+ *   - Pattern: Always validate types before committing
+ *
+ * Returns an array of hints that can be used to propose new goals.
+ */
+export function extractGoalPatterns(context: string): GoalPatternHint[] {
+  const hints: GoalPatternHint[] = [];
+  const seen = new Map<string, number>();
+
+  const lines = context.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Match completed goal entries: - Completed: "Goal name" — ...
+    const completedMatch = trimmed.match(/^[-*]?\s*Completed:\s*"([^"]+)"/i);
+    if (completedMatch) {
+      const goalName = completedMatch[1].trim();
+      seen.set(goalName, (seen.get(goalName) ?? 0) + 1);
+      continue;
+    }
+
+    // Match pattern entries: - Pattern: <text>
+    const patternMatch = trimmed.match(/^[-*]?\s*Pattern:\s*(.+)$/i);
+    if (patternMatch) {
+      const pattern = patternMatch[1].trim();
+      seen.set(pattern, (seen.get(pattern) ?? 0) + 1);
+    }
+  }
+
+  for (const [text, frequency] of seen) {
+    // Convert the completed goal / pattern into a proposal hint
+    const suggestedGoal = text.length > 80 ? text.slice(0, 77) + '...' : text;
+    hints.push({ pattern: text, frequency, suggestedGoal });
+  }
+
+  // Sort by frequency descending, then alphabetically for determinism
+  hints.sort((a, b) => b.frequency - a.frequency || a.pattern.localeCompare(b.pattern));
+
+  return hints;
+}
+
 /**
  * Estimate cost of a prompt (using Claude Opus 4.6 pricing).
  * Input: $15/MTok, Output: $75/MTok

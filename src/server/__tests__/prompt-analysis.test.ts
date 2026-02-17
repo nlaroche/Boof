@@ -5,6 +5,7 @@ import {
   comparePrompts,
   generatePromptReport,
   estimatePromptCost,
+  extractGoalPatterns,
 } from '../prompt-analysis.js';
 
 describe('prompt-analysis', () => {
@@ -114,6 +115,111 @@ Pick a task and implement it.`;
       assert.ok(cost.inputCost > 0);
       assert.ok(cost.outputCost > 0);
       assert.equal(cost.totalCost, cost.inputCost + cost.outputCost);
+    });
+  });
+
+  describe('extractGoalPatterns', () => {
+    it('returns empty array for empty context', () => {
+      const hints = extractGoalPatterns('');
+      assert.deepEqual(hints, []);
+    });
+
+    it('extracts completed goal entries from LEARNED PATTERNS context', () => {
+      const context = `LEARNED PATTERNS:
+- Completed: "Add summarizer goal-history test" — modified src/server/db-helpers.ts
+- Completed: "Wire goal cycling into ws-handler" — modified src/server/ws-handler.ts`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 2, 'Should extract both completed goal entries');
+      const names = hints.map(h => h.suggestedGoal);
+      assert.ok(names.some(n => n.includes('Add summarizer goal-history test')), 'Should extract first goal name');
+      assert.ok(names.some(n => n.includes('Wire goal cycling into ws-handler')), 'Should extract second goal name');
+    });
+
+    it('extracts pattern entries', () => {
+      const context = `LEARNED PATTERNS:
+- Pattern: Always validate types before committing
+- Pattern: Run tests before marking task complete`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 2, 'Should extract both pattern entries');
+      const patterns = hints.map(h => h.pattern);
+      assert.ok(patterns.some(p => p.includes('Always validate types')), 'Should extract first pattern');
+      assert.ok(patterns.some(p => p.includes('Run tests before marking')), 'Should extract second pattern');
+    });
+
+    it('counts frequency for duplicate entries', () => {
+      const context = `LEARNED PATTERNS:
+- Completed: "Fix failing tests" — modified src/server/index.ts
+- Completed: "Fix failing tests" — modified src/server/autopilot.ts`;
+
+      const hints = extractGoalPatterns(context);
+      const fixHint = hints.find(h => h.pattern.includes('Fix failing tests'));
+      assert.ok(fixHint, 'Should find the duplicated goal entry');
+      assert.equal(fixHint?.frequency, 2, 'Frequency should be 2 for duplicate entry');
+    });
+
+    it('sorts hints by frequency descending', () => {
+      const context = `LEARNED PATTERNS:
+- Completed: "Common Goal" — file1
+- Completed: "Common Goal" — file2
+- Completed: "Rare Goal" — file3`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 2);
+      assert.ok(hints[0].frequency >= hints[1].frequency, 'Should be sorted by frequency descending');
+      assert.ok(hints[0].pattern.includes('Common Goal'), 'Most frequent should be first');
+    });
+
+    it('truncates long patterns to 80 chars in suggestedGoal', () => {
+      const longText = 'A'.repeat(100);
+      const context = `LEARNED PATTERNS:\n- Pattern: ${longText}`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 1, 'Should extract the long pattern');
+      assert.ok(hints[0].suggestedGoal.length <= 80, 'suggestedGoal should be truncated to 80 chars');
+      assert.ok(hints[0].pattern.length > 80, 'Original pattern should be preserved');
+    });
+
+    it('each hint has correct shape: pattern, frequency, suggestedGoal', () => {
+      const context = `LEARNED PATTERNS:
+- Completed: "Improve test coverage" — src/server/__tests__/
+- Pattern: Run build before committing`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 2, 'Should extract at least 2 hints');
+
+      for (const hint of hints) {
+        assert.ok(typeof hint.pattern === 'string' && hint.pattern.length > 0, 'hint.pattern should be non-empty string');
+        assert.ok(typeof hint.frequency === 'number' && hint.frequency >= 1, 'hint.frequency should be >= 1');
+        assert.ok(typeof hint.suggestedGoal === 'string' && hint.suggestedGoal.length > 0, 'hint.suggestedGoal should be non-empty string');
+      }
+    });
+
+    it('ignores non-pattern lines (task lists, rules, etc.)', () => {
+      const context = `RULES:
+1. Make small focused changes
+2. Always run the build
+
+PENDING TASKS:
+- Fix the bug in auth module
+- Update database schema`;
+
+      const hints = extractGoalPatterns(context);
+      // Rules and task list items should not produce pattern hints
+      assert.equal(hints.length, 0, 'Should not extract non-pattern lines as hints');
+    });
+
+    it('works with mixed completed and pattern entries', () => {
+      const context = `PAST MISTAKES:
+- Tests failed: not ok 1 - agent-memory.test.ts → Fix: Run tests before committing
+
+LEARNED PATTERNS:
+- Completed: "Verify test suite passes clean" — modified src/server/__tests__/autopilot-goal-cycling.test.ts
+- Pattern: Before starting any task, verify current state with git status`;
+
+      const hints = extractGoalPatterns(context);
+      assert.ok(hints.length >= 2, 'Should extract both completed goal and pattern');
     });
   });
 
