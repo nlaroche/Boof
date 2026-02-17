@@ -9,6 +9,8 @@ import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
 
 const TEST_DB_PATH = './test-goal-cycling.db';
 
+let goalCounter = 0;
+
 function generateId(): string {
   const chars = 'abcdef0123456789';
   let id = '';
@@ -18,11 +20,13 @@ function generateId(): string {
 
 function createGoal(name: string, priority: number, status = 'active'): string {
   const id = generateId();
-  const now = new Date().toISOString();
+  // Use incrementing offset to ensure unique created_at timestamps for deterministic ordering
+  const ts = new Date(Date.now() + goalCounter * 100).toISOString();
+  goalCounter++;
   runQuery(
     `INSERT INTO goals (id, name, description, status, priority, created_at, updated_at)
      VALUES (?, ?, '', ?, ?, ?, ?)`,
-    [id, name, status, priority, now, now]
+    [id, name, status, priority, ts, ts]
   );
   return id;
 }
@@ -46,6 +50,7 @@ function createTask(goalId: string, title: string, status = 'todo'): string {
 
 describe('goal cycling: completion detection', () => {
   beforeEach(async () => {
+    goalCounter = 0;
     if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
     process.env.DB_PATH = TEST_DB_PATH;
     await initDb();
