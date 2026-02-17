@@ -119,167 +119,81 @@ function send(ws: WebSocket, message: WSServerMessage): void {
 function handleMessage(ws: WebSocket, message: WSClientMessage): void {
   switch (message.type) {
     case 'task:create': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      runQuery(
-        `INSERT INTO tasks (id, folder_id, parent_task_id, title, description, status, goal_id, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, 'todo', ?, ?, ?)`,
-        [id, message.folderId, message.parentTaskId || null, message.title, message.description || '', message.goalId || null, now, now]
+      createTask(
+        { folderId: message.folderId, title: message.title, description: message.description, parentTaskId: message.parentTaskId, goalId: message.goalId },
+        (task) => broadcast({ type: 'task:updated', task })
       );
-      const task = getOne<Task>('SELECT * FROM tasks WHERE id = ?', [id]);
-      if (task) {
-        broadcast({ type: 'task:updated', task });
-      }
       break;
     }
 
     case 'task:update': {
-      const { taskId, fields } = message;
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (fields.title !== undefined) {
-        updates.push('title = ?');
-        values.push(fields.title);
-      }
-      if (fields.description !== undefined) {
-        updates.push('description = ?');
-        values.push(fields.description);
-      }
-      if (fields.status !== undefined) {
-        updates.push('status = ?');
-        values.push(fields.status);
-      }
-      if (fields.sort_order !== undefined) {
-        updates.push('sort_order = ?');
-        values.push(fields.sort_order);
-      }
-      if (fields.folder_id !== undefined) {
-        updates.push('folder_id = ?');
-        values.push(fields.folder_id);
-      }
-      if ((fields as any).goal_id !== undefined) {
-        updates.push('goal_id = ?');
-        values.push((fields as any).goal_id);
-      }
-
-      if (updates.length > 0) {
-        updates.push('updated_at = ?');
-        values.push(new Date().toISOString());
-        values.push(taskId);
-        runQuery(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`, values);
-        const task = getOne<Task>('SELECT * FROM tasks WHERE id = ?', [taskId]);
-        if (task) {
-          broadcast({ type: 'task:updated', task });
-        }
-      }
+      updateTask(
+        message.taskId,
+        { ...message.fields, goal_id: (message.fields as any).goal_id },
+        (task) => broadcast({ type: 'task:updated', task })
+      );
       break;
     }
 
     case 'task:delete': {
-      runQuery('DELETE FROM tasks WHERE id = ?', [message.taskId]);
-      broadcast({ type: 'task:deleted', taskId: message.taskId });
+      deleteTask(message.taskId, () => broadcast({ type: 'task:deleted', taskId: message.taskId }));
       break;
     }
 
     case 'task:reorder': {
-      runQuery('UPDATE tasks SET sort_order = ? WHERE id = ?', [message.sortOrder, message.taskId]);
-      const task = getOne<Task>('SELECT * FROM tasks WHERE id = ?', [message.taskId]);
-      if (task) {
-        broadcast({ type: 'task:updated', task });
-      }
+      reorderTask(message.taskId, message.sortOrder, (task) => broadcast({ type: 'task:updated', task }));
       break;
     }
 
     case 'folder:create': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      runQuery(
-        `INSERT INTO folders (id, name, icon, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?)`,
-        [id, message.name, message.icon || '📁', now, now]
+      createFolder(
+        { name: message.name, icon: message.icon },
+        (folder) => broadcast({ type: 'folder:updated', folder })
       );
-      const folder = getOne<Folder>('SELECT * FROM folders WHERE id = ?', [id]);
-      if (folder) {
-        broadcast({ type: 'folder:updated', folder });
-      }
       break;
     }
 
     case 'folder:update': {
-      const { folderId, fields } = message;
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (fields.name !== undefined) {
-        updates.push('name = ?');
-        values.push(fields.name);
-      }
-      if (fields.icon !== undefined) {
-        updates.push('icon = ?');
-        values.push(fields.icon);
-      }
-      if (fields.sort_order !== undefined) {
-        updates.push('sort_order = ?');
-        values.push(fields.sort_order);
-      }
-
-      if (updates.length > 0) {
-        updates.push('updated_at = ?');
-        values.push(new Date().toISOString());
-        values.push(folderId);
-        runQuery(`UPDATE folders SET ${updates.join(', ')} WHERE id = ?`, values);
-        const folder = getOne<Folder>('SELECT * FROM folders WHERE id = ?', [folderId]);
-        if (folder) {
-          broadcast({ type: 'folder:updated', folder });
-        }
-      }
+      updateFolder(
+        message.folderId,
+        message.fields,
+        (folder) => broadcast({ type: 'folder:updated', folder })
+      );
       break;
     }
 
     case 'folder:delete': {
-      runQuery('DELETE FROM tasks WHERE folder_id = ?', [message.folderId]);
-      runQuery('DELETE FROM folders WHERE id = ?', [message.folderId]);
-      broadcast({ type: 'folder:deleted', folderId: message.folderId });
+      deleteFolder(message.folderId, () => broadcast({ type: 'folder:deleted', folderId: message.folderId }));
       break;
     }
 
     case 'agent:create': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      const name = message.name || 'Agent';
-      const profileId = message.profileId || 'robot';
-      const agentType = 'minimax';
       const workDir = message.workingDirectory;
-
-      runQuery(
-        `INSERT INTO agents (id, name, working_directory, profile_id, agent_type, status, created_at, last_activity)
-         VALUES (?, ?, ?, ?, ?, 'idle', ?, ?)`,
-        [id, name, workDir, profileId, agentType, now, now]
+      const createdAgent = dbCreateAgent(
+        { workingDirectory: workDir, name: message.name, profileId: message.profileId },
+        (agent) => broadcast({ type: 'agent:updated', agent })
       );
 
       // Create a git worktree for this agent so it has an isolated working directory
-      try {
-        const safeName = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
-        const worktreePath = path.join(workDir + '-agents', `${safeName}-${id.slice(0, 8)}`);
-        fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-        execSync(`git worktree add --detach "${worktreePath}" main`, { cwd: workDir, timeout: 30_000 });
-        // Create node_modules junction so the agent can build
-        const srcModules = path.join(workDir, 'node_modules');
-        const dstModules = path.join(worktreePath, 'node_modules');
-        if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
-          execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+      if (createdAgent) {
+        try {
+          const safeName = (createdAgent.name || 'agent').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
+          const worktreePath = path.join(workDir + '-agents', `${safeName}-${createdAgent.id.slice(0, 8)}`);
+          fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+          execSync(`git worktree add --detach "${worktreePath}" main`, { cwd: workDir, timeout: 30_000 });
+          const srcModules = path.join(workDir, 'node_modules');
+          const dstModules = path.join(worktreePath, 'node_modules');
+          if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
+            execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+          }
+          runQuery('UPDATE agents SET worktree_path = ? WHERE id = ?', [worktreePath, createdAgent.id]);
+          console.log(`[agent:create] Worktree created at ${worktreePath}`);
+          // Re-broadcast with worktree_path set
+          const updated = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [createdAgent.id]);
+          if (updated) broadcast({ type: 'agent:updated', agent: updated });
+        } catch (wtErr: any) {
+          console.error(`[agent:create] Failed to create worktree:`, wtErr.message || wtErr);
         }
-        runQuery('UPDATE agents SET worktree_path = ? WHERE id = ?', [worktreePath, id]);
-        console.log(`[agent:create] Worktree created at ${worktreePath}`);
-      } catch (wtErr: any) {
-        console.error(`[agent:create] Failed to create worktree:`, wtErr.message || wtErr);
-        // Agent still works, just without isolation (falls back to working_directory)
-      }
-
-      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [id]);
-      if (agent) {
-        broadcast({ type: 'agent:updated', agent });
       }
       break;
     }
@@ -296,7 +210,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId } = message;
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
-        const now = new Date().toISOString();
+        const now = getNow();
         runQuery(`UPDATE agents SET status = 'running', last_activity = ? WHERE id = ?`, [now, agentId]);
         clearAgentOutput(agentId);
 
@@ -307,7 +221,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
         const handleExit = (id: string, code: number) => {
           const exitStatus = code === 0 ? 'idle' : 'dead';
-          const finishedAt = new Date().toISOString();
+          const finishedAt = getNow();
 
           const cmdId = currentCommandIds.get(id);
           if (cmdId) {
@@ -348,7 +262,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
       if (agent) {
         const commandId = generateId();
-        const now = new Date().toISOString();
+        const now = getNow();
 
         runQuery(
           `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
@@ -366,7 +280,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
           };
 
           const handleExit = (id: string, code: number) => {
-            const finishedAt = new Date().toISOString();
+            const finishedAt = getNow();
             let summary = '';
 
             const cmdId = currentCommandIds.get(id);
@@ -429,7 +343,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
               // Create a new command for the retry
               const retryCmdId = generateId();
-              const retryNow = new Date().toISOString();
+              const retryNow = getNow();
               runQuery(
                 `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
                  VALUES (?, ?, ?, ?, 'running', ?)`,
@@ -493,7 +407,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
                   // Create a new command for the review so it's tracked properly
                   const reviewCmdId = generateId();
-                  const reviewNow = new Date().toISOString();
+                  const reviewNow = getNow();
                   runQuery(
                     `INSERT INTO commands (id, agent_id, task_id, prompt, status, started_at)
                      VALUES (?, ?, ?, ?, 'running', ?)`,
@@ -705,41 +619,11 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'agent:update': {
-      const { agentId, fields } = message;
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (fields.name !== undefined) {
-        updates.push('name = ?');
-        values.push(fields.name);
-      }
-      if (fields.instructions !== undefined) {
-        updates.push('instructions = ?');
-        values.push(fields.instructions);
-      }
-      if (fields.skills !== undefined) {
-        updates.push('skills = ?');
-        values.push(fields.skills);
-      }
-      if (fields.profile_id !== undefined) {
-        updates.push('profile_id = ?');
-        values.push(fields.profile_id);
-      }
-      if (fields.workflow_id !== undefined) {
-        updates.push('workflow_id = ?');
-        values.push(fields.workflow_id);
-      }
-
-      if (updates.length > 0) {
-        updates.push('last_activity = ?');
-        values.push(new Date().toISOString());
-        values.push(agentId);
-        runQuery(`UPDATE agents SET ${updates.join(', ')} WHERE id = ?`, values);
-        const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
-        if (agent) {
-          broadcast({ type: 'agent:updated', agent });
-        }
-      }
+      updateAgent(
+        message.agentId,
+        message.fields,
+        (agent) => broadcast({ type: 'agent:updated', agent })
+      );
       break;
     }
 
@@ -747,7 +631,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId, schedule, enabled, prompt } = message;
       runQuery(
         `UPDATE agents SET schedule = ?, schedule_enabled = ?, schedule_prompt = ?, last_activity = ? WHERE id = ?`,
-        [schedule, enabled ? 1 : 0, prompt, new Date().toISOString(), agentId]
+        [schedule, enabled ? 1 : 0, prompt, getNow(), agentId]
       );
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
@@ -757,22 +641,12 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'agent:history': {
-      const { agentId, limit = 50 } = message;
-      const commands = getAll<Command>(
-        'SELECT * FROM commands WHERE agent_id = ? ORDER BY started_at DESC LIMIT ?',
-        [agentId, limit]
-      );
-      send(ws, { type: 'agent:history', agentId, commands: parseCommands(commands) });
+      send(ws, { type: 'agent:history', agentId: message.agentId, commands: parseCommands(listAgentCommands(message.agentId, message.limit || 50)) });
       break;
     }
 
     case 'agent:activity': {
-      const { agentId, limit = 50 } = message;
-      const entries = getAll<GoalLogEntry>(
-        'SELECT * FROM goal_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?',
-        [agentId, limit]
-      );
-      send(ws, { type: 'agent:activity', agentId, entries });
+      send(ws, { type: 'agent:activity', agentId: message.agentId, entries: listAgentActivity(message.agentId, message.limit || 50) });
       break;
     }
 
@@ -799,120 +673,62 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'goal:create': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      runQuery(
-        `INSERT INTO goals (id, name, description, status, priority, repo_id, created_at, updated_at)
-         VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`,
-        [id, message.name, message.description || '', message.repoId || null, now, now]
+      createGoal(
+        { name: message.name, description: message.description, repoId: message.repoId },
+        (goal) => broadcast({ type: 'goal:updated', goal })
       );
-      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
-      if (goal) {
-        broadcast({ type: 'goal:updated', goal });
-      }
       break;
     }
 
     case 'goal:propose': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      runQuery(
-        `INSERT INTO goals (id, name, description, status, priority, repo_id, proposed_by, proposal_status, created_at, updated_at)
-         VALUES (?, ?, ?, 'active', 0, ?, ?, 'pending', ?, ?)`,
-        [id, message.name, message.description || '', message.repoId || null, message.agentId, now, now]
+      const goal = createGoal(
+        { name: message.name, description: message.description, repoId: message.repoId, proposedBy: message.agentId, proposalStatus: 'pending' },
+        (g) => {
+          broadcast({ type: 'goal:proposed', goal: g, agentId: message.agentId });
+          broadcast({ type: 'goal:updated', goal: g });
+        }
       );
-      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
-      if (goal) {
-        broadcast({ type: 'goal:proposed', goal, agentId: message.agentId });
-        broadcast({ type: 'goal:updated', goal });
-      }
       break;
     }
 
     case 'goal:update': {
-      const { goalId, fields } = message;
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (fields.name !== undefined) {
-        updates.push('name = ?');
-        values.push(fields.name);
-      }
-      if (fields.description !== undefined) {
-        updates.push('description = ?');
-        values.push(fields.description);
-      }
-      if (fields.status !== undefined) {
-        updates.push('status = ?');
-        values.push(fields.status);
-      }
-      if (fields.priority !== undefined) {
-        updates.push('priority = ?');
-        values.push(fields.priority);
-      }
-      if (fields.repo_id !== undefined) {
-        updates.push('repo_id = ?');
-        values.push(fields.repo_id);
-      }
-      if ((fields as any).proposal_status !== undefined) {
-        updates.push('proposal_status = ?');
-        values.push((fields as any).proposal_status);
-      }
-
-      if (updates.length > 0) {
-        updates.push('updated_at = ?');
-        values.push(new Date().toISOString());
-        values.push(goalId);
-        runQuery(`UPDATE goals SET ${updates.join(', ')} WHERE id = ?`, values);
-        const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
-        if (goal) {
-          broadcast({ type: 'goal:updated', goal });
-        }
-      }
+      updateGoal(
+        message.goalId,
+        { ...message.fields, proposal_status: (message.fields as any).proposal_status },
+        (goal) => broadcast({ type: 'goal:updated', goal })
+      );
       break;
     }
 
     case 'goal:delete': {
-      runQuery('DELETE FROM goal_log WHERE goal_id = ?', [message.goalId]);
-      runQuery('DELETE FROM goals WHERE id = ?', [message.goalId]);
-      broadcast({ type: 'goal:deleted', goalId: message.goalId });
+      deleteGoal(message.goalId, () => broadcast({ type: 'goal:deleted', goalId: message.goalId }));
       break;
     }
 
     case 'goal:set-priority': {
-      const { goalId, priority } = message;
-      const clampedPriority = priority === 0 ? 0 : Math.max(1, Math.min(5, priority));
-      runQuery(
-        'UPDATE goals SET priority = ?, updated_at = ? WHERE id = ?',
-        [clampedPriority, new Date().toISOString(), goalId]
+      const clampedPriority = message.priority === 0 ? 0 : Math.max(1, Math.min(5, message.priority));
+      updateGoal(
+        message.goalId,
+        { priority: clampedPriority },
+        (goal) => broadcast({ type: 'goal:updated', goal })
       );
-      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
-      if (goal) {
-        broadcast({ type: 'goal:updated', goal });
-      }
       break;
     }
 
     case 'goal:list': {
-      const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
-      send(ws, { type: 'goal:list', goals });
+      send(ws, { type: 'goal:list', goals: listGoals() });
       break;
     }
 
     case 'goal:log': {
-      const { goalId, limit = 50 } = message;
-      const entries = getAll<GoalLogEntry>(
-        'SELECT * FROM goal_log WHERE goal_id = ? ORDER BY created_at DESC LIMIT ?',
-        [goalId, limit]
-      );
-      send(ws, { type: 'goal:log', goalId, entries });
+      const entries = listGoalLog(message.goalId, message.limit || 50);
+      send(ws, { type: 'goal:log', goalId: message.goalId, entries });
       break;
     }
 
     case 'goal:get-stats': {
-      const { goalId } = message;
-      const stats = getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [goalId]);
-      send(ws, { type: 'goal:stats', goalId, stats: stats ?? null });
+      const stats = getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [message.goalId]);
+      send(ws, { type: 'goal:stats', goalId: message.goalId, stats: stats ?? null });
       break;
     }
 
@@ -920,9 +736,8 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const { agentId, autopilot, interval, goalId } = message;
       runQuery(
         'UPDATE agents SET autopilot = ?, autopilot_interval = ?, autopilot_goal_id = ?, last_activity = ? WHERE id = ?',
-        [autopilot ? 1 : 0, interval, goalId, new Date().toISOString(), agentId]
+        [autopilot ? 1 : 0, interval, goalId, getNow(), agentId]
       );
-      // Reset session counters so the newly-enabled agent starts fresh
       if (autopilot) {
         resetAgentSessionCounters(agentId);
       }
@@ -939,69 +754,35 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'workflow:create': {
-      const id = generateId();
-      const now = new Date().toISOString();
-      runQuery(
-        `INSERT INTO workflows (id, name, description, steps, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [id, message.name, message.description || '', JSON.stringify(message.steps), now, now]
+      createWorkflow(
+        { name: message.name, description: message.description, steps: message.steps },
+        (workflow) => broadcast({ type: 'workflow:updated', workflow })
       );
-      const row = getOne<any>('SELECT * FROM workflows WHERE id = ?', [id]);
-      if (row) {
-        const workflow: Workflow = { ...row, steps: JSON.parse(row.steps) };
-        broadcast({ type: 'workflow:updated', workflow });
-      }
       break;
     }
 
     case 'workflow:update': {
-      const { workflowId, fields } = message;
-      const updates: string[] = [];
-      const values: unknown[] = [];
-
-      if (fields.name !== undefined) {
-        updates.push('name = ?');
-        values.push(fields.name);
-      }
-      if (fields.description !== undefined) {
-        updates.push('description = ?');
-        values.push(fields.description);
-      }
-      if (fields.steps !== undefined) {
-        updates.push('steps = ?');
-        values.push(JSON.stringify(fields.steps));
-      }
-
-      if (updates.length > 0) {
-        updates.push('updated_at = ?');
-        values.push(new Date().toISOString());
-        values.push(workflowId);
-        runQuery(`UPDATE workflows SET ${updates.join(', ')} WHERE id = ?`, values);
-        const row = getOne<any>('SELECT * FROM workflows WHERE id = ?', [workflowId]);
-        if (row) {
-          const workflow: Workflow = { ...row, steps: JSON.parse(row.steps) };
-          broadcast({ type: 'workflow:updated', workflow });
-        }
-      }
+      updateWorkflow(
+        message.workflowId,
+        message.fields,
+        (workflow) => broadcast({ type: 'workflow:updated', workflow })
+      );
       break;
     }
 
     case 'workflow:delete': {
-      runQuery('DELETE FROM workflows WHERE id = ?', [message.workflowId]);
-      broadcast({ type: 'workflow:deleted', workflowId: message.workflowId });
+      deleteWorkflow(message.workflowId, () => broadcast({ type: 'workflow:deleted', workflowId: message.workflowId }));
       break;
     }
 
     case 'workflow:list': {
-      const rows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
-      const workflows: Workflow[] = rows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
-      send(ws, { type: 'workflow:list', workflows });
+      send(ws, { type: 'workflow:list', workflows: listWorkflows() });
       break;
     }
 
     case 'agent:self-improve': {
       const { agentId, enabled } = message;
-      runQuery('UPDATE agents SET self_improve = ?, last_activity = ? WHERE id = ?', [enabled ? 1 : 0, new Date().toISOString(), agentId]);
+      runQuery('UPDATE agents SET self_improve = ?, last_activity = ? WHERE id = ?', [enabled ? 1 : 0, getNow(), agentId]);
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
         broadcast({ type: 'agent:updated', agent });
@@ -1161,15 +942,12 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     }
 
     case 'sync:request': {
-      const folders = getAll<Folder>('SELECT * FROM folders ORDER BY sort_order');
-      const tasks = getAll<Task>('SELECT * FROM tasks ORDER BY sort_order');
-      const agents = getAll<Agent>('SELECT * FROM agents ORDER BY created_at');
-      const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
-      const workflowRows = getAll<any>('SELECT * FROM workflows ORDER BY created_at');
-      const workflows: Workflow[] = workflowRows.map((r) => ({ ...r, steps: JSON.parse(r.steps) }));
-      const recentCommands = getAll<Command>(
-        'SELECT * FROM commands ORDER BY started_at DESC LIMIT 100'
-      );
+      const folders = listFolders();
+      const tasks = listTasks();
+      const agents = listAgents();
+      const goals = listGoals();
+      const workflows = listWorkflows();
+      const recentCommands = listCommands(100);
       send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, commands: parseCommands(recentCommands) });
 
       // Replay buffered output for all agents (last 100 lines max)

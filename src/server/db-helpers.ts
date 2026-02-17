@@ -25,6 +25,11 @@ export function getNow(): string {
   return new Date().toISOString();
 }
 
+/** Simple token estimator (4 chars ≈ 1 token for English text) */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 4);
+}
+
 // ============================================================================
 // Generic CRUD Helpers
 // ============================================================================

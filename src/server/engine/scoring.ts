@@ -138,7 +138,7 @@ export function selectWeighted<T, Ctx>(
   for (const candidate of candidates) {
     random -= candidate.total;
     if (random <= 0) {
-      return { item: candidate.item, breakdown: candidate.breakdown };
+      return { item: candidate.item, breakdown: candidate };
     }
   }
 

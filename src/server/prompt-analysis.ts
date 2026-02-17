@@ -4,11 +4,7 @@
  * This module helps identify redundant context being sent to Claude Code
  * and provides metrics for optimization.
  */
-
-// Simple token estimator (4 chars ≈ 1 token for English text)
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
+import { estimateTokens } from './db-helpers.js';
 
 interface PromptSection {
   name: string;

@@ -2,11 +2,12 @@ import { exec, execSync } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
-import { runQuery, getOne, getAll } from './db.js';
+import { runQuery, getOne, getAll, generateId, getNow, estimateTokens } from './db-helpers.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
+import { stripAnsi } from './git-utils.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
   persistRunMetrics, updateRunMetricMerge, storeReflection, buildReflectionPrompt, parseReflectionResponse,
@@ -92,15 +93,6 @@ export function getAgentCwd(agent: Agent): string {
 
 // Track running autopilot agents to avoid double-triggering
 const runningAutopilots = new Set<string>();
-
-function generateId(): string {
-  const chars = 'abcdef0123456789';
-  let id = '';
-  for (let i = 0; i < 16; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
-}
 
 // ── Branch-based isolation ──────────────────────────────────────────────
 
@@ -452,11 +444,6 @@ async function autoCommit(workingDirectory: string, goalSlug: string, summary: s
   }
 }
 
-// Simple token estimator (4 chars ≈ 1 token for English text)
-function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
-
 function logToGoal(
   goalId: string,
   agentId: string,
@@ -668,12 +655,7 @@ function createTaskForGoal(goalId: string, agentId: string, title: string, descr
 }
 
 function parseTasksFromOutput(output: string, goalId: string, agentId: string): number {
-  // Strip ANSI escape codes that ConPTY injects
-  const clean = output
-    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
-    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1b./g, '')
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+  const clean = stripAnsi(output);
   const lines = clean.split('\n');
   let count = 0;
   for (const line of lines) {

@@ -1,4 +1,4 @@
-import { runQuery, getOne, getAll } from './db.js';
+import { runQuery, getOne, getAll, generateId, getNow } from './db-helpers.js';
 import type { Assessment, Improvement, Agent, Command, XpEvent, RunMetric, Reflection, Skill, PromptVersion, Experiment, DashboardData } from '../client/lib/types.js';
 
 // ── XP & Leveling ──
@@ -9,17 +9,6 @@ export function getLevel(xp: number): number {
 
 export function xpForLevel(level: number): number {
   return (level - 1) * (level - 1) * 5;
-}
-
-// ── Helpers ──
-
-function generateId(): string {
-  const chars = 'abcdef0123456789';
-  let id = '';
-  for (let i = 0; i < 16; i++) {
-    id += chars[Math.floor(Math.random() * chars.length)];
-  }
-  return id;
 }
 
 // ── Performance Assessment ──
