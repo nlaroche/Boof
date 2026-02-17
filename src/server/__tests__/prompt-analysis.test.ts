@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
 import {
   analyzePrompt,
   comparePrompts,
@@ -24,9 +25,9 @@ Pick a task and implement it.`;
 
       const analysis = analyzePrompt(prompt);
 
-      expect(analysis.totalTokens).toBeGreaterThan(0);
-      expect(analysis.sections.length).toBeGreaterThan(0);
-      expect(analysis.sections.every(s => s.percentage >= 0)).toBe(true);
+      assert.ok(analysis.totalTokens > 0);
+      assert.ok(analysis.sections.length > 0);
+      assert.ok(analysis.sections.every(s => s.percentage >= 0));
     });
 
     it('should detect redundant "ALWAYS" usage', () => {
@@ -34,9 +35,9 @@ Pick a task and implement it.`;
 
       const analysis = analyzePrompt(prompt);
 
-      expect(analysis.redundancies).toContain(
+      assert.ok(analysis.redundancies.includes(
         'Excessive use of "ALWAYS" - consider consolidating rules'
-      );
+      ));
     });
 
     it('should detect multiple IMPORTANT markers', () => {
@@ -44,7 +45,7 @@ Pick a task and implement it.`;
 
       const analysis = analyzePrompt(prompt);
 
-      expect(analysis.redundancies.some(r => r.includes('IMPORTANT'))).toBe(true);
+      assert.ok(analysis.redundancies.some(r => r.includes('IMPORTANT')));
     });
 
     it('should detect repeated goal mentions', () => {
@@ -52,7 +53,7 @@ Pick a task and implement it.`;
 
       const analysis = analyzePrompt(prompt);
 
-      expect(analysis.redundancies.some(r => r.includes('Goal mentioned'))).toBe(true);
+      assert.ok(analysis.redundancies.some(r => r.includes('Goal mentioned')));
     });
 
     it('should recommend reducing large sections', () => {
@@ -61,7 +62,7 @@ Pick a task and implement it.`;
 
       const analysis = analyzePrompt(prompt);
 
-      expect(analysis.recommendations.length).toBeGreaterThan(0);
+      assert.ok(analysis.recommendations.length > 0);
     });
   });
 
@@ -72,8 +73,8 @@ Pick a task and implement it.`;
 
       const comparison = comparePrompts(before, after);
 
-      expect(comparison.tokenSavings).toBeGreaterThan(0);
-      expect(comparison.percentageReduction).toBeGreaterThan(0);
+      assert.ok(comparison.tokenSavings > 0);
+      assert.ok(comparison.percentageReduction > 0);
     });
 
     it('should detect removed sections', () => {
@@ -82,7 +83,7 @@ Pick a task and implement it.`;
 
       const comparison = comparePrompts(before, after);
 
-      expect(comparison.sectionsRemoved.length).toBeGreaterThan(0);
+      assert.ok(comparison.sectionsRemoved.length > 0);
     });
   });
 
@@ -92,9 +93,9 @@ Pick a task and implement it.`;
 
       const report = generatePromptReport(prompt);
 
-      expect(report).toContain('PROMPT TOKEN ANALYSIS');
-      expect(report).toContain('Total estimated tokens:');
-      expect(report).toContain('Breakdown by Section');
+      assert.ok(report.includes('PROMPT TOKEN ANALYSIS'));
+      assert.ok(report.includes('Total estimated tokens:'));
+      assert.ok(report.includes('Breakdown by Section'));
     });
   });
 
@@ -102,17 +103,17 @@ Pick a task and implement it.`;
     it('should estimate cost in USD', () => {
       const cost = estimatePromptCost(10000, 2000);
 
-      expect(cost.inputCost).toBeCloseTo(0.15, 2); // $15/MTok * 10k = $0.15
-      expect(cost.outputCost).toBeCloseTo(0.15, 2); // $75/MTok * 2k = $0.15
-      expect(cost.totalCost).toBeCloseTo(0.30, 2);
+      assert.ok(Math.abs(cost.inputCost - 0.15) < 0.01); // $15/MTok * 10k = $0.15
+      assert.ok(Math.abs(cost.outputCost - 0.15) < 0.01); // $75/MTok * 2k = $0.15
+      assert.ok(Math.abs(cost.totalCost - 0.30) < 0.01);
     });
 
     it('should handle default completion tokens', () => {
       const cost = estimatePromptCost(5000);
 
-      expect(cost.inputCost).toBeGreaterThan(0);
-      expect(cost.outputCost).toBeGreaterThan(0);
-      expect(cost.totalCost).toBe(cost.inputCost + cost.outputCost);
+      assert.ok(cost.inputCost > 0);
+      assert.ok(cost.outputCost > 0);
+      assert.equal(cost.totalCost, cost.inputCost + cost.outputCost);
     });
   });
 
@@ -158,7 +159,7 @@ Each task = 1 run (1-2 file edits). Name exact files. Plan only, don't implement
         analysis.redundancies.forEach(r => console.log(`  - ${r}`));
       }
 
-      expect(analysis.totalTokens).toBeGreaterThan(0);
+      assert.ok(analysis.totalTokens > 0);
     });
 
     it('should analyze a typical autopilot implementation prompt', () => {
@@ -244,8 +245,8 @@ Details: Refactor agent-memory.ts to return fewer items`;
         analysis.recommendations.forEach(r => console.log(`  - ${r}`));
       }
 
-      expect(analysis.totalTokens).toBeGreaterThan(0);
-      expect(cost.totalCost).toBeGreaterThan(0);
+      assert.ok(analysis.totalTokens > 0);
+      assert.ok(cost.totalCost > 0);
     });
   });
 });
