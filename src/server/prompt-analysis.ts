@@ -283,6 +283,75 @@ export function extractGoalPatterns(context: string): GoalPatternHint[] {
   return hints;
 }
 
+// ============================================================================
+// Goal Gap Detection
+// ============================================================================
+
+export interface GoalGapSignal {
+  hasGap: boolean;
+  reason: string;
+  activeGoalCount: number;
+  pendingTaskCount: number;
+}
+
+/**
+ * Detect whether there is a "goal gap" — a state where no active goals remain
+ * after cycling through completions. This signal is used by the autopilot to
+ * trigger automatic goal proposal via agent memory patterns.
+ *
+ * Examines the memory context / planning prompt text for:
+ *  - Active goal count (goals listed under "Pending tasks:" or similar)
+ *  - Explicit "no active goals" / "no more goals" indicators
+ */
+export function detectGoalGap(context: string): GoalGapSignal {
+  const lower = context.toLowerCase();
+
+  // Count active goals by looking for goal/task markers
+  const pendingMatches = context.match(/^[-*]\s+.+:/gm) || [];
+  const pendingTaskCount = pendingMatches.length;
+
+  // Look for explicit "no active goals" phrases
+  const noGoalPhrases = [
+    'no active goals',
+    'no more active goals',
+    'no goals remain',
+    'no remaining goals',
+    'no more goals',
+  ];
+  const explicitNoGoal = noGoalPhrases.some(phrase => lower.includes(phrase));
+
+  // Check for the "Pending tasks:" section being empty
+  // Find the line with "Pending tasks:" and check if the very next non-blank line starts a new section
+  // If after "Pending tasks:\n" (with optional blank lines) there's immediately a section header or EOF
+  const pendingLineCheck = context.match(/Pending tasks:[ \t]*\n(?:[ \t]*\n)*([A-Z][A-Z]+:|$)/);
+  const pendingSectionEmpty = pendingLineCheck !== null;
+
+  // Check for goal-gap keyword
+  const hasGapKeyword = lower.includes('goal-gap') || lower.includes('goal gap');
+
+  const hasGap = explicitNoGoal || pendingSectionEmpty || hasGapKeyword;
+
+  let reason: string;
+  if (hasGap) {
+    if (explicitNoGoal) {
+      reason = 'Explicit "no active goals" signal found in context';
+    } else if (pendingSectionEmpty) {
+      reason = 'Pending tasks section is empty — no tasks remain';
+    } else {
+      reason = 'Goal-gap keyword detected in context';
+    }
+  } else {
+    reason = `${pendingTaskCount} pending task(s) found — no gap`;
+  }
+
+  return {
+    hasGap,
+    reason,
+    activeGoalCount: hasGap ? 0 : Math.max(pendingTaskCount, 1),
+    pendingTaskCount,
+  };
+}
+
 /**
  * Estimate cost of a prompt (using Claude Opus 4.6 pricing).
  * Input: $15/MTok, Output: $75/MTok

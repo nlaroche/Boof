@@ -6,6 +6,7 @@ import {
   generatePromptReport,
   estimatePromptCost,
   extractGoalPatterns,
+  detectGoalGap,
 } from '../prompt-analysis.js';
 
 describe('prompt-analysis', () => {
@@ -220,6 +221,82 @@ LEARNED PATTERNS:
 
       const hints = extractGoalPatterns(context);
       assert.ok(hints.length >= 2, 'Should extract both completed goal and pattern');
+    });
+  });
+
+  describe('detectGoalGap', () => {
+    it('returns hasGap=false when pending tasks exist', () => {
+      const context = `Pending tasks:
+- Fix auth bug: Update src/server/auth.ts to handle token expiry
+- Add logging: Extend src/server/logger.ts with structured output`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(signal.hasGap, false, 'Should not report gap when tasks exist');
+      assert.ok(signal.pendingTaskCount >= 2, 'Should count pending tasks');
+    });
+
+    it('returns hasGap=true when explicit "no active goals" phrase present', () => {
+      const context = `No active goals remain. The agent should propose new goals based on past patterns.`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(signal.hasGap, true, 'Should detect gap from explicit phrase');
+      assert.ok(signal.reason.includes('no active goals'), 'Reason should mention the phrase');
+      assert.equal(signal.activeGoalCount, 0);
+    });
+
+    it('returns hasGap=true when pending tasks section is empty', () => {
+      const context = `Recent progress:
+- [OK] goal_completed: Finished all tasks
+
+Pending tasks:
+
+RULES:
+1. Make small changes`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(signal.hasGap, true, 'Should detect gap when pending section is empty');
+    });
+
+    it('returns hasGap=true when goal-gap keyword appears', () => {
+      const context = `goal-gap detected: no further goals to cycle through`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(signal.hasGap, true, 'Should detect gap from goal-gap keyword');
+    });
+
+    it('returns hasGap=false for normal autopilot context with tasks', () => {
+      const context = `You are working autonomously on this goal: "Improve test coverage"
+
+Pending tasks:
+- Add scheduler tests: Create src/server/__tests__/scheduler.test.ts
+- Test agent-memory: Extend src/server/__tests__/agent-memory.test.ts
+
+RULES:
+1. Make small changes
+2. Run build after changes`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(signal.hasGap, false, 'Should not report gap in normal autopilot context');
+      assert.ok(signal.reason.includes('pending task'), 'Reason should mention pending tasks');
+    });
+
+    it('signal has correct shape: hasGap, reason, activeGoalCount, pendingTaskCount', () => {
+      const context = `No more active goals — proposing new goals.`;
+
+      const signal = detectGoalGap(context);
+      assert.equal(typeof signal.hasGap, 'boolean');
+      assert.equal(typeof signal.reason, 'string');
+      assert.ok(signal.reason.length > 0);
+      assert.equal(typeof signal.activeGoalCount, 'number');
+      assert.equal(typeof signal.pendingTaskCount, 'number');
+      assert.ok(signal.activeGoalCount >= 0);
+      assert.ok(signal.pendingTaskCount >= 0);
+    });
+
+    it('handles empty context gracefully', () => {
+      const signal = detectGoalGap('');
+      assert.equal(signal.hasGap, false, 'Empty context should not be a gap');
+      assert.equal(signal.pendingTaskCount, 0);
     });
   });
 
