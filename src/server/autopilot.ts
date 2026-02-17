@@ -670,7 +670,7 @@ function updateGoalStats(goalId: string, durationMs: number, taskSucceeded: bool
  * find the next highest-priority active goal, and switch the agent.
  * Returns true if goal was cycled, false if still active.
  */
-async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boolean> {
+export async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boolean> {
   const broadcast = getBroadcast();
 
   // Check remaining tasks for this goal
