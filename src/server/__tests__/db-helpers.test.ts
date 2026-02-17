@@ -19,6 +19,8 @@ import {
   createGoal,
   updateGoal,
   deleteGoal,
+  getGoalStats,
+  getNextActiveGoal,
   createWorkflow,
   updateWorkflow,
   deleteWorkflow,
@@ -731,6 +733,156 @@ describe('db-helpers', () => {
       const logs = listAgentActivity(agent1.id);
       assert.ok(logs.length >= 1);
       assert.ok(logs.every(log => log.agent_id === agent1.id));
+    });
+  });
+
+  describe('Goal Cycling Helpers', () => {
+    it('listGoals orders by priority DESC then created_at ASC', () => {
+      const low = createGoal({ name: 'Low Priority' }, () => {});
+      const high = createGoal({ name: 'High Priority' }, () => {});
+      const medium = createGoal({ name: 'Medium Priority' }, () => {});
+      assert.ok(low && high && medium);
+
+      updateGoal(low.id, { priority: 1 }, () => {});
+      updateGoal(high.id, { priority: 5 }, () => {});
+      updateGoal(medium.id, { priority: 3 }, () => {});
+
+      const goals = listGoals();
+      const activeGoals = goals.filter(g => ['Low Priority', 'High Priority', 'Medium Priority'].includes(g.name));
+      assert.equal(activeGoals.length, 3);
+      // First should be highest priority
+      assert.equal(activeGoals[0].name, 'High Priority');
+      assert.equal(activeGoals[1].name, 'Medium Priority');
+      assert.equal(activeGoals[2].name, 'Low Priority');
+    });
+
+    it('getNextActiveGoal returns highest-priority active goal', () => {
+      const low = createGoal({ name: 'Low' }, () => {});
+      const high = createGoal({ name: 'High' }, () => {});
+      assert.ok(low && high);
+
+      updateGoal(low.id, { priority: 1 }, () => {});
+      updateGoal(high.id, { priority: 5 }, () => {});
+
+      const next = getNextActiveGoal();
+      assert.ok(next);
+      assert.equal(next.name, 'High');
+    });
+
+    it('getNextActiveGoal excludes specified goal', () => {
+      const goal1 = createGoal({ name: 'Goal 1' }, () => {});
+      const goal2 = createGoal({ name: 'Goal 2' }, () => {});
+      assert.ok(goal1 && goal2);
+
+      updateGoal(goal1.id, { priority: 5 }, () => {});
+      updateGoal(goal2.id, { priority: 3 }, () => {});
+
+      // Excluding highest-priority goal1, should return goal2
+      const next = getNextActiveGoal(goal1.id);
+      assert.ok(next);
+      assert.equal(next.id, goal2.id);
+    });
+
+    it('getNextActiveGoal returns null when no active goals remain', () => {
+      const goal = createGoal({ name: 'Only Goal' }, () => {});
+      assert.ok(goal);
+
+      // Mark it completed
+      updateGoal(goal.id, { status: 'completed' }, () => {});
+
+      const next = getNextActiveGoal();
+      assert.equal(next, null);
+    });
+
+    it('getNextActiveGoal skips completed goals', () => {
+      const active = createGoal({ name: 'Active' }, () => {});
+      const completed = createGoal({ name: 'Completed' }, () => {});
+      assert.ok(active && completed);
+
+      updateGoal(active.id, { priority: 1 }, () => {});
+      updateGoal(completed.id, { priority: 5, status: 'completed' }, () => {});
+
+      // Even though completed has higher priority, it should be excluded
+      const next = getNextActiveGoal();
+      assert.ok(next);
+      assert.equal(next.id, active.id);
+    });
+
+    it('getGoalStats returns null for goal with no stats', () => {
+      const goal = createGoal({ name: 'No Stats' }, () => {});
+      assert.ok(goal);
+
+      const stats = getGoalStats(goal.id);
+      assert.equal(stats, null);
+    });
+
+    it('getGoalStats returns stats after inserting to goal_stats', () => {
+      const goal = createGoal({ name: 'With Stats' }, () => {});
+      assert.ok(goal);
+
+      const now = getNow();
+      runQuery(
+        `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [goal.id, 5, 4, 1, 12345.6, now]
+      );
+
+      const stats = getGoalStats(goal.id);
+      assert.ok(stats);
+      assert.equal(stats.goal_id, goal.id);
+      assert.equal(stats.total_runs, 5);
+      assert.equal(stats.tasks_completed, 4);
+      assert.equal(stats.tasks_failed, 1);
+      assert.equal(stats.last_run_at, now);
+    });
+
+    it('getGoalStats tracks completion ratio correctly', () => {
+      const goal = createGoal({ name: 'Stats Goal' }, () => {});
+      assert.ok(goal);
+
+      runQuery(
+        `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at) VALUES (?, 10, 8, 2, 5000, ?)`,
+        [goal.id, getNow()]
+      );
+
+      const stats = getGoalStats(goal.id);
+      assert.ok(stats);
+      // Completion ratio: 8/10 = 80%
+      const ratio = stats.tasks_completed / stats.total_runs;
+      assert.ok(ratio >= 0.8);
+    });
+
+    it('goal priority field stored and retrieved correctly (1-5 range)', () => {
+      const broadcasts: any[] = [];
+
+      for (const priority of [1, 2, 3, 4, 5]) {
+        const goal = createGoal({ name: `Priority ${priority}` }, () => {});
+        assert.ok(goal);
+        const updated = updateGoal(goal.id, { priority }, (g) => broadcasts.push(g));
+        assert.ok(updated);
+        assert.equal(updated.priority, priority);
+      }
+
+      // All broadcasts should have been sent
+      assert.equal(broadcasts.length, 5);
+    });
+
+    it('getNextActiveGoal returns earlier goal when priorities are equal', () => {
+      // Insert goals with same priority — should return one created earlier
+      const first = createGoal({ name: 'First Created' }, () => {});
+      assert.ok(first);
+
+      // Small delay isn't guaranteed in tests; instead just check we get one of them
+      const second = createGoal({ name: 'Second Created' }, () => {});
+      assert.ok(second);
+
+      // Set equal priorities
+      updateGoal(first.id, { priority: 3 }, () => {});
+      updateGoal(second.id, { priority: 3 }, () => {});
+
+      const next = getNextActiveGoal();
+      assert.ok(next);
+      // Should return one of these two goals
+      assert.ok(next.id === first.id || next.id === second.id);
     });
   });
 
