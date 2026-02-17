@@ -27,7 +27,7 @@ import {
 // Track running improvements: agentId → improvementId
 const runningImprovements: Map<string, string> = new Map();
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
-import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd } from './autopilot.js';
+import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd, resetAgentSessionCounters } from './autopilot.js';
 import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary, getRecentCommits } from './git-utils.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
@@ -922,6 +922,10 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         'UPDATE agents SET autopilot = ?, autopilot_interval = ?, autopilot_goal_id = ?, last_activity = ? WHERE id = ?',
         [autopilot ? 1 : 0, interval, goalId, new Date().toISOString(), agentId]
       );
+      // Reset session counters so the newly-enabled agent starts fresh
+      if (autopilot) {
+        resetAgentSessionCounters(agentId);
+      }
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
         broadcast({ type: 'agent:updated', agent });
