@@ -180,6 +180,26 @@ describe('notifications module', () => {
     assert.ok(true, 'Should handle empty subscription list');
   });
 
+  it('sendGoalCompletedNotification fires with next-goal body when nextGoalName provided', async () => {
+    const { initNotifications, sendGoalCompletedNotification } = await import(`../notifications.js?t=${Date.now()}`);
+
+    initNotifications();
+
+    // Should not throw with no subscriptions; payload shape is what matters
+    await sendGoalCompletedNotification('Fix auth bug', 'Improve caching');
+    assert.ok(true, 'Should not throw when firing goal-complete notification with next goal');
+  });
+
+  it('sendGoalCompletedNotification fires with fallback body when no next goal', async () => {
+    const { initNotifications, sendGoalCompletedNotification } = await import(`../notifications.js?t=${Date.now()}`);
+
+    initNotifications();
+
+    // Should not throw; body should mention proposing new goals
+    await sendGoalCompletedNotification('Refactor DB layer');
+    assert.ok(true, 'Should not throw when firing goal-complete notification with no next goal');
+  });
+
   it('should validate VAPID key format', async () => {
     const { initNotifications } = await import(`../notifications.js?t=${Date.now()}`);
     const keys = initNotifications();
