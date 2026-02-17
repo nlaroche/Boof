@@ -273,6 +273,39 @@ export function recordGuideline(repoPath: string, errorPattern: string, guidelin
   saveMemory(repoPath, memory);
 }
 
+// ── Goal Pattern Decay ───────────────────────────────────────────────────
+
+export interface DecayResult {
+  removed: number;
+  remaining: number;
+}
+
+/**
+ * Decay stale patterns by removing entries older than maxAgeDays.
+ * Also decays guidelines by reducing times_seen weight for old entries.
+ * Returns counts of removed vs remaining patterns.
+ */
+export function decayStalePatterns(repoPath: string, maxAgeDays = 30): DecayResult {
+  const memory = loadMemory(repoPath);
+  const cutoff = new Date(Date.now() - maxAgeDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const before = memory.patterns.length;
+  memory.patterns = memory.patterns.filter(p => p.learned_at >= cutoff);
+  const removed = before - memory.patterns.length;
+
+  // Decay guidelines: halve times_seen for entries not seen recently
+  if (memory.guidelines) {
+    for (const g of memory.guidelines) {
+      if (g.last_seen < cutoff) {
+        g.times_seen = Math.max(1, Math.floor(g.times_seen / 2));
+      }
+    }
+  }
+
+  saveMemory(repoPath, memory);
+  return { removed, remaining: memory.patterns.length };
+}
+
 // ── Goal Proposal from Past Patterns ────────────────────────────────────
 
 interface GoalStat {
