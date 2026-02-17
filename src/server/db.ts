@@ -214,6 +214,21 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('goal_log', 'completion_tokens', 'INTEGER DEFAULT 0');
   addColumnIfMissing('goal_log', 'total_tokens', 'INTEGER DEFAULT 0');
 
+  // Goal completion tracking
+  addColumnIfMissing('goals', 'completed_at', 'TEXT DEFAULT NULL');
+
+  // Goal stats table — tracks runs, tasks completed, avg duration per goal
+  db.run(`
+    CREATE TABLE IF NOT EXISTS goal_stats (
+      goal_id TEXT PRIMARY KEY,
+      total_runs INTEGER DEFAULT 0,
+      tasks_completed INTEGER DEFAULT 0,
+      tasks_failed INTEGER DEFAULT 0,
+      avg_duration_ms REAL DEFAULT 0,
+      last_run_at TEXT DEFAULT NULL
+    )
+  `);
+
   // Goal linkage on tasks
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');

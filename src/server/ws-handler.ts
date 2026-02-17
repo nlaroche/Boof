@@ -879,6 +879,20 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       break;
     }
 
+    case 'goal:set-priority': {
+      const { goalId, priority } = message;
+      const clampedPriority = Math.max(1, Math.min(5, priority));
+      runQuery(
+        'UPDATE goals SET priority = ?, updated_at = ? WHERE id = ?',
+        [clampedPriority, new Date().toISOString(), goalId]
+      );
+      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+      if (goal) {
+        broadcast({ type: 'goal:updated', goal });
+      }
+      break;
+    }
+
     case 'goal:list': {
       const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
       send(ws, { type: 'goal:list', goals });
