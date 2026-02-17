@@ -1,7 +1,11 @@
-import { describe, it, beforeEach, before } from 'node:test';
+import { describe, it, beforeEach, before, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 import { handleWsMessage, getBroadcast, addClientForTest } from '../ws-handler.js';
-import { initDb } from '../db.js';
+import { initDb, runQuery } from '../db.js';
+import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
 import type { WSClientMessage } from '../../client/lib/types.js';
 
 // Initialize database before all tests
@@ -803,6 +807,123 @@ describe('goal stats WebSocket messages', () => {
       assert.equal(msg.goals.length, 1, 'Goals array should have one entry');
       assert.equal(msg.goals[0].id, 'auto-proposed-1', 'Goal id should be preserved');
       assert.equal(msg.goals[0].proposal_status, 'pending', 'Goal proposal_status should be pending');
+    } finally {
+      removeClient();
+    }
+  });
+});
+
+describe('self-improve goal proposal WS broadcast', () => {
+  let memDir: string;
+
+  beforeEach(() => {
+    memDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-ws-test-'));
+    initBoofDir(memDir);
+  });
+
+  afterEach(() => {
+    fs.rmSync(memDir, { recursive: true, force: true });
+  });
+
+  it('proposeGoals broadcasts goal:proposed-auto to connected clients', async () => {
+    const agentId = `ws-test-agent-${Date.now()}`;
+    const now = new Date().toISOString();
+
+    // Insert an agent into the DB (needed for proposeGoals to look up working_directory)
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, self_improve, created_at, last_activity)
+       VALUES (?, 'WS Test Agent', ?, 'idle', 1, ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // Seed memory with patterns so proposeGoals has material
+    recordPattern(memDir, 'Improve WebSocket error handling for reconnection', 'ws-test');
+    recordPattern(memDir, 'Add integration tests for goal cycling flow', 'ws-test');
+
+    // Register a mock client to capture broadcast messages
+    const received: string[] = [];
+    const mockWs = {
+      readyState: 1, // OPEN
+      send(data: string) { received.push(data); }
+    } as any;
+    const removeClient = addClientForTest(mockWs);
+
+    try {
+      // When self-improve proposes goals, it calls proposeGoals then broadcasts goal:proposed-auto
+      const proposed = await proposeGoals(agentId, memDir);
+
+      // Must have proposed at least one goal
+      assert.ok(proposed.length > 0, 'proposeGoals should return at least one goal');
+
+      // Broadcast the event (mirrors what checkAndCycleGoal does when no active goals remain)
+      const broadcast = getBroadcast();
+      broadcast({ type: 'goal:proposed-auto', agentId, goals: proposed as any });
+
+      // The connected client should receive the broadcast
+      assert.equal(received.length, 1, 'Connected client should receive exactly one goal:proposed-auto message');
+
+      const msg = JSON.parse(received[0]);
+      assert.equal(msg.type, 'goal:proposed-auto', 'Message type should be goal:proposed-auto');
+      assert.equal(msg.agentId, agentId, 'agentId should match the self-improve agent');
+      assert.ok(Array.isArray(msg.goals), 'goals should be an array');
+      assert.ok(msg.goals.length > 0, 'goals array should not be empty');
+
+      // Each proposed goal should have correct shape
+      for (const g of msg.goals) {
+        assert.ok(typeof g.id === 'string' && g.id.length > 0, 'Each goal should have an id');
+        assert.ok(typeof g.name === 'string' && g.name.length > 0, 'Each goal should have a name');
+        assert.equal(g.proposal_status, 'pending', 'Each proposed goal should have pending proposal_status');
+        assert.equal(g.proposed_by, agentId, 'Each proposed goal should reference the proposing agent');
+      }
+    } finally {
+      removeClient();
+    }
+  });
+
+  it('self-improve toggle then proposeGoals sends goal:proposed-auto via broadcast', async () => {
+    const agentId = `ws-selfimprove-${Date.now()}`;
+    const now = new Date().toISOString();
+
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, self_improve, created_at, last_activity)
+       VALUES (?, 'Self-Improve WS Agent', ?, 'idle', 1, ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // Seed patterns so proposal has material
+    recordPattern(memDir, 'Cache DB queries to reduce repeated lookups', 'self-improve');
+
+    // Register client
+    const received: string[] = [];
+    const mockWs = {
+      readyState: 1,
+      send(data: string) { received.push(data); }
+    } as any;
+    const removeClient = addClientForTest(mockWs);
+
+    try {
+      // Enable self-improve via WS message (mimics client toggling it on)
+      const selfImproveMsg: WSClientMessage = {
+        type: 'agent:self-improve',
+        agentId,
+        enabled: true
+      };
+      handleWsMessage(mockWs, JSON.stringify(selfImproveMsg));
+
+      // Clear messages from agent:updated broadcast
+      received.length = 0;
+
+      // Now simulate the self-improve cycle proposing goals when none remain
+      const proposals = await proposeGoals(agentId, memDir);
+      assert.ok(proposals.length > 0, 'Should propose at least one goal');
+
+      const broadcast = getBroadcast();
+      broadcast({ type: 'goal:proposed-auto', agentId, goals: proposals as any });
+
+      assert.equal(received.length, 1, 'Client should receive goal:proposed-auto after self-improve proposal');
+      const msg = JSON.parse(received[0]);
+      assert.equal(msg.type, 'goal:proposed-auto');
+      assert.ok(Array.isArray(msg.goals) && msg.goals.length > 0, 'Goals should be proposed');
     } finally {
       removeClient();
     }
