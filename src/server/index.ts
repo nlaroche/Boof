@@ -2,9 +2,12 @@ import express from 'express';
 import { createServer } from 'http';
 import path from 'path';
 import { initDb } from './db.js';
+import { getOne, getAll } from './db.js';
 import { setupWebSocket } from './ws-handler.js';
-import { startAutopilotLoop, stopAutopilotLoop } from './autopilot.js';
+import { startAutopilotLoop, stopAutopilotLoop, getAgentCwd } from './autopilot.js';
 import { killAllAgents } from './pty-manager.js';
+import { proposeGoals, initBoofDir } from './agent-memory.js';
+import type { Agent } from '../client/lib/types.js';
 
 const PORT = process.env.PORT || 3456;
 
@@ -18,6 +21,44 @@ const server = createServer(app);
 setupWebSocket(server);
 
 app.use(express.static(clientDir));
+app.use(express.json());
+
+// ── REST API ──────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/goals/propose?agentId=<id>
+ * Returns AI-generated goal proposals based on past patterns.
+ * Used when no active goals remain and the autopilot needs new work.
+ */
+app.get('/api/goals/propose', async (req, res) => {
+  const agentId = req.query.agentId as string;
+  if (!agentId) {
+    res.status(400).json({ error: 'agentId query parameter is required' });
+    return;
+  }
+
+  const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+  if (!agent) {
+    res.status(404).json({ error: 'Agent not found' });
+    return;
+  }
+
+  const agentCwd = getAgentCwd(agent);
+  initBoofDir(agentCwd);
+
+  const activeGoals = getAll<{ id: string }>('SELECT id FROM goals WHERE status = \'active\'', []);
+  if (activeGoals.length > 0) {
+    res.status(200).json({ goals: [], message: 'Active goals exist — no proposals needed' });
+    return;
+  }
+
+  try {
+    const proposed = await proposeGoals(agentId, agentCwd);
+    res.status(200).json({ goals: proposed });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to propose goals' });
+  }
+});
 
 async function start() {
   try {

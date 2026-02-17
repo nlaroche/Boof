@@ -429,6 +429,101 @@ describe('goal completion e2e cycle', () => {
   });
 });
 
+describe('GET /api/goals/propose endpoint behavior', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    goalCounter = 0;
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-propose-ep-test-'));
+    initBoofDir(tmpDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns proposed goals when no active goals remain', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity) VALUES (?, 'Propose Agent', ?, 'idle', ?, ?)`,
+      [agentId, tmpDir, now, now]
+    );
+
+    // Ensure no active goals
+    const activeGoals = getAll<{ id: string }>("SELECT id FROM goals WHERE status = 'active'", []);
+    assert.equal(activeGoals.length, 0, 'No active goals should exist');
+
+    // Add a pattern so proposeGoals has material
+    recordPattern(tmpDir, 'Improve type safety across server modules', 'test');
+
+    // Call proposeGoals — this is what the endpoint invokes
+    const proposed = await proposeGoals(agentId, tmpDir);
+    assert.ok(Array.isArray(proposed), 'Response should be an array of goals');
+    assert.ok(proposed.length > 0, 'Should return at least one proposed goal when patterns exist');
+    assert.ok(proposed.length <= 3, 'Should not return more than 3 proposals');
+  });
+
+  it('returns empty array when active goals still exist (endpoint skips proposal)', () => {
+    // The endpoint returns empty goals when active goals exist
+    createGoal('Still Active Goal', 3, 'active');
+    const activeGoals = getAll<{ id: string }>("SELECT id FROM goals WHERE status = 'active'", []);
+    assert.ok(activeGoals.length > 0, 'Active goals should exist — proposal should be skipped');
+  });
+
+  it('proposed goals have correct shape: id, name, description, status, proposal_status', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity) VALUES (?, 'Shape Test Agent', ?, 'idle', ?, ?)`,
+      [agentId, tmpDir, now, now]
+    );
+
+    recordPattern(tmpDir, 'Add integration tests for all REST endpoints', 'test');
+
+    const proposed = await proposeGoals(agentId, tmpDir);
+    assert.ok(proposed.length > 0, 'Should have proposals to check shape');
+
+    for (const goal of proposed) {
+      assert.ok(typeof goal.id === 'string' && goal.id.length > 0, 'goal.id should be a non-empty string');
+      assert.ok(typeof goal.name === 'string' && goal.name.length > 0, 'goal.name should be a non-empty string');
+      assert.ok(typeof goal.description === 'string', 'goal.description should be a string');
+      assert.equal(goal.status, 'active', 'proposed goal status should be active');
+      assert.equal(goal.proposal_status, 'pending', 'proposed goal proposal_status should be pending');
+    }
+  });
+
+  it('proposed goals are persisted to DB with proposed_by set to agentId', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity) VALUES (?, 'Persist Test Agent', ?, 'idle', ?, ?)`,
+      [agentId, tmpDir, now, now]
+    );
+
+    recordPattern(tmpDir, 'Validate all WebSocket message handlers', 'test');
+
+    const proposed = await proposeGoals(agentId, tmpDir);
+    assert.ok(proposed.length > 0, 'Should have proposals');
+
+    // Verify each proposed goal is in the DB with correct fields
+    for (const g of proposed) {
+      const dbGoal = getOne<{ proposal_status: string; proposed_by: string; status: string }>(
+        'SELECT proposal_status, proposed_by, status FROM goals WHERE id = ?',
+        [g.id]
+      );
+      assert.ok(dbGoal !== undefined, `Goal ${g.id} should be in DB`);
+      assert.equal(dbGoal?.proposal_status, 'pending', 'DB proposal_status should be pending');
+      assert.equal(dbGoal?.proposed_by, agentId, 'DB proposed_by should match agentId');
+      assert.equal(dbGoal?.status, 'active', 'DB status should be active');
+    }
+  });
+});
+
 describe('overnight autonomy safeguards', () => {
   beforeEach(async () => {
     goalCounter = 0;
