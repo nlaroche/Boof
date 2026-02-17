@@ -337,13 +337,19 @@ function buildAutopilotPrompt(
   prompt += `2. After making changes, ALWAYS run the build: node node_modules/vite/bin/vite.js build\n`;
   prompt += `   Do NOT use "npm run build" — vite is not in cmd.exe PATH on this Windows system.\n`;
   prompt += `3. If the build fails, fix the errors before finishing.\n`;
-  prompt += `4. Keep your changes focused and testable.\n\n`;
+  prompt += `4. Run tests after changes: node --import tsx --test src/server/__tests__/*.test.ts\n`;
+  prompt += `5. Keep your changes focused and testable.\n`;
+  prompt += `6. ARCHITECTURE: Watch for code health issues — duplicated logic, oversized files (>300 lines),\n`;
+  prompt += `   poor module boundaries. If you notice these while working, note them for future tasks.\n`;
+  prompt += `7. RESEARCH FIRST: For unfamiliar topics, use WebSearch/WebFetch to learn before coding.\n`;
+  prompt += `   Look up best practices, read docs, understand APIs. Store useful knowledge as skills.\n`;
+  prompt += `8. Think like a senior engineer: consider testability, reusability, and maintainability.\n\n`;
 
   if (pendingTasks.length === 0) {
     prompt += `There are no pending tasks. Research the codebase and pick ONE small improvement related to the goal.\n`;
-    prompt += `Implement it, verify the build passes, and you're done.\n`;
+    prompt += `Implement it, verify the build and tests pass, and you're done.\n`;
   } else {
-    prompt += `Pick the most impactful pending task, implement it, and verify the build passes.\n`;
+    prompt += `Pick the most impactful pending task, implement it, and verify the build and tests pass.\n`;
   }
 
   // Seed prompt version if this is the first run
@@ -365,11 +371,18 @@ function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
     prompt += memoryContext;
   }
   prompt += `Planning tasks for goal: "${goal.name}"\n${goal.description || 'No description.'}\n\n`;
-  prompt += `Use Glob on src/server/, then output 3-5 tasks. Max 1-2 tool calls. Do NOT read files.\n\n`;
+  prompt += `Explore the codebase structure with Glob, then output 3-5 well-thought-out tasks.\n`;
+  prompt += `Think like a senior engineer: consider dependencies between tasks, order them logically,\n`;
+  prompt += `and make sure each task is small enough for one run but meaningful.\n\n`;
+  prompt += `Before planning, consider:\n`;
+  prompt += `- What existing code/patterns can be reused?\n`;
+  prompt += `- Will this introduce duplication? How to avoid it?\n`;
+  prompt += `- Are there tests that need updating?\n`;
+  prompt += `- What's the right module boundary for new code?\n\n`;
   prompt += `FORMAT (one per line):\nTASK: <title> | <description with file names>\n\n`;
   prompt += `Examples:\n`;
-  prompt += `TASK: Add scheduler tests | Create src/server/__tests__/scheduler.test.ts testing matchesCron\n`;
-  prompt += `TASK: Test agent-memory | Create src/server/__tests__/agent-memory.test.ts testing recordMistake\n\n`;
+  prompt += `TASK: Extract branch helpers from autopilot | Move createAgentBranch, mergeToMain, abandonBranch to src/server/git-helpers.ts\n`;
+  prompt += `TASK: Add web research skill | Create src/server/web-research.ts with WebSearch integration for learning new topics\n\n`;
   prompt += `Each task = 1 run (1-2 file edits). Name exact files. Plan only, don't implement.\n`;
   return prompt;
 }
