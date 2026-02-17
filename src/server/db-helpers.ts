@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -315,6 +315,29 @@ export function updateGoal(goalId: string, fields: GoalUpdateInput, broadcast: (
 export function deleteGoal(goalId: string, broadcast: (id: string) => void): void {
   runQuery('DELETE FROM goal_log WHERE goal_id = ?', [goalId]);
   deleteAndBroadcast('goals', goalId, broadcast);
+}
+
+/** Get goal stats (completion tracking) for a specific goal. */
+export function getGoalStats(goalId: string): GoalStats | null {
+  return getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [goalId]);
+}
+
+/**
+ * Get the next highest-priority active goal.
+ * Ordered by priority DESC then created_at ASC.
+ * Optionally excludes a specific goal (e.g. the just-completed one).
+ */
+export function getNextActiveGoal(excludeGoalId?: string): Goal | null {
+  if (excludeGoalId) {
+    return getOne<Goal>(
+      "SELECT * FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [excludeGoalId]
+    );
+  }
+  return getOne<Goal>(
+    "SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at ASC LIMIT 1",
+    []
+  );
 }
 
 // ============================================================================
