@@ -1,4 +1,4 @@
-import { describe, it, beforeEach, before, afterEach } from 'node:test';
+import { describe, it, beforeEach, before, afterEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
@@ -8,9 +8,18 @@ import { initDb, runQuery } from '../db.js';
 import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
 import type { WSClientMessage } from '../../client/lib/types.js';
 
-// Initialize database before all tests
+const TEST_DB_PATH = './test-ws-handler.db';
+
+// Use isolated test database
 before(async () => {
+  if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+  process.env.DB_PATH = TEST_DB_PATH;
   await initDb();
+});
+
+after(() => {
+  if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+  delete process.env.DB_PATH;
 });
 
 // Mock WebSocket interface
