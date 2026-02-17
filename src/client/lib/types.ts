@@ -56,8 +56,18 @@ export interface Goal {
   repo_id: string | null;
   proposed_by: string | null;
   proposal_status: 'approved' | 'pending' | 'rejected' | null;
+  completed_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface GoalStats {
+  goal_id: string;
+  total_runs: number;
+  tasks_completed: number;
+  tasks_failed: number;
+  avg_duration_ms: number;
+  last_run_at: string | null;
 }
 
 export interface WorkflowStep {
@@ -287,7 +297,9 @@ export type WSClientMessage =
   | { type: 'agent:skills'; agentId: string }
   | { type: 'agent:experiments'; agentId: string }
   | { type: 'agent:create-experiment'; agentId: string; name: string; hypothesis: string; variantA: string; variantB: string }
-  | { type: 'agent:timeline'; agentId: string };
+  | { type: 'agent:timeline'; agentId: string }
+  | { type: 'goal:set-priority'; goalId: string; priority: number }
+  | { type: 'goal:get-stats'; goalId: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -325,7 +337,11 @@ export type WSServerMessage =
   | { type: 'agent:dashboard'; agentId: string; data: DashboardData }
   | { type: 'agent:skills'; agentId: string; skills: Skill[] }
   | { type: 'agent:experiments'; agentId: string; experiments: Experiment[] }
-  | { type: 'agent:timeline'; agentId: string; runs: TimelineRun[] };
+  | { type: 'agent:timeline'; agentId: string; runs: TimelineRun[] }
+  | { type: 'goal:completed'; goalId: string; agentId: string; goal: Goal }
+  | { type: 'goal:switched'; agentId: string; previousGoalId: string | null; newGoalId: string; goal: Goal }
+  | { type: 'goal:proposed-auto'; agentId: string; goals: Goal[] }
+  | { type: 'goal:stats'; goalId: string; stats: GoalStats | null };
 
 export interface RepoInfo {
   name: string;

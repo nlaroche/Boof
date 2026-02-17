@@ -79,7 +79,7 @@ export function generateSummary(rawOutput: string, prompt: string): string {
 
   for (const line of tail) {
     // Track tool usage (our emoji format from parsed stream-json)
-    if (/^[📖✏️🔍💻🤖🔧📋❌✅]/.test(line)) {
+    if (/^(?:📖|✏️|🔍|💻|🤖|🔧|📋|❌|✅)/u.test(line)) {
       toolLines.push(line);
       continue;
     }
@@ -124,7 +124,8 @@ export function commitAgentChanges(workingDirectory: string, prompt: string, age
     }
 
     // Get all modified/untracked files in the repo
-    const statusOutput = execSync('git status --porcelain', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    // Use --untracked-files=all to get individual file paths instead of directory summaries
+    const statusOutput = execSync('git status --porcelain --untracked-files=all', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
     if (!statusOutput) return false;
 
     // Extract files the agent touched from the output

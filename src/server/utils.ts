@@ -111,7 +111,7 @@ export function generateSummary(rawOutput: string, prompt: string): string {
 
   for (const line of tail) {
     // Track tool usage (our emoji format from parsed stream-json)
-    if (/^[📖✏️🔍💻🤖🔧📋❌✅]/.test(line)) {
+    if (/^(?:📖|✏️|🔍|💻|🤖|🔧|📋|❌|✅)/u.test(line)) {
       toolLines.push(line);
       continue;
     }

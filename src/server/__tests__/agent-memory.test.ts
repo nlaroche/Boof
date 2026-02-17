@@ -1,8 +1,10 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { initDb, runQuery } from '../db.js';
-import { getGoalLogCached, invalidateGoalLogCache } from '../agent-memory.js';
+import { getGoalLogCached, invalidateGoalLogCache, initBoofDir, recordPattern, getPatterns, decayStalePatterns, recordGuideline } from '../agent-memory.js';
 
 const TEST_DB_PATH = './test-agent-memory.db';
 
@@ -128,5 +130,200 @@ describe('agent-memory cache', () => {
     // Should get fresh data now
     const afterTTL = getGoalLogCached(goalId, 5);
     assert.equal(afterTTL.length, 2, 'Cache should auto-refresh after TTL');
+  });
+});
+
+describe('agent-memory goal-pattern reinforcement', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-reinforcement-test-'));
+    initBoofDir(tmpDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('completing a goal writes a reinforcement pattern entry', () => {
+    const goalName = 'Add integration tests';
+    const pattern = `Completed: "${goalName}" — modified src/server/__tests__/integration.test.ts`;
+
+    // Simulate what autopilot does after a successful task: recordPattern
+    recordPattern(tmpDir, pattern, 'autopilot');
+
+    const patterns = getPatterns(tmpDir);
+    assert.ok(patterns.length > 0, 'Should have at least one pattern after completion');
+    const found = patterns.find(p => p.pattern === pattern);
+    assert.ok(found !== undefined, 'Should find the completion reinforcement pattern');
+    assert.equal(found?.source, 'autopilot', 'Pattern source should be autopilot');
+  });
+
+  it('getPatterns returns reinforcement entry on the next cycle', () => {
+    // Simulate cycle 1: goal completes, reinforcement written
+    const cycle1Pattern = 'Completed: "Goal A" — modified src/server/agent-memory.ts';
+    recordPattern(tmpDir, cycle1Pattern, 'autopilot');
+
+    // Simulate cycle 2: a new run reads patterns (fresh load from disk)
+    const patternsOnNextCycle = getPatterns(tmpDir);
+    assert.ok(patternsOnNextCycle.length >= 1, 'Next cycle should see the reinforcement entry');
+    assert.ok(
+      patternsOnNextCycle.some(p => p.pattern === cycle1Pattern),
+      'Next cycle should return the pattern written in cycle 1'
+    );
+  });
+
+  it('reinforcement patterns accumulate across multiple goal completions', () => {
+    const goals = [
+      'Completed: "Goal Alpha" — modified src/server/autopilot.ts',
+      'Completed: "Goal Beta" — modified src/server/db.ts',
+      'Completed: "Goal Gamma" — modified src/server/scheduler.ts',
+    ];
+
+    for (const goal of goals) {
+      recordPattern(tmpDir, goal, 'autopilot');
+    }
+
+    const patterns = getPatterns(tmpDir);
+    assert.equal(patterns.length, 3, 'Should have 3 reinforcement patterns');
+    for (const goal of goals) {
+      assert.ok(patterns.some(p => p.pattern === goal), `Should contain pattern: ${goal}`);
+    }
+  });
+
+  it('duplicate goal completion patterns are not written twice', () => {
+    const pattern = 'Completed: "Duplicate Goal" — modified src/server/utils.ts';
+
+    // Record same pattern twice (simulating duplicate autopilot runs)
+    recordPattern(tmpDir, pattern, 'autopilot');
+    recordPattern(tmpDir, pattern, 'autopilot');
+
+    const patterns = getPatterns(tmpDir);
+    const matches = patterns.filter(p => p.pattern === pattern);
+    assert.equal(matches.length, 1, 'Duplicate patterns should not be stored more than once');
+  });
+
+  it('getPatterns returns empty array when no patterns have been recorded', () => {
+    // Fresh dir with initBoofDir but no patterns recorded
+    const patterns = getPatterns(tmpDir);
+    assert.ok(Array.isArray(patterns), 'Should return an array');
+    assert.equal(patterns.length, 0, 'Should return empty array when no patterns recorded');
+  });
+
+  it('reinforcement entry has correct shape: pattern, source, learned_at', () => {
+    const pattern = 'Completed: "Shape Test Goal" — modified src/server/ws-handler.ts';
+    recordPattern(tmpDir, pattern, 'autopilot');
+
+    const patterns = getPatterns(tmpDir);
+    const entry = patterns.find(p => p.pattern === pattern);
+    assert.ok(entry !== undefined, 'Should find the recorded pattern');
+    assert.ok(typeof entry!.pattern === 'string' && entry!.pattern.length > 0, 'pattern should be non-empty string');
+    assert.ok(typeof entry!.source === 'string' && entry!.source.length > 0, 'source should be non-empty string');
+    assert.ok(typeof entry!.learned_at === 'string' && entry!.learned_at.length > 0, 'learned_at should be non-empty string');
+    // learned_at should be a valid ISO timestamp
+    assert.ok(!isNaN(Date.parse(entry!.learned_at)), 'learned_at should be a valid ISO timestamp');
+  });
+});
+
+describe('agent-memory goal-decay', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-decay-test-'));
+    initBoofDir(tmpDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('removes patterns older than maxAgeDays', () => {
+    // Record a fresh pattern
+    recordPattern(tmpDir, 'Fresh pattern from today', 'autopilot');
+
+    // Manually inject an old pattern by writing memory directly
+    const memoryFile = path.join(tmpDir, '.boof', 'memory.json');
+    const mem = JSON.parse(fs.readFileSync(memoryFile, 'utf-8'));
+    mem.patterns.push({
+      pattern: 'Old pattern from 60 days ago',
+      source: 'autopilot',
+      learned_at: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    fs.writeFileSync(memoryFile, JSON.stringify(mem, null, 2));
+
+    const result = decayStalePatterns(tmpDir, 30);
+    assert.equal(result.removed, 1, 'Should remove 1 stale pattern');
+    assert.equal(result.remaining, 1, 'Should keep 1 fresh pattern');
+
+    const patterns = getPatterns(tmpDir);
+    assert.ok(patterns.some(p => p.pattern === 'Fresh pattern from today'), 'Fresh pattern should remain');
+    assert.ok(!patterns.some(p => p.pattern === 'Old pattern from 60 days ago'), 'Old pattern should be removed');
+  });
+
+  it('returns zero removed when all patterns are fresh', () => {
+    recordPattern(tmpDir, 'Recent pattern A', 'autopilot');
+    recordPattern(tmpDir, 'Recent pattern B', 'autopilot');
+
+    const result = decayStalePatterns(tmpDir, 30);
+    assert.equal(result.removed, 0);
+    assert.equal(result.remaining, 2);
+  });
+
+  it('returns zero removed and zero remaining when memory is empty', () => {
+    const result = decayStalePatterns(tmpDir, 30);
+    assert.equal(result.removed, 0);
+    assert.equal(result.remaining, 0);
+  });
+
+  it('decays guideline times_seen for stale entries', () => {
+    // Add a fresh guideline
+    recordGuideline(tmpDir, 'fresh-error', 'Fresh guideline', 'src/server/test.ts');
+
+    // Manually inject a stale guideline
+    const memoryFile = path.join(tmpDir, '.boof', 'memory.json');
+    const mem = JSON.parse(fs.readFileSync(memoryFile, 'utf-8'));
+    mem.guidelines.push({
+      error_pattern: 'stale-error',
+      guideline: 'Stale guideline from 60 days ago',
+      file_context: null,
+      times_seen: 8,
+      last_seen: new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    fs.writeFileSync(memoryFile, JSON.stringify(mem, null, 2));
+
+    decayStalePatterns(tmpDir, 30);
+
+    const updatedMem = JSON.parse(fs.readFileSync(path.join(tmpDir, '.boof', 'memory.json'), 'utf-8'));
+    const staleGuideline = updatedMem.guidelines.find((g: { error_pattern: string }) => g.error_pattern === 'stale-error');
+    assert.ok(staleGuideline, 'Stale guideline should still exist');
+    assert.equal(staleGuideline.times_seen, 4, 'times_seen should be halved for stale guideline');
+  });
+
+  it('respects custom maxAgeDays parameter', () => {
+    // Pattern from 5 days ago
+    const memoryFile = path.join(tmpDir, '.boof', 'memory.json');
+    const mem = JSON.parse(fs.readFileSync(memoryFile, 'utf-8'));
+    mem.patterns.push({
+      pattern: 'Pattern from 5 days ago',
+      source: 'autopilot',
+      learned_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    fs.writeFileSync(memoryFile, JSON.stringify(mem, null, 2));
+
+    // With maxAgeDays=30, 5-day-old pattern is fresh
+    const result30 = decayStalePatterns(tmpDir, 30);
+    assert.equal(result30.removed, 0, 'Pattern should survive 30-day cutoff');
+
+    // With maxAgeDays=3, 5-day-old pattern is stale
+    const result3 = decayStalePatterns(tmpDir, 3);
+    assert.equal(result3.removed, 1, 'Pattern should be removed with 3-day cutoff');
   });
 });

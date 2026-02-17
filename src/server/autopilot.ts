@@ -5,7 +5,7 @@ import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
+import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -18,11 +18,70 @@ import {
   createExperiment, rankTasks,
 } from './self-improve.js';
 import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement, Skill } from '../client/lib/types.js';
+import { sendGoalCompletedNotification } from './notifications.js';
 
 const execAsync = promisify(exec);
 
 let loopInterval: ReturnType<typeof setInterval> | null = null;
 const LOOP_INTERVAL_MS = 30_000;
+
+// ── Overnight Autonomy Safeguards ────────────────────────────────────────
+// Prevent runaway goal cycling during overnight unattended runs.
+
+/** Max goals an agent may cycle through in one session before pausing. */
+export const MAX_GOALS_PER_SESSION = 10;
+
+/** Max goal cycles allowed per hour (time-based rate limit to prevent runaway loops). */
+export const MAX_CYCLES_PER_HOUR = 6;
+
+/** How long (ms) to back off between loop checks when no goals remain. */
+export const IDLE_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
+
+/** Max tasks to run on one goal before rotating to the next. */
+export const TASKS_BEFORE_ROTATION = 2;
+
+/** Tracks how many goals each agent has cycled through this session. */
+const goalsCycledThisSession = new Map<string, number>();
+
+/** Timestamps when each agent ran out of goals (for idle backoff). */
+const agentIdleSince = new Map<string, number>();
+
+/** Tracks how many consecutive tasks an agent has run on its current goal. */
+const tasksOnCurrentGoal = new Map<string, number>();
+
+/**
+ * Per-agent sliding-window of goal-cycle timestamps (last 1 hour).
+ * Used to enforce MAX_CYCLES_PER_HOUR.
+ */
+const agentCycleTimestamps = new Map<string, number[]>();
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Check whether an agent has exceeded the per-hour cycle rate limit.
+ * Returns true if the agent is rate-limited (should NOT cycle now).
+ * Records the current timestamp if not rate-limited.
+ */
+export function checkCycleRateLimit(agentId: string): boolean {
+  const now = Date.now();
+  const timestamps = agentCycleTimestamps.get(agentId) ?? [];
+  // Prune timestamps older than 1 hour
+  const recent = timestamps.filter(t => now - t < ONE_HOUR_MS);
+  if (recent.length >= MAX_CYCLES_PER_HOUR) {
+    return true; // rate-limited
+  }
+  recent.push(now);
+  agentCycleTimestamps.set(agentId, recent);
+  return false; // not rate-limited
+}
+
+/** Reset session counters for an agent (e.g. when new goals are assigned). */
+export function resetAgentSessionCounters(agentId: string): void {
+  goalsCycledThisSession.delete(agentId);
+  agentIdleSince.delete(agentId);
+  agentCycleTimestamps.delete(agentId);
+  tasksOnCurrentGoal.delete(agentId);
+}
 
 // ── Worktree helpers ────────────────────────────────────────────────────
 
@@ -331,7 +390,7 @@ async function runBuildCheck(workingDirectory: string): Promise<{ success: boole
 
 async function runTestCheck(workingDirectory: string): Promise<{ success: boolean; output: string; failures: string[] }> {
   try {
-    const testCmd = 'node --test src/server/__tests__/*.test.ts';
+    const testCmd = 'node --import tsx --test src/server/__tests__/*.test.ts';
     const { stdout, stderr } = await execAsync(testCmd, {
       cwd: workingDirectory,
       timeout: 180_000,
@@ -618,6 +677,171 @@ function parseTasksFromOutput(output: string, goalId: string, agentId: string): 
   return count;
 }
 
+// ── Goal Cycling ────────────────────────────────────────────────────────
+
+/** Update goal_stats after each run */
+function updateGoalStats(goalId: string, durationMs: number, taskSucceeded: boolean): void {
+  const existing = getOne<{ total_runs: number; tasks_completed: number; tasks_failed: number; avg_duration_ms: number }>(
+    'SELECT * FROM goal_stats WHERE goal_id = ?',
+    [goalId]
+  );
+  const now = new Date().toISOString();
+  if (!existing) {
+    runQuery(
+      `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at) VALUES (?, 1, ?, ?, ?, ?)`,
+      [goalId, taskSucceeded ? 1 : 0, taskSucceeded ? 0 : 1, durationMs, now]
+    );
+  } else {
+    const newTotal = existing.total_runs + 1;
+    const newCompleted = existing.tasks_completed + (taskSucceeded ? 1 : 0);
+    const newFailed = existing.tasks_failed + (taskSucceeded ? 0 : 1);
+    const newAvg = (existing.avg_duration_ms * existing.total_runs + durationMs) / newTotal;
+    runQuery(
+      `UPDATE goal_stats SET total_runs = ?, tasks_completed = ?, tasks_failed = ?, avg_duration_ms = ?, last_run_at = ? WHERE goal_id = ?`,
+      [newTotal, newCompleted, newFailed, newAvg, now, goalId]
+    );
+  }
+}
+
+/**
+ * Check if the agent should rotate to a different goal, or if the current
+ * goal is fully complete. Implements smart rotation:
+ *
+ * 1. If ALL tasks on the current goal are done → mark goal completed, cycle.
+ * 2. If the agent has done TASKS_BEFORE_ROTATION tasks on this goal and
+ *    other active goals exist → rotate to the next goal (round-robin).
+ * 3. Otherwise → stay on the current goal.
+ *
+ * Returns true if goal was cycled/rotated, false if staying.
+ */
+export async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boolean> {
+  const broadcast = getBroadcast();
+
+  // Check remaining tasks for this goal
+  const remaining = getOne<{ count: number }>(
+    "SELECT COUNT(*) as count FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress')",
+    [goalId]
+  );
+  const remainingCount = remaining?.count ?? 0;
+
+  const goalCompleted = remainingCount === 0;
+
+  if (goalCompleted) {
+    // All tasks done — mark goal completed
+    const now = new Date().toISOString();
+    runQuery(
+      `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+      [now, now, goalId]
+    );
+
+    const completedGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+    if (completedGoal) {
+      broadcast({ type: 'goal:completed', goalId, agentId, goal: completedGoal });
+      broadcast({ type: 'goal:updated', goal: completedGoal });
+    }
+
+    console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
+    sendGoalCompletedNotification(completedGoal?.name ?? goalId).catch(() => {});
+  }
+
+  // ── Smart rotation: even if goal isn't complete, rotate after N tasks ──
+  const tasksDone = tasksOnCurrentGoal.get(agentId) ?? 0;
+  const shouldRotate = !goalCompleted && tasksDone >= TASKS_BEFORE_ROTATION;
+
+  if (!goalCompleted && !shouldRotate) {
+    return false; // Stay on this goal — still have tasks and haven't hit rotation threshold
+  }
+
+  // Reset the counter since we're rotating away
+  tasksOnCurrentGoal.delete(agentId);
+
+  // ── Overnight safeguard: enforce per-hour cycle rate limit ──
+  if (checkCycleRateLimit(agentId)) {
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} exceeded ${MAX_CYCLES_PER_HOUR} cycles/hour rate limit. Pausing.`);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Rate limit: exceeded ${MAX_CYCLES_PER_HOUR} goal cycles per hour. Pausing to prevent runaway loops.\n`,
+    });
+    runQuery('UPDATE agents SET autopilot = 0, autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+    return true;
+  }
+
+  // ── Overnight safeguard: enforce per-session goal cap ──
+  const cycled = (goalsCycledThisSession.get(agentId) ?? 0) + 1;
+  goalsCycledThisSession.set(agentId, cycled);
+
+  if (cycled >= MAX_GOALS_PER_SESSION) {
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} reached max goals per session (${MAX_GOALS_PER_SESSION}). Pausing autopilot.`);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Reached max goals per session (${MAX_GOALS_PER_SESSION}). Pausing to avoid runaway loops. Restart autopilot to continue.\n`,
+    });
+    runQuery('UPDATE agents SET autopilot = 0, autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+    goalsCycledThisSession.delete(agentId);
+    agentIdleSince.delete(agentId);
+    return true;
+  }
+
+  // Find next active goal (round-robin: pick the next one after current, wrapping around)
+  const allActiveGoals = getAll<Goal>(
+    "SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at ASC",
+    []
+  );
+
+  // Filter out the current goal (only if it's completed; if rotating, include it for round-robin)
+  const candidates = goalCompleted
+    ? allActiveGoals.filter(g => g.id !== goalId)
+    : allActiveGoals;
+
+  if (candidates.length === 0) {
+    // No other goals — if current is completed, we're done
+    if (goalCompleted) {
+      console.log(`[autopilot] No active goals remaining. Proposing new goals...`);
+      const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+      if (agent) {
+        const agentCwd = getAgentCwd(agent);
+        const proposedGoals = await proposeGoals(agentId, agentCwd);
+        if (proposedGoals.length > 0) {
+          broadcast({ type: 'goal:proposed-auto', agentId, goals: proposedGoals });
+          console.log(`[autopilot] Proposed ${proposedGoals.length} new goals for agent ${agentId.slice(0, 6)}`);
+        }
+      }
+      runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+      agentIdleSince.set(agentId, Date.now());
+    }
+    return goalCompleted;
+  }
+
+  // Round-robin: find the current goal's position in the list and pick the next one
+  let nextGoal: Goal;
+  if (shouldRotate && !goalCompleted) {
+    const currentIdx = candidates.findIndex(g => g.id === goalId);
+    const nextIdx = (currentIdx + 1) % candidates.length;
+    nextGoal = candidates[nextIdx];
+    // If we'd rotate back to the same goal (only 1 candidate), stay
+    if (nextGoal.id === goalId) {
+      return false;
+    }
+    console.log(`[autopilot] Rotating from "${allActiveGoals.find(g => g.id === goalId)?.name}" to "${nextGoal.name}" after ${tasksDone} tasks`);
+    broadcast({
+      type: 'agent:output',
+      agentId,
+      chunk: `\n[autopilot] Rotating to next goal: "${nextGoal.name}" (done ${tasksDone} tasks on current)\n`,
+    });
+  } else {
+    // Goal completed — pick highest priority
+    nextGoal = candidates[0];
+    sendGoalCompletedNotification(goalId, nextGoal.name).catch(() => {});
+  }
+
+  runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [nextGoal.id, agentId]);
+  broadcast({ type: 'goal:switched', agentId, previousGoalId: goalId, newGoalId: nextGoal.id, goal: nextGoal });
+  console.log(`[autopilot] Switched agent ${agentId.slice(0, 6)} to goal "${nextGoal.name}" (priority ${nextGoal.priority})`);
+  return true;
+}
+
 // ── Main Autopilot Run ──────────────────────────────────────────────────
 
 export async function triggerAutopilotRun(agentId: string): Promise<void> {
@@ -703,21 +927,33 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       chunk: `\n[autopilot] Working on branch: ${agentBranch}\n`,
     });
 
+    // ── Pre-flight: check for test failures before doing any new work ──
+    let preflightTestsFailed = false;
+    try {
+      broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Pre-flight test check...\n' });
+      const preflightResult = await runTestCheck(agentCwd);
+      if (!preflightResult.success && preflightResult.failures.length > 0) {
+        preflightTestsFailed = true;
+        const failureList = preflightResult.failures.slice(0, 5).join('\n');
+        broadcast({
+          type: 'agent:output',
+          agentId,
+          chunk: `\n[autopilot] ${preflightResult.failures.length} test(s) failing — fixing tests before new work\n`,
+        });
+        logToGoal(goalId, agentId, 'preflight_tests', `${preflightResult.failures.length} test(s) failing`, '', 0, false);
+      } else {
+        broadcast({ type: 'agent:output', agentId, chunk: '[autopilot] Tests passing, proceeding.\n' });
+      }
+    } catch (preflightErr) {
+      console.error('[autopilot] Pre-flight test error:', preflightErr);
+      // Don't block on test runner errors — proceed with normal work
+    }
+
     // ── Task Decomposition: Plan if no pending tasks ──
     const pendingTasks = getAll<{ id: string; title: string; description: string }>(
       "SELECT id, title, description FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress') LIMIT 10",
       [goalId]
     );
-
-    // Check if we can run tasks in parallel (experimental)
-    const useParallel = pendingTasks.length >= 2;
-    const parallelTasks = useParallel ? detectIndependentTasks(pendingTasks).slice(0, 2) : [];
-
-    if (parallelTasks.length >= 2) {
-      broadcast({ type: 'agent:output', agentId, chunk: `\n[autopilot] Running ${parallelTasks.length} tasks in parallel\n` });
-      // For now, fall back to sequential — full parallel implementation needs more work
-      // This lays groundwork for future parallel execution
-    }
 
     if (pendingTasks.length === 0) {
       // Planning phase: ask agent to create tasks
@@ -787,10 +1023,25 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     }
 
     // ── Implementation Phase ──
-    // Adaptive task selection: rank tasks by skill match, failure history, priority
-    const rankedTasks = rankTasks(agentId, pendingTasks);
-    const currentTask = rankedTasks[0];
-    runQuery("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+    // If pre-flight tests failed, override with a test-fix task
+    let currentTask: { id: string; title: string; description: string };
+    let isTestFixOverride = false;
+
+    if (preflightTestsFailed) {
+      // Don't pick a normal task — fix the tests first
+      isTestFixOverride = true;
+      currentTask = {
+        id: '__test_fix__',
+        title: 'Fix failing tests',
+        description: 'Run "node --import tsx --test src/server/__tests__/*.test.ts" to see failures, then fix them. Do NOT add new features — only fix existing test failures. Make the tests pass.',
+      };
+      broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] PRIORITY: Fixing failing tests before new work\n' });
+    } else {
+      // Adaptive task selection: rank tasks by skill match, failure history, priority
+      const rankedTasks = rankTasks(agentId, pendingTasks);
+      currentTask = rankedTasks[0];
+      runQuery("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+    }
 
     // Rebuild memory context filtered by current task relevance
     const taskMemoryContext = getMemoryContext(agentCwd, currentTask.title + ' ' + (currentTask.description || ''));
@@ -995,11 +1246,22 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
     }
 
-    // Update task status
-    const taskStatus = success ? 'done' : 'todo';
-    runQuery("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", [taskStatus, new Date().toISOString(), currentTask.id]);
+    // Update task status (skip for test-fix overrides which aren't real DB tasks)
+    if (!isTestFixOverride) {
+      const taskStatus = success ? 'done' : 'todo';
+      runQuery("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", [taskStatus, new Date().toISOString(), currentTask.id]);
+
+      // Increment task counter for goal rotation
+      if (success) {
+        const count = (tasksOnCurrentGoal.get(agentId) ?? 0) + 1;
+        tasksOnCurrentGoal.set(agentId, count);
+      }
+    }
 
     const durationMs = Date.now() - startTime;
+
+    // Update goal stats (non-blocking)
+    updateGoalStats(goalId, durationMs, success);
 
     // Log with branch info and token usage
     const branchInfo = agentBranch ? ` [branch: ${agentBranch}]` : '';
@@ -1170,6 +1432,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
     }
 
+    // Check if goal is complete and cycle to next goal if needed
+    await checkAndCycleGoal(agentId, goalId);
+
   } catch (err: any) {
     console.error(`[autopilot] Error during run for agent ${agentId}:`, err);
     logToGoal(goalId, agentId, 'autopilot_run', `Error: ${err.message || err}`, '', Date.now() - startTime, false);
@@ -1201,6 +1466,18 @@ function checkAutopilotAgents(): void {
   const now = Date.now();
 
   for (const agent of agents) {
+    // ── Idle backoff: if agent recently ran out of goals, slow down checks ──
+    const idleSince = agentIdleSince.get(agent.id);
+    if (idleSince !== undefined && now - idleSince < IDLE_BACKOFF_MS) {
+      const remainingSecs = Math.ceil((IDLE_BACKOFF_MS - (now - idleSince)) / 1000);
+      console.log(`[autopilot] Agent ${agent.id.slice(0, 6)} idle backoff — ${remainingSecs}s remaining`);
+      continue;
+    }
+    // Clear backoff once it's elapsed
+    if (idleSince !== undefined) {
+      agentIdleSince.delete(agent.id);
+    }
+
     const intervalMs = (agent.autopilot_interval || 600) * 1000;
     const lastRun = agent.autopilot_last_run ? new Date(agent.autopilot_last_run).getTime() : 0;
 

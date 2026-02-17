@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
@@ -15,6 +15,7 @@ interface StoreState {
   repos: RepoInfo[];
   goals: Goal[];
   goalLogs: Record<string, GoalLogEntry[]>;
+  goalStats: Record<string, GoalStats | null>;
   agentActivity: Record<string, GoalLogEntry[]>;
   agentImprovements: Record<string, Improvement[]>;
   agentAssessments: Record<string, Assessment[]>;
@@ -39,6 +40,7 @@ interface StoreState {
   removeGoal: (goalId: string) => void;
   setGoalLog: (goalId: string, entries: GoalLogEntry[]) => void;
   addGoalLogEntry: (entry: GoalLogEntry) => void;
+  setGoalStats: (goalId: string, stats: GoalStats | null) => void;
   setAgentActivity: (agentId: string, entries: GoalLogEntry[]) => void;
   setAgentImprovements: (agentId: string, improvements: Improvement[]) => void;
   updateImprovement: (improvement: Improvement) => void;
@@ -80,6 +82,7 @@ export const useStore = create<StoreState>((set) => ({
   repos: [],
   goals: [],
   goalLogs: {},
+  goalStats: {},
   agentActivity: {},
   agentImprovements: {},
   agentAssessments: {},
@@ -144,6 +147,11 @@ export const useStore = create<StoreState>((set) => ({
         goalLogs: { ...state.goalLogs, [entry.goal_id]: [entry, ...existing] },
       };
     }),
+
+  setGoalStats: (goalId, stats) =>
+    set((state) => ({
+      goalStats: { ...state.goalStats, [goalId]: stats },
+    })),
 
   setAgentActivity: (agentId, entries) =>
     set((state) => ({

@@ -12,8 +12,8 @@ export function DrawerModal({ open, onClose, title, children, snapPoints }: Prop
   return (
     <Drawer.Root open={open} onOpenChange={(o) => !o && onClose()} snapPoints={snapPoints}>
       <Drawer.Portal>
-        <Drawer.Overlay className="fixed inset-0 z-50" />
-        <Drawer.Content className="fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl outline-none">
+        <Drawer.Overlay className="fixed inset-0 z-50 bg-black/60" />
+        <Drawer.Content className="fixed bottom-0 left-0 right-0 z-50 rounded-t-2xl outline-none bg-[#1e1e2e]">
           <div className="pt-3 pb-2">
             <div className="mx-auto h-1 w-10 rounded-full bg-[#6b6b80]/40" />
           </div>

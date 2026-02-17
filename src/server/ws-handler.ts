@@ -16,7 +16,7 @@ import {
   listTasks, listFolders, listAgents, listGoals, listWorkflows, listCommands,
   listGoalLog, listAgentCommands, listAgentActivity,
 } from './db-helpers.js';
-import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
   getAgentImprovements, getAgentAssessments, getAgentXpEvents,
@@ -27,7 +27,7 @@ import {
 // Track running improvements: agentId → improvementId
 const runningImprovements: Map<string, string> = new Map();
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
-import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd } from './autopilot.js';
+import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd, resetAgentSessionCounters } from './autopilot.js';
 import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary, getRecentCommits } from './git-utils.js';
 
 const REPOS_DIR = process.env.REPOS_DIR || 'D:\\Repos';
@@ -879,6 +879,20 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       break;
     }
 
+    case 'goal:set-priority': {
+      const { goalId, priority } = message;
+      const clampedPriority = priority === 0 ? 0 : Math.max(1, Math.min(5, priority));
+      runQuery(
+        'UPDATE goals SET priority = ?, updated_at = ? WHERE id = ?',
+        [clampedPriority, new Date().toISOString(), goalId]
+      );
+      const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+      if (goal) {
+        broadcast({ type: 'goal:updated', goal });
+      }
+      break;
+    }
+
     case 'goal:list': {
       const goals = getAll<Goal>('SELECT * FROM goals ORDER BY priority DESC, created_at');
       send(ws, { type: 'goal:list', goals });
@@ -895,12 +909,23 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       break;
     }
 
+    case 'goal:get-stats': {
+      const { goalId } = message;
+      const stats = getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [goalId]);
+      send(ws, { type: 'goal:stats', goalId, stats: stats ?? null });
+      break;
+    }
+
     case 'agent:autopilot': {
       const { agentId, autopilot, interval, goalId } = message;
       runQuery(
         'UPDATE agents SET autopilot = ?, autopilot_interval = ?, autopilot_goal_id = ?, last_activity = ? WHERE id = ?',
         [autopilot ? 1 : 0, interval, goalId, new Date().toISOString(), agentId]
       );
+      // Reset session counters so the newly-enabled agent starts fresh
+      if (autopilot) {
+        resetAgentSessionCounters(agentId);
+      }
       const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
       if (agent) {
         broadcast({ type: 'agent:updated', agent });
@@ -1162,6 +1187,15 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
 export function getBroadcast(): (message: WSServerMessage) => void {
   return broadcast;
+}
+
+/** For testing only: register a mock WebSocket client to receive broadcasts. */
+export function addClientForTest(ws: WebSocket): () => void {
+  clients.push({ ws });
+  return () => {
+    const idx = clients.findIndex((c) => c.ws === ws);
+    if (idx !== -1) clients.splice(idx, 1);
+  };
 }
 
 export function handleWsMessage(ws: WebSocket, data: string): void {

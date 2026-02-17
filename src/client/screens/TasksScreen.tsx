@@ -91,7 +91,6 @@ export function TasksScreen({ onSend }: Props) {
             onChange={(e) => setNewFolderName(e.target.value)}
             placeholder="Folder name..."
             onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
-            autoFocus
             className="flex-1"
           />
           <Button onClick={handleCreateFolder} className="px-4">

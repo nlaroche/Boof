@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -317,6 +317,29 @@ export function deleteGoal(goalId: string, broadcast: (id: string) => void): voi
   deleteAndBroadcast('goals', goalId, broadcast);
 }
 
+/** Get goal stats (completion tracking) for a specific goal. */
+export function getGoalStats(goalId: string): GoalStats | null {
+  return getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [goalId]);
+}
+
+/**
+ * Get the next highest-priority active goal.
+ * Ordered by priority DESC then created_at ASC.
+ * Optionally excludes a specific goal (e.g. the just-completed one).
+ */
+export function getNextActiveGoal(excludeGoalId?: string): Goal | null {
+  if (excludeGoalId) {
+    return getOne<Goal>(
+      "SELECT * FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [excludeGoalId]
+    );
+  }
+  return getOne<Goal>(
+    "SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at ASC LIMIT 1",
+    []
+  );
+}
+
 // ============================================================================
 // Workflow Helpers
 // ============================================================================
@@ -467,4 +490,33 @@ export function listAgentActivity(agentId: string, limit = 50): GoalLogEntry[] {
     'SELECT * FROM goal_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?',
     [agentId, limit]
   );
+}
+
+// ============================================================================
+// Summarizer Context Helpers
+// ============================================================================
+
+export interface SummarizerContext {
+  recentCompletions: Array<{ id: string; name: string; completed_at: string | null; priority: number }>;
+  cyclingHistory: Array<{ action: string; summary: string | null; created_at: string }>;
+}
+
+/**
+ * Returns context for the summarizer: recent goal completions and cycling history
+ * from goal_log so the agent can learn from past runs.
+ */
+export function getSummarizerContext(limit = 5): SummarizerContext {
+  const recentCompletions = getAll<{ id: string; name: string; completed_at: string | null; priority: number }>(
+    `SELECT id, name, completed_at, priority FROM goals WHERE status = 'completed' ORDER BY completed_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  const cyclingHistory = getAll<{ action: string; summary: string | null; created_at: string }>(
+    `SELECT action, summary, created_at FROM goal_log
+     WHERE action IN ('goal_completed', 'goal_switched', 'goal_proposed')
+     ORDER BY created_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  return { recentCompletions, cyclingHistory };
 }

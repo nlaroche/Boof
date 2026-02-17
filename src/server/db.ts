@@ -2,9 +2,11 @@ import initSqlJs, { Database } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 
-const DB_PATH = process.env.DB_PATH || './boof.db';
-
 let db: Database | null = null;
+
+function getDbPath(): string {
+  return process.env.DB_PATH || './boof.db';
+}
 
 function addColumnIfMissing(tableName: string, columnName: string, columnDef: string): void {
   if (!db) return;
@@ -19,6 +21,7 @@ function addColumnIfMissing(tableName: string, columnName: string, columnDef: st
 
 export async function initDb(): Promise<Database> {
   const SQL = await initSqlJs();
+  const DB_PATH = getDbPath();
 
   if (fs.existsSync(DB_PATH)) {
     const fileBuffer = fs.readFileSync(DB_PATH);
@@ -214,6 +217,21 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('goal_log', 'completion_tokens', 'INTEGER DEFAULT 0');
   addColumnIfMissing('goal_log', 'total_tokens', 'INTEGER DEFAULT 0');
 
+  // Goal completion tracking
+  addColumnIfMissing('goals', 'completed_at', 'TEXT DEFAULT NULL');
+
+  // Goal stats table — tracks runs, tasks completed, avg duration per goal
+  db.run(`
+    CREATE TABLE IF NOT EXISTS goal_stats (
+      goal_id TEXT PRIMARY KEY,
+      total_runs INTEGER DEFAULT 0,
+      tasks_completed INTEGER DEFAULT 0,
+      tasks_failed INTEGER DEFAULT 0,
+      avg_duration_ms REAL DEFAULT 0,
+      last_run_at TEXT DEFAULT NULL
+    )
+  `);
+
   // Goal linkage on tasks
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
@@ -318,11 +336,12 @@ function saveDb(): void {
   if (!db) return;
   const data = db.export();
   const buffer = Buffer.from(data);
-  const dir = path.dirname(DB_PATH);
+  const dbPath = getDbPath();
+  const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(DB_PATH, buffer);
+  fs.writeFileSync(dbPath, buffer);
 }
 
 export function runQuery(sql: string, params: unknown[] = []): void {
