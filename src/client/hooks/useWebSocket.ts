@@ -103,6 +103,9 @@ export function useWebSocket() {
           case 'goal:log:entry':
             s.addGoalLogEntry(msg.entry);
             break;
+          case 'goal:stats':
+            s.setGoalStats(msg.goalId, msg.stats);
+            break;
           case 'workflow:updated':
             s.updateWorkflow(msg.workflow);
             break;

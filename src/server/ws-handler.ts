@@ -16,7 +16,7 @@ import {
   listTasks, listFolders, listAgents, listGoals, listWorkflows, listCommands,
   listGoalLog, listAgentCommands, listAgentActivity,
 } from './db-helpers.js';
-import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
   getAgentImprovements, getAgentAssessments, getAgentXpEvents,
@@ -881,7 +881,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
 
     case 'goal:set-priority': {
       const { goalId, priority } = message;
-      const clampedPriority = Math.max(1, Math.min(5, priority));
+      const clampedPriority = priority === 0 ? 0 : Math.max(1, Math.min(5, priority));
       runQuery(
         'UPDATE goals SET priority = ?, updated_at = ? WHERE id = ?',
         [clampedPriority, new Date().toISOString(), goalId]
@@ -906,6 +906,13 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         [goalId, limit]
       );
       send(ws, { type: 'goal:log', goalId, entries });
+      break;
+    }
+
+    case 'goal:get-stats': {
+      const { goalId } = message;
+      const stats = getOne<GoalStats>('SELECT * FROM goal_stats WHERE goal_id = ?', [goalId]);
+      send(ws, { type: 'goal:stats', goalId, stats: stats ?? null });
       break;
     }
 

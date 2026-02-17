@@ -298,7 +298,8 @@ export type WSClientMessage =
   | { type: 'agent:experiments'; agentId: string }
   | { type: 'agent:create-experiment'; agentId: string; name: string; hypothesis: string; variantA: string; variantB: string }
   | { type: 'agent:timeline'; agentId: string }
-  | { type: 'goal:set-priority'; goalId: string; priority: number };
+  | { type: 'goal:set-priority'; goalId: string; priority: number }
+  | { type: 'goal:get-stats'; goalId: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -339,7 +340,8 @@ export type WSServerMessage =
   | { type: 'agent:timeline'; agentId: string; runs: TimelineRun[] }
   | { type: 'goal:completed'; goalId: string; agentId: string; goal: Goal }
   | { type: 'goal:switched'; agentId: string; previousGoalId: string | null; newGoalId: string; goal: Goal }
-  | { type: 'goal:proposed-auto'; agentId: string; goals: Goal[] };
+  | { type: 'goal:proposed-auto'; agentId: string; goals: Goal[] }
+  | { type: 'goal:stats'; goalId: string; stats: GoalStats | null };
 
 export interface RepoInfo {
   name: string;
