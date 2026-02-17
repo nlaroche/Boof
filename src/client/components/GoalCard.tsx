@@ -2,6 +2,14 @@ import { useState } from 'react';
 import type { Goal, GoalLogEntry, WSClientMessage } from '../lib/types';
 import { useStore } from '../stores/store';
 
+const PRIORITY_LABELS: Record<number, { label: string; color: string }> = {
+  5: { label: 'P1', color: 'text-red-400' },
+  4: { label: 'P2', color: 'text-orange-400' },
+  3: { label: 'P3', color: 'text-yellow-400' },
+  2: { label: 'P4', color: 'text-blue-400' },
+  1: { label: 'P5', color: 'text-[#6b6b80]' },
+};
+
 interface Props {
   goal: Goal;
   onSend: (msg: WSClientMessage) => void;
@@ -29,6 +37,7 @@ const EMPTY_LOGS: GoalLogEntry[] = [];
 export function GoalCard({ goal, onSend, onEdit }: Props) {
   const [expanded, setExpanded] = useState(false);
   const goalLogs = useStore((s) => s.goalLogs[goal.id] ?? EMPTY_LOGS);
+  const goalStats = useStore((s) => s.goalStats[goal.id]);
   const agents = useStore((s) => s.agents);
   const tasks = useStore((s) => s.tasks);
   const repos = useStore((s) => s.repos);
@@ -41,6 +50,7 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
   const handleExpand = () => {
     if (!expanded) {
       onSend({ type: 'goal:log', goalId: goal.id, limit: 20 });
+      onSend({ type: 'goal:get-stats', goalId: goal.id });
     }
     setExpanded(!expanded);
   };
@@ -91,6 +101,12 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
             >
               {status.label}
             </button>
+            {goal.priority > 0 && (() => {
+              const p = PRIORITY_LABELS[goal.priority];
+              return p ? (
+                <span className={`text-[10px] font-bold ${p.color}`}>{p.label}</span>
+              ) : null;
+            })()}
           </div>
           {goal.description && (
             <p className="text-xs text-[#6b6b80] line-clamp-2">{goal.description}</p>
@@ -141,6 +157,36 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
                 Delete
               </button>
             </div>
+          </div>
+          <div className="mb-3">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[10px] text-[#6b6b80]">Priority:</span>
+              {[1, 2, 3, 4, 5].map((p) => (
+                <button
+                  key={p}
+                  onClick={(e) => { e.stopPropagation(); onSend({ type: 'goal:set-priority', goalId: goal.id, priority: p }); }}
+                  className={`w-5 h-5 rounded text-[10px] font-bold transition-colors ${goal.priority === p ? 'bg-[#7c5bf5] text-white' : 'bg-[#1e1e2e] text-[#6b6b80] hover:text-[#e2e2ef]'}`}
+                >
+                  {p}
+                </button>
+              ))}
+              {goal.priority > 0 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onSend({ type: 'goal:set-priority', goalId: goal.id, priority: 0 }); }}
+                  className="text-[10px] text-[#6b6b80] hover:text-red-400 ml-1"
+                >
+                  clear
+                </button>
+              )}
+            </div>
+            {goalStats && (
+              <div className="flex gap-3 text-[10px] text-[#6b6b80]">
+                <span>{goalStats.total_runs} runs</span>
+                <span className="text-[#22c55e]">{goalStats.tasks_completed} done</span>
+                {goalStats.tasks_failed > 0 && <span className="text-red-400">{goalStats.tasks_failed} failed</span>}
+                {goalStats.avg_duration_ms > 0 && <span>{Math.round(goalStats.avg_duration_ms / 60000)}m avg</span>}
+              </div>
+            )}
           </div>
           {goalLogs.length === 0 ? (
             <p className="text-xs text-[#6b6b80] italic">No activity yet</p>
