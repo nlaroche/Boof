@@ -18,6 +18,7 @@ import {
   createExperiment, rankTasks,
 } from './self-improve.js';
 import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement, Skill } from '../client/lib/types.js';
+import { sendGoalCompletedNotification } from './notifications.js';
 
 const execAsync = promisify(exec);
 
@@ -724,12 +725,17 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
   );
 
   if (nextGoal) {
+    // Notify about goal completion, cycling to next
+    sendGoalCompletedNotification(completedGoal?.name ?? goalId, nextGoal.name).catch(() => {});
     // Switch agent to next goal
     runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [nextGoal.id, agentId]);
     broadcast({ type: 'goal:switched', agentId, previousGoalId: goalId, newGoalId: nextGoal.id, goal: nextGoal });
     console.log(`[autopilot] Switched agent ${agentId.slice(0, 6)} to goal "${nextGoal.name}" (priority ${nextGoal.priority})`);
     return true;
   }
+
+  // Notify about goal completion with no next goal
+  sendGoalCompletedNotification(completedGoal?.name ?? goalId).catch(() => {});
 
   // No active goals — propose new ones based on past patterns
   console.log(`[autopilot] No active goals remaining. Proposing new goals...`);
