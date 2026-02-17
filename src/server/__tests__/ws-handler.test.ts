@@ -1,6 +1,6 @@
 import { describe, it, beforeEach, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { handleWsMessage, getBroadcast } from '../ws-handler.js';
+import { handleWsMessage, getBroadcast, addClientForTest } from '../ws-handler.js';
 import { initDb } from '../db.js';
 import type { WSClientMessage } from '../../client/lib/types.js';
 
@@ -763,5 +763,48 @@ describe('goal stats WebSocket messages', () => {
         ]
       });
     });
+  });
+
+  it('goal:proposed-auto broadcast reaches connected clients with correct structure', () => {
+    const broadcast = getBroadcast();
+    const received: string[] = [];
+
+    // Register a mock client that captures sent messages
+    const mockWs = {
+      readyState: 1, // OPEN
+      send(data: string) { received.push(data); }
+    } as any;
+    const removeClient = addClientForTest(mockWs);
+
+    try {
+      const proposedGoal = {
+        id: 'auto-proposed-1',
+        name: 'Add integration test coverage',
+        description: 'Based on past run patterns',
+        status: 'active' as const,
+        priority: 3,
+        proposal_status: 'pending',
+        proposed_by: 'agent-789',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+
+      broadcast({
+        type: 'goal:proposed-auto',
+        agentId: 'agent-789',
+        goals: [proposedGoal as any]
+      });
+
+      assert.equal(received.length, 1, 'Client should receive exactly one broadcast');
+      const msg = JSON.parse(received[0]);
+      assert.equal(msg.type, 'goal:proposed-auto', 'Broadcast type should be goal:proposed-auto');
+      assert.equal(msg.agentId, 'agent-789', 'Broadcast should include agentId');
+      assert.ok(Array.isArray(msg.goals), 'Broadcast should include goals array');
+      assert.equal(msg.goals.length, 1, 'Goals array should have one entry');
+      assert.equal(msg.goals[0].id, 'auto-proposed-1', 'Goal id should be preserved');
+      assert.equal(msg.goals[0].proposal_status, 'pending', 'Goal proposal_status should be pending');
+    } finally {
+      removeClient();
+    }
   });
 });

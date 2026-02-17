@@ -1189,6 +1189,15 @@ export function getBroadcast(): (message: WSServerMessage) => void {
   return broadcast;
 }
 
+/** For testing only: register a mock WebSocket client to receive broadcasts. */
+export function addClientForTest(ws: WebSocket): () => void {
+  clients.push({ ws });
+  return () => {
+    const idx = clients.findIndex((c) => c.ws === ws);
+    if (idx !== -1) clients.splice(idx, 1);
+  };
+}
+
 export function handleWsMessage(ws: WebSocket, data: string): void {
   try {
     const message = JSON.parse(data) as WSClientMessage;
