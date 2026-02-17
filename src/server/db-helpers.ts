@@ -491,3 +491,32 @@ export function listAgentActivity(agentId: string, limit = 50): GoalLogEntry[] {
     [agentId, limit]
   );
 }
+
+// ============================================================================
+// Summarizer Context Helpers
+// ============================================================================
+
+export interface SummarizerContext {
+  recentCompletions: Array<{ id: string; name: string; completed_at: string | null; priority: number }>;
+  cyclingHistory: Array<{ action: string; summary: string | null; created_at: string }>;
+}
+
+/**
+ * Returns context for the summarizer: recent goal completions and cycling history
+ * from goal_log so the agent can learn from past runs.
+ */
+export function getSummarizerContext(limit = 5): SummarizerContext {
+  const recentCompletions = getAll<{ id: string; name: string; completed_at: string | null; priority: number }>(
+    `SELECT id, name, completed_at, priority FROM goals WHERE status = 'completed' ORDER BY completed_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  const cyclingHistory = getAll<{ action: string; summary: string | null; created_at: string }>(
+    `SELECT action, summary, created_at FROM goal_log
+     WHERE action IN ('goal_completed', 'goal_switched', 'goal_proposed')
+     ORDER BY created_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  return { recentCompletions, cyclingHistory };
+}

@@ -35,6 +35,7 @@ import {
   listGoalLog,
   listAgentCommands,
   listAgentActivity,
+  getSummarizerContext,
   runQuery
 } from '../db-helpers.js';
 
@@ -934,6 +935,140 @@ describe('db-helpers', () => {
 
       const tasks = listTasks();
       assert.ok(!tasks.find(t => t.id === task.id));
+    });
+  });
+
+  describe('Summarizer Context Helpers', () => {
+    it('getSummarizerContext returns empty arrays when no data', () => {
+      const ctx = getSummarizerContext();
+      assert.ok(Array.isArray(ctx.recentCompletions), 'recentCompletions should be an array');
+      assert.ok(Array.isArray(ctx.cyclingHistory), 'cyclingHistory should be an array');
+      assert.equal(ctx.recentCompletions.length, 0, 'No completions in empty DB');
+      assert.equal(ctx.cyclingHistory.length, 0, 'No cycling history in empty DB');
+    });
+
+    it('getSummarizerContext includes recently completed goals', () => {
+      const goal1 = createGoal({ name: 'Completed Goal A' }, () => {});
+      const goal2 = createGoal({ name: 'Completed Goal B' }, () => {});
+      assert.ok(goal1 && goal2);
+
+      const now = getNow();
+      updateGoal(goal1.id, { status: 'completed' }, () => {});
+      runQuery(`UPDATE goals SET completed_at = ? WHERE id = ?`, [now, goal1.id]);
+      updateGoal(goal2.id, { status: 'completed' }, () => {});
+      runQuery(`UPDATE goals SET completed_at = ? WHERE id = ?`, [now, goal2.id]);
+
+      const ctx = getSummarizerContext();
+      assert.ok(ctx.recentCompletions.length >= 2, 'Should include both completed goals');
+
+      const names = ctx.recentCompletions.map(g => g.name);
+      assert.ok(names.includes('Completed Goal A'), 'Should include goal A');
+      assert.ok(names.includes('Completed Goal B'), 'Should include goal B');
+    });
+
+    it('getSummarizerContext excludes active goals from completions', () => {
+      const active = createGoal({ name: 'Active Goal' }, () => {});
+      const completed = createGoal({ name: 'Completed Goal' }, () => {});
+      assert.ok(active && completed);
+
+      const now = getNow();
+      updateGoal(completed.id, { status: 'completed' }, () => {});
+      runQuery(`UPDATE goals SET completed_at = ? WHERE id = ?`, [now, completed.id]);
+
+      const ctx = getSummarizerContext();
+      const names = ctx.recentCompletions.map(g => g.name);
+      assert.ok(names.includes('Completed Goal'), 'Completed goal should appear');
+      assert.ok(!names.includes('Active Goal'), 'Active goal should not appear in completions');
+    });
+
+    it('getSummarizerContext includes cycling events from goal_log', () => {
+      const goal = createGoal({ name: 'Cycling Goal' }, () => {});
+      const agent = createAgent({ workingDirectory: '/test' }, () => {});
+      assert.ok(goal && agent);
+
+      const now = getNow();
+      runQuery(
+        `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), goal.id, agent.id, 'goal_completed', 'Goal finished all tasks', now]
+      );
+      runQuery(
+        `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), goal.id, agent.id, 'goal_switched', 'Switched to next goal', now]
+      );
+
+      const ctx = getSummarizerContext();
+      assert.ok(ctx.cyclingHistory.length >= 2, 'Should include both cycling events');
+
+      const actions = ctx.cyclingHistory.map(e => e.action);
+      assert.ok(actions.includes('goal_completed'), 'Should include goal_completed event');
+      assert.ok(actions.includes('goal_switched'), 'Should include goal_switched event');
+    });
+
+    it('getSummarizerContext includes goal_proposed events in cycling history', () => {
+      const goal = createGoal({ name: 'Proposed Goal' }, () => {});
+      const agent = createAgent({ workingDirectory: '/test' }, () => {});
+      assert.ok(goal && agent);
+
+      const now = getNow();
+      runQuery(
+        `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), goal.id, agent.id, 'goal_proposed', 'Auto-proposed new goal from patterns', now]
+      );
+
+      const ctx = getSummarizerContext();
+      const actions = ctx.cyclingHistory.map(e => e.action);
+      assert.ok(actions.includes('goal_proposed'), 'Should include goal_proposed event');
+    });
+
+    it('getSummarizerContext excludes non-cycling log entries', () => {
+      const goal = createGoal({ name: 'Test Goal' }, () => {});
+      const agent = createAgent({ workingDirectory: '/test' }, () => {});
+      assert.ok(goal && agent);
+
+      const now = getNow();
+      runQuery(
+        `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), goal.id, agent.id, 'autopilot_run', 'Ran task X', now]
+      );
+      runQuery(
+        `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        [generateId(), goal.id, agent.id, 'planning', 'Decomposed goal into 3 tasks', now]
+      );
+
+      const ctx = getSummarizerContext();
+      const actions = ctx.cyclingHistory.map(e => e.action);
+      assert.ok(!actions.includes('autopilot_run'), 'autopilot_run should not appear in cycling history');
+      assert.ok(!actions.includes('planning'), 'planning should not appear in cycling history');
+    });
+
+    it('getSummarizerContext respects limit parameter', () => {
+      for (let i = 0; i < 10; i++) {
+        const g = createGoal({ name: `Goal ${i}` }, () => {});
+        assert.ok(g);
+        const now = getNow();
+        updateGoal(g.id, { status: 'completed' }, () => {});
+        runQuery(`UPDATE goals SET completed_at = ? WHERE id = ?`, [now, g.id]);
+      }
+
+      const ctx = getSummarizerContext(3);
+      assert.ok(ctx.recentCompletions.length <= 3, 'Should respect limit of 3');
+    });
+
+    it('getSummarizerContext completions include id, name, completed_at and priority fields', () => {
+      const goal = createGoal({ name: 'Full Fields Goal' }, () => {});
+      assert.ok(goal);
+
+      updateGoal(goal.id, { status: 'completed', priority: 4 }, () => {});
+      const now = getNow();
+      runQuery(`UPDATE goals SET completed_at = ? WHERE id = ?`, [now, goal.id]);
+
+      const ctx = getSummarizerContext();
+      const entry = ctx.recentCompletions.find(g => g.name === 'Full Fields Goal');
+      assert.ok(entry, 'Should find the completed goal');
+      assert.ok(typeof entry.id === 'string', 'Should have id');
+      assert.ok(typeof entry.name === 'string', 'Should have name');
+      assert.ok(typeof entry.priority === 'number', 'Should have priority as number');
+      assert.ok(entry.completed_at !== null && entry.completed_at !== undefined, 'Should have completed_at');
     });
   });
 });
