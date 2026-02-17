@@ -31,6 +31,7 @@ interface AssessContext {
   filesTouched: number;
   durationMs: number;
   completedFully: boolean;
+  testFailures?: number;
 }
 
 export function assessPerformance(
@@ -44,6 +45,7 @@ export function assessPerformance(
     - (context.buildFailures * 20)
     - (context.reviewIssues * 10)
     - Math.max(0, context.filesTouched - 5) * 2
+    - (context.testFailures || 0) * 10
   ));
 
   const id = generateId();
@@ -75,20 +77,33 @@ interface RunMetricInput {
   success: boolean;
   errorType?: string;
   promptVersionId?: string;
+  mergeSuccess?: boolean;
 }
 
 export function persistRunMetrics(input: RunMetricInput): RunMetric {
   const id = generateId();
   const now = new Date().toISOString();
   runQuery(
-    `INSERT INTO run_metrics (id, agent_id, command_id, goal_id, task_id, duration_ms, retries, build_failures, files_touched, prompt_tokens, completion_tokens, success, error_type, prompt_version_id, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO run_metrics (id, agent_id, command_id, goal_id, task_id, duration_ms, retries, build_failures, files_touched, prompt_tokens, completion_tokens, success, error_type, prompt_version_id, merge_success, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, input.agentId, input.commandId || null, input.goalId || null, input.taskId || null,
      input.durationMs, input.retries, input.buildFailures, input.filesTouched,
      input.promptTokens, input.completionTokens, input.success ? 1 : 0,
-     input.errorType || null, input.promptVersionId || null, now]
+     input.errorType || null, input.promptVersionId || null,
+     input.mergeSuccess !== undefined ? (input.mergeSuccess ? 1 : 0) : null, now]
   );
   return getOne<RunMetric>('SELECT * FROM run_metrics WHERE id = ?', [id])!;
+}
+
+export function updateRunMetricMerge(agentId: string, goalId: string, taskId: string, mergeSuccess: boolean): void {
+  // Update the most recent run_metric for this agent/task with merge outcome
+  const metric = getOne<RunMetric>(
+    'SELECT * FROM run_metrics WHERE agent_id = ? AND goal_id = ? AND task_id = ? ORDER BY created_at DESC LIMIT 1',
+    [agentId, goalId, taskId]
+  );
+  if (metric) {
+    runQuery('UPDATE run_metrics SET merge_success = ? WHERE id = ?', [mergeSuccess ? 1 : 0, metric.id]);
+  }
 }
 
 // ── Reflections ──
@@ -111,12 +126,35 @@ export function getRecentReflections(agentId: string, limit: number = 5): Reflec
   );
 }
 
-export function buildReflectionPrompt(): string {
-  return `Reflect on what you just did. In 2-3 sentences:
+interface ReflectionContext {
+  taskTitle: string;
+  score: number;
+  buildOutput: string;
+  diffStats: string;
+  errors: string[];
+}
+
+export function buildReflectionPrompt(context?: ReflectionContext): string {
+  let prompt = '';
+  if (context) {
+    prompt += `You just completed task: "${context.taskTitle}" (score: ${context.score}/100)\n`;
+    if (context.errors.length > 0) {
+      prompt += `Errors encountered:\n${context.errors.slice(0, 5).map(e => `- ${e}`).join('\n')}\n`;
+    }
+    if (context.diffStats) {
+      prompt += `Changes made:\n${context.diffStats}\n`;
+    }
+    if (context.buildOutput) {
+      prompt += `Build output (last 500 chars):\n${context.buildOutput.slice(-500)}\n`;
+    }
+    prompt += '\n';
+  }
+  prompt += `Reflect on what you just did. In 2-3 sentences:
 1. What went well?
 2. What could be improved?
 3. Any reusable pattern worth remembering?
 Output as JSON only (no markdown, no code fences): { "went_well": "...", "improve": "...", "pattern": "..." }`;
+  return prompt;
 }
 
 export function parseReflectionResponse(output: string): { went_well: string; improve: string; pattern: string } | null {
@@ -486,10 +524,20 @@ export function getDashboardData(agentId: string): DashboardData {
   // Recent reflections
   const reflections = getRecentReflections(agentId, 3);
 
+  // Merge success rate
+  const mergeAttempts = getAll<{ merge_success: number }>(
+    'SELECT merge_success FROM run_metrics WHERE agent_id = ? AND merge_success IS NOT NULL',
+    [agentId]
+  );
+  const mergeSuccessRate = mergeAttempts.length > 0
+    ? Math.round(mergeAttempts.filter(r => r.merge_success).length / mergeAttempts.length * 100)
+    : 0;
+
   return {
     success_rate_10: successRate(last10),
     success_rate_50: successRate(last50),
     success_rate_all: successRate(all),
+    merge_success_rate: mergeSuccessRate,
     avg_duration_trend: avgDurationTrend,
     avg_score_trend: avgScoreTrend,
     total_tokens: tokenSum?.total || 0,

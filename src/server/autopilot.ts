@@ -5,17 +5,17 @@ import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import { initBoofDir, getMemoryContext, recordMistake, recordPattern, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
+import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
-  persistRunMetrics, storeReflection, buildReflectionPrompt, parseReflectionResponse,
+  persistRunMetrics, updateRunMetricMerge, storeReflection, buildReflectionPrompt, parseReflectionResponse,
   getRecentReflections, getMatchingSkills, updateSkillUsage,
   buildSkillExtractionPrompt, extractSkillsFromOutput, saveSkill,
   getActivePromptVersion, seedPromptVersion, updatePromptVersionStats,
   shouldOptimizePrompt, buildPromptOptimizationMeta, createPromptVersion,
   getActiveExperiments, pickExperimentVariant, recordExperimentResult,
-  rankTasks,
+  createExperiment, rankTasks,
 } from './self-improve.js';
 import type { Agent, Goal, GoalLogEntry, Workflow, WSServerMessage, Improvement, Skill } from '../client/lib/types.js';
 
@@ -194,6 +194,15 @@ function buildAutopilotPrompt(
   // Check for active prompt version — if one exists, use its template as the base
   const activeVersion = getActivePromptVersion(agentId);
 
+  // If there's an active prompt experiment, pick a variant
+  currentExperimentPick = null;
+  const activeExperiments = getActiveExperiments(agentId);
+  const promptExperiment = activeExperiments.find(e => e.metric === 'score' && e.variant_a && e.variant_b);
+  if (promptExperiment) {
+    const variant = pickExperimentVariant(promptExperiment);
+    currentExperimentPick = { experimentId: promptExperiment.id, variant };
+  }
+
   let prompt = '';
 
   // Memory context first
@@ -288,6 +297,8 @@ function buildAutopilotPrompt(
 
 // Track matched skills for the current run (used after run for skill usage tracking)
 let lastMatchedSkillIds: string[] = [];
+// Track experiment variant pick for the current run
+let currentExperimentPick: { experimentId: string; variant: 'a' | 'b' } | null = null;
 
 function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
   let prompt = '';
@@ -315,6 +326,25 @@ async function runBuildCheck(workingDirectory: string): Promise<{ success: boole
     return { success: true, output: stdout + stderr };
   } catch (err: any) {
     return { success: false, output: err.stderr || err.stdout || String(err) };
+  }
+}
+
+async function runTestCheck(workingDirectory: string): Promise<{ success: boolean; output: string; failures: string[] }> {
+  try {
+    const testCmd = 'node --test src/server/__tests__/*.test.ts';
+    const { stdout, stderr } = await execAsync(testCmd, {
+      cwd: workingDirectory,
+      timeout: 180_000,
+      env: { ...process.env },
+    });
+    const output = stdout + stderr;
+    // Parse "not ok" lines for failures
+    const failures = output.match(/not ok \d+ - .*/g) || [];
+    return { success: failures.length === 0, output, failures };
+  } catch (err: any) {
+    const output = err.stderr || err.stdout || String(err);
+    const failures = output.match(/not ok \d+ - .*/g) || [];
+    return { success: false, output, failures };
   }
 }
 
@@ -762,6 +792,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     const currentTask = rankedTasks[0];
     runQuery("UPDATE tasks SET status = 'in_progress', updated_at = ? WHERE id = ?", [now, currentTask.id]);
 
+    // Rebuild memory context filtered by current task relevance
+    const taskMemoryContext = getMemoryContext(agentCwd, currentTask.title + ' ' + (currentTask.description || ''));
+
     // Check if agent has a workflow assigned
     let workflowObj: Workflow | null = null;
     if (agent.workflow_id) {
@@ -777,6 +810,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     let implPromptTokens = 0;
     let implCompletionTokens = 0;
     let implTotalTokens = 0;
+    let testFailureCount = 0;
 
     if (workflowObj && workflowObj.steps.length > 0) {
       // Workflow mode
@@ -806,6 +840,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
             `Build failed after workflow "${workflowObj.name}" for goal "${goal.name}"${tsError ? `: ${tsError}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsError ? 'Check types and imports before committing' : ''
           );
+          // SCOPE-style guideline for workflow build failures
+          const wfErrorCodes = errSnippet.match(/TS\d+/g) || [];
+          for (const errorCode of [...new Set(wfErrorCodes)].slice(0, 3)) {
+            recordGuideline(agentCwd, errorCode, errSnippet.slice(0, 200), goal.name);
+          }
           console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
 
           if (agentBranch) {
@@ -853,7 +892,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Build a task-focused prompt (task details included in pendingTasks list, no duplication needed)
       const promptBuildStart = Date.now();
       const taskDesc = `${currentTask.title} ${currentTask.description || ''}`;
-      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, memoryContext, agentId, taskDesc);
+      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, taskMemoryContext, agentId, taskDesc);
       // Track which skills were matched for this run
       lastMatchedSkillIds = ((buildAutopilotPrompt as any)._lastMatchedSkills || []).map((s: Skill) => s.id);
       // Task already listed in pendingTasks — direct agent to pick it
@@ -900,6 +939,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
             `Build failed while working on "${currentTask.title}"${tsErr ? `: ${tsErr}` : ''}: ${errSnippet.slice(0, 150)}`,
             tsErr ? 'Validate types before committing' : ''
           );
+          // SCOPE-style guideline: extract error code and record structured guideline
+          const errorCodes = errSnippet.match(/TS\d+/g) || [];
+          for (const errorCode of [...new Set(errorCodes)].slice(0, 3)) {
+            recordGuideline(agentCwd, errorCode, errSnippet.slice(0, 200), currentTask?.title);
+          }
           console.log(`[perf:build] Record mistake: ${Date.now() - recordMistakeStart}ms`);
 
           if (agentBranch) {
@@ -913,6 +957,21 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           perf.buildMs = buildPhaseMs;
           console.log(`[perf:build] TOTAL: ${buildPhaseMs}ms (FAILED)`);
         } else {
+          // Run tests after build passes (quality signal, not hard gate)
+          let testResult: { success: boolean; output: string; failures: string[] } | null = null;
+          try {
+            console.log(`[perf:build] Running test check...`);
+            testResult = await runTestCheck(agentCwd);
+            console.log(`[perf:build] Test check: success=${testResult.success}, failures=${testResult.failures.length}`);
+            if (!testResult.success) {
+              testFailureCount = testResult.failures.length;
+              logToGoal(goalId, agentId, 'test_check', `Tests failed: ${testResult.failures.length} failure(s)`, '', 0, false);
+              recordMistake(agentCwd, `Tests failed for "${currentTask.title}": ${testResult.failures.slice(0, 3).join('; ')}`, 'Run tests before committing');
+            }
+          } catch (testErr) {
+            console.error('[autopilot] Test check error:', testErr);
+          }
+
           const commitStart = Date.now();
           diffStats = await autoCommit(agentCwd, goalSlug, summary);
           const commitMs = Date.now() - commitStart;
@@ -960,6 +1019,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         filesTouched,
         durationMs,
         completedFully: success,
+        testFailures: testFailureCount,
       });
       assessmentScore = assessment.score;
 
@@ -992,11 +1052,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
       lastMatchedSkillIds = [];
 
-      // Record experiment results if any active
-      const experiments = getActiveExperiments(agentId);
-      for (const exp of experiments) {
-        const variant = pickExperimentVariant(exp);
-        recordExperimentResult(exp.id, variant, assessment.score);
+      // Record experiment results using the stored variant pick
+      if (currentExperimentPick) {
+        recordExperimentResult(currentExperimentPick.experimentId, currentExperimentPick.variant, assessment.score);
+        currentExperimentPick = null;
       }
 
       if (success) {
@@ -1011,7 +1070,16 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Post-run reflection (async, doesn't block the flow)
       try {
         broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Reflecting on run...\n' });
-        const reflectionResult = await runAgentStep(agentId, agent, buildReflectionPrompt(), broadcast, { skipWrap: true });
+        // Extract errors from build output for reflection context
+        const buildCheckOutput = success ? '' : summary;
+        const extractedErrors = buildCheckOutput.match(/(?:error TS\d+:[^\n]+|Error:[^\n]+)/g) || [];
+        const reflectionResult = await runAgentStep(agentId, agent, buildReflectionPrompt({
+          taskTitle: currentTask?.title || goalSlug,
+          score: assessmentScore,
+          buildOutput: buildCheckOutput.slice(-500),
+          diffStats,
+          errors: extractedErrors,
+        }), broadcast, { skipWrap: true });
         const parsed = parseReflectionResponse(reflectionResult.output);
         if (parsed) {
           storeReflection(agentId, goalId, parsed.went_well, parsed.improve, parsed.pattern);
@@ -1052,8 +1120,22 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
                 .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
                 .replace(/\x1b./g, '')
                 .trim();
-              createPromptVersion(agentId, cleanTemplate, true);
+              const newVersion = createPromptVersion(agentId, cleanTemplate, true);
               console.log(`[autopilot] New prompt version created and activated`);
+              // Auto-create A/B experiment: old template vs new template
+              try {
+                createExperiment(
+                  agentId,
+                  `Prompt v${newVersion.version - 1} vs v${newVersion.version}`,
+                  'New prompt template improves score',
+                  currentVersion.template,
+                  cleanTemplate,
+                  'score'
+                );
+                console.log(`[autopilot] A/B experiment created for prompt versions`);
+              } catch (expErr) {
+                console.error('[autopilot] Failed to create experiment:', expErr);
+              }
             }
           }
         } catch (optErr) {
@@ -1072,15 +1154,18 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         if (mergeResult.success) {
           console.log(`[autopilot] Auto-merged ${agentBranch} into main`);
           logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch}`, '', 0, true);
+          updateRunMetricMerge(agentId, goalId, currentTask.id, true);
           agentBranch = '';
         } else {
           console.log(`[autopilot] Merge failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);
           logToGoal(goalId, agentId, 'merge_failed', `Merge conflict: ${mergeResult.output.slice(0, 150)}`, '', 0, false);
+          updateRunMetricMerge(agentId, goalId, currentTask.id, false);
           // Stay on agent branch — don't lose work
         }
       } else {
         // Failed or no changes — abandon (don't delete, don't checkout main)
         abandonBranch(agentBranch, success ? 'no changes to merge' : 'implementation failed');
+        updateRunMetricMerge(agentId, goalId, currentTask.id, false);
         agentBranch = '';
       }
     }

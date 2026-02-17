@@ -153,6 +153,9 @@ export function useWebSocket() {
           case 'agent:experiments':
             s.setAgentExperiments(msg.agentId, msg.experiments);
             break;
+          case 'agent:timeline':
+            s.setAgentTimeline(msg.agentId, msg.runs);
+            break;
         }
       } catch {
         // ignore parse errors

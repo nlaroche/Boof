@@ -16,13 +16,16 @@ import {
   listTasks, listFolders, listAgents, listGoals, listWorkflows, listCommands,
   listGoalLog, listAgentCommands, listAgentActivity,
 } from './db-helpers.js';
-import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Command, Goal, GoalLogEntry, Workflow, Assessment, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
   getAgentImprovements, getAgentAssessments, getAgentXpEvents,
-  skipImprovement, markImprovementRunning,
-  getDashboardData, getAgentSkills, getAllExperiments,
+  skipImprovement, markImprovementRunning, completeImprovement, failImprovement,
+  getDashboardData, getAgentSkills, getAllExperiments, createExperiment,
 } from './self-improve.js';
+
+// Track running improvements: agentId → improvementId
+const runningImprovements: Map<string, string> = new Map();
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
 import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd } from './autopilot.js';
 import { commitAgentChanges, stripAnsi, extractEditedFiles, generateSummary, getRecentCommits } from './git-utils.js';
@@ -585,6 +588,26 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
               }, 500);
             }
 
+            // Complete/fail running improvement if this agent had one
+            const runningImpId = runningImprovements.get(id);
+            if (runningImpId) {
+              if (succeeded) {
+                const xpGain = 2;
+                const completedImp = completeImprovement(runningImpId, xpGain);
+                if (completedImp) {
+                  awardXp(id, xpGain, `Improvement completed: ${completedImp.description}`, 'improvement');
+                  broadcast({ type: 'improvement:updated', improvement: completedImp });
+                }
+              } else {
+                const failedImp = failImprovement(runningImpId);
+                if (failedImp) {
+                  broadcast({ type: 'improvement:updated', improvement: failedImp });
+                }
+              }
+              runningImprovements.delete(id);
+              broadcast({ type: 'agent:improvements', agentId: id, improvements: getAgentImprovements(id) });
+            }
+
             const exitStatus = succeeded ? 'idle' : 'dead';
             runQuery(`UPDATE agents SET status = ?, last_activity = ? WHERE id = ?`, [exitStatus, finishedAt, id]);
             broadcast({ type: 'agent:status', agentId: id, status: exitStatus });
@@ -992,6 +1015,7 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
       const imp = markImprovementRunning(improvementId);
       if (imp) {
         broadcast({ type: 'improvement:updated', improvement: imp });
+        runningImprovements.set(agentId, improvementId);
         // Execute the improvement as a task sent to the agent
         const agentData = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
         if (agentData && agentData.status === 'idle') {
@@ -1018,6 +1042,62 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     case 'agent:experiments': {
       const experiments = getAllExperiments(message.agentId);
       send(ws, { type: 'agent:experiments', agentId: message.agentId, experiments });
+      break;
+    }
+
+    case 'agent:create-experiment': {
+      const { agentId, name, hypothesis, variantA, variantB } = message;
+      const experiment = createExperiment(agentId, name, hypothesis, variantA, variantB);
+      broadcast({ type: 'agent:experiments', agentId, experiments: getAllExperiments(agentId) });
+      break;
+    }
+
+    case 'agent:timeline': {
+      const { agentId } = message;
+      const entries = getAll<GoalLogEntry>(
+        'SELECT * FROM goal_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT 100',
+        [agentId]
+      );
+      // Group entries into runs by branch name or 15-min time windows
+      const runs: TimelineRun[] = [];
+      let currentRun: TimelineRun | null = null;
+      // Process in chronological order
+      const sorted = [...entries].reverse();
+      for (const entry of sorted) {
+        // Extract branch from summary
+        const branchMatch = entry.summary.match(/\[branch: ([^\]]+)\]/);
+        const branch = branchMatch ? branchMatch[1] : '';
+        const entryTime = new Date(entry.created_at).getTime();
+
+        // Start new run if: different branch, or >15 min gap, or planning action
+        const shouldStartNew = !currentRun
+          || (branch && currentRun.branch && branch !== currentRun.branch)
+          || (entryTime - new Date(currentRun.endedAt).getTime() > 15 * 60 * 1000)
+          || entry.action === 'planning';
+
+        if (shouldStartNew) {
+          currentRun = {
+            id: entry.id,
+            branch: branch || 'unknown',
+            startedAt: entry.created_at,
+            endedAt: entry.created_at,
+            stages: [entry],
+            success: entry.success === 1,
+            totalDurationMs: entry.duration_ms,
+            totalTokens: entry.total_tokens || 0,
+          };
+          runs.push(currentRun);
+        } else {
+          currentRun!.stages.push(entry);
+          currentRun!.endedAt = entry.created_at;
+          currentRun!.totalDurationMs += entry.duration_ms;
+          currentRun!.totalTokens += entry.total_tokens || 0;
+          // Run is successful only if ALL stages succeeded
+          if (entry.success !== 1) currentRun!.success = false;
+        }
+      }
+      // Return most recent runs first
+      send(ws, { type: 'agent:timeline', agentId, runs: runs.reverse().slice(0, 20) });
       break;
     }
 

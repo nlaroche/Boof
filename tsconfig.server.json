@@ -17,5 +17,6 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false
   },
-  "include": ["src/server", "src/client/lib/types.ts"]
+  "include": ["src/server", "src/client/lib/types.ts"],
+  "exclude": ["src/server/__tests__"]
 }

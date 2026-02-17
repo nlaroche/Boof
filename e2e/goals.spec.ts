@@ -22,8 +22,12 @@ async function navigateTo(page: Page, tabName: string) {
 
 async function createGoal(page: Page, name: string, description?: string) {
   await navigateTo(page, 'Goals');
-  await page.locator('button', { hasText: '+ New' }).click();
-  await expect(page.locator('text=New Goal')).toBeVisible({ timeout: 5000 });
+  // When no goals exist, "+" New Goal" is in the empty state; when goals exist, "+" New" is in the header
+  const newGoalBtn = page.getByRole('button', { name: '+ New Goal' });
+  const newBtn = page.getByRole('button', { name: '+ New', exact: true });
+  const btn = await newGoalBtn.isVisible().then(v => v ? newGoalBtn : newBtn);
+  await btn.click();
+  await expect(page.getByRole('heading', { name: 'New Goal' })).toBeVisible({ timeout: 5000 });
   await page.locator('input[placeholder*="Improve Boof"]').fill(name);
   if (description) {
     await page.locator('textarea[placeholder*="What should the agent"]').fill(description);
@@ -197,9 +201,9 @@ test.describe('Goal Filter Pills', () => {
     // Task should exist
     await expect(page.getByText(taskName).first()).toBeVisible({ timeout: 10000 });
 
-    // Task should have goal badge
+    // Task should have goal badge (span badge, not the filter pill button)
     const taskRow = page.locator('div', { hasText: taskName }).first();
-    await expect(taskRow.locator(`text=${goalName}`)).toBeVisible({ timeout: 5000 });
+    await expect(taskRow.locator(`span:has-text("${goalName}")`)).toBeVisible({ timeout: 5000 });
   });
 
   test('filters tasks by selected goal', async ({ page }) => {
@@ -230,11 +234,11 @@ test.describe('Goal Filter Pills', () => {
     await expect(page.getByText(task1).first()).toBeVisible({ timeout: 10000 });
     await expect(page.getByText(task2).first()).toBeVisible({ timeout: 10000 });
 
-    // Verify goal badges prove tasks are linked to different goals
+    // Verify goal badges prove tasks are linked to different goals (use span to avoid filter pill match)
     const row1 = page.locator('div', { hasText: task1 }).first();
-    await expect(row1.locator(`text=${goal1}`)).toBeVisible({ timeout: 5000 });
+    await expect(row1.locator(`span:has-text("${goal1}")`)).toBeVisible({ timeout: 5000 });
     const row2 = page.locator('div', { hasText: task2 }).first();
-    await expect(row2.locator(`text=${goal2}`)).toBeVisible({ timeout: 5000 });
+    await expect(row2.locator(`span:has-text("${goal2}")`)).toBeVisible({ timeout: 5000 });
 
     // Filter by goal1 — clicking the pill activates the filter
     await clickGoalPill(page, goal1);
@@ -295,9 +299,9 @@ test.describe('Task-Goal Badges', () => {
 
     await expect(page.getByText(taskName).first()).toBeVisible({ timeout: 10000 });
 
-    // The goal badge should appear near the task
+    // The goal badge should appear near the task (span badge, not filter pill)
     const taskRow = page.locator('div', { hasText: taskName }).first();
-    await expect(taskRow.locator(`text=${goalName}`)).toBeVisible({ timeout: 5000 });
+    await expect(taskRow.locator(`span:has-text("${goalName}")`)).toBeVisible({ timeout: 5000 });
   });
 
   test('task without goal shows no badge', async ({ page }) => {
@@ -329,12 +333,16 @@ test.describe('DrawerModal Behavior', () => {
     await waitForWsConnection(page);
     await navigateTo(page, 'Goals');
 
-    await page.locator('button', { hasText: '+ New' }).click();
-    await expect(page.locator('text=New Goal')).toBeVisible({ timeout: 5000 });
+    // When no goals exist, "+" New Goal" is in the empty state; when goals exist, "+" New" is in the header
+    const newGoalBtn = page.getByRole('button', { name: '+ New Goal' });
+    const newBtn = page.getByRole('button', { name: '+ New', exact: true });
+    const btn = await newGoalBtn.isVisible().then(v => v ? newGoalBtn : newBtn);
+    await btn.click();
+    await expect(page.getByRole('heading', { name: 'New Goal' })).toBeVisible({ timeout: 5000 });
 
     // Close via X button
     await page.getByRole('button', { name: 'x', exact: true }).click();
-    await expect(page.locator('text=New Goal')).not.toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole('heading', { name: 'New Goal' })).not.toBeVisible({ timeout: 5000 });
   });
 
   test('folder settings modal opens via gear icon', async ({ page }) => {

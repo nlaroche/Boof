@@ -217,6 +217,7 @@ export interface DashboardData {
   success_rate_10: number;
   success_rate_50: number;
   success_rate_all: number;
+  merge_success_rate: number;
   avg_duration_trend: number[];
   avg_score_trend: number[];
   total_tokens: number;
@@ -224,6 +225,17 @@ export interface DashboardData {
   top_errors: { type: string; count: number }[];
   xp_per_day: { date: string; xp: number }[];
   recent_reflections: Reflection[];
+}
+
+export interface TimelineRun {
+  id: string;
+  branch: string;
+  startedAt: string;
+  endedAt: string;
+  stages: GoalLogEntry[];
+  success: boolean;
+  totalDurationMs: number;
+  totalTokens: number;
 }
 
 export type AgentStatus = Agent['status'];
@@ -273,7 +285,9 @@ export type WSClientMessage =
   | { type: 'agent:xp-events'; agentId: string }
   | { type: 'agent:dashboard'; agentId: string }
   | { type: 'agent:skills'; agentId: string }
-  | { type: 'agent:experiments'; agentId: string };
+  | { type: 'agent:experiments'; agentId: string }
+  | { type: 'agent:create-experiment'; agentId: string; name: string; hypothesis: string; variantA: string; variantB: string }
+  | { type: 'agent:timeline'; agentId: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
@@ -310,7 +324,8 @@ export type WSServerMessage =
   | { type: 'agent:branch-discarded'; agentId: string; branchName: string }
   | { type: 'agent:dashboard'; agentId: string; data: DashboardData }
   | { type: 'agent:skills'; agentId: string; skills: Skill[] }
-  | { type: 'agent:experiments'; agentId: string; experiments: Experiment[] };
+  | { type: 'agent:experiments'; agentId: string; experiments: Experiment[] }
+  | { type: 'agent:timeline'; agentId: string; runs: TimelineRun[] };
 
 export interface RepoInfo {
   name: string;

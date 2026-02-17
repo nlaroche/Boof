@@ -2,13 +2,22 @@ import fs from 'fs';
 import path from 'path';
 import { getAll } from './db.js';
 
+export interface Guideline {
+  error_pattern: string;
+  guideline: string;
+  file_context: string | null;
+  times_seen: number;
+  last_seen: string;
+}
+
 export interface AgentMemory {
   patterns: { pattern: string; learned_at: string; source: string }[];
   mistakes: { description: string; fix: string; occurred_at: string }[];
   preferences: { key: string; value: string }[];
+  guidelines: Guideline[];
 }
 
-const EMPTY_MEMORY: AgentMemory = { patterns: [], mistakes: [], preferences: [] };
+const EMPTY_MEMORY: AgentMemory = { patterns: [], mistakes: [], preferences: [], guidelines: [] };
 
 // ── Goal Log Cache ──────────────────────────────────────────────────────
 
@@ -143,22 +152,77 @@ export function recordPattern(repoPath: string, pattern: string, source: string)
   saveMemory(repoPath, memory);
 }
 
-export function getMemoryContext(repoPath: string): string {
+export function getMemoryContext(repoPath: string, taskDescription?: string): string {
   const memory = loadMemory(repoPath);
   const parts: string[] = [];
 
+  // Extract keywords for filtering if task description provided
+  const keywords = taskDescription
+    ? taskDescription.toLowerCase().split(/\W+/).filter(w => w.length > 3)
+    : [];
+
+  const matchesKeywords = (text: string): number => {
+    if (keywords.length === 0) return 1; // no filter = always match
+    const lower = text.toLowerCase();
+    return keywords.filter(k => lower.includes(k)).length;
+  };
+
   if (memory.mistakes.length > 0) {
-    const recent = memory.mistakes.slice(-5);
-    parts.push('PAST MISTAKES (avoid these):');
-    for (const m of recent) {
-      parts.push(`- ${m.description}${m.fix ? ` → Fix: ${m.fix}` : ''}`);
+    let mistakes = memory.mistakes;
+    if (keywords.length > 0) {
+      // Score and filter mistakes by relevance
+      mistakes = mistakes
+        .map(m => ({ m, score: matchesKeywords(m.description + ' ' + m.fix) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map(x => x.m);
+    } else {
+      mistakes = mistakes.slice(-5);
+    }
+    if (mistakes.length > 0) {
+      parts.push('PAST MISTAKES (avoid these):');
+      for (const m of mistakes) {
+        parts.push(`- ${m.description}${m.fix ? ` → Fix: ${m.fix}` : ''}`);
+      }
     }
   }
 
   if (memory.patterns.length > 0) {
-    parts.push('\nLEARNED PATTERNS:');
-    for (const p of memory.patterns) {
-      parts.push(`- ${p.pattern}`);
+    let patterns = memory.patterns;
+    if (keywords.length > 0) {
+      patterns = patterns
+        .map(p => ({ p, score: matchesKeywords(p.pattern) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 5)
+        .map(x => x.p);
+    }
+    if (patterns.length > 0) {
+      parts.push('\nLEARNED PATTERNS:');
+      for (const p of patterns) {
+        parts.push(`- ${p.pattern}`);
+      }
+    }
+  }
+
+  if (memory.guidelines && memory.guidelines.length > 0) {
+    let guidelines = memory.guidelines;
+    if (keywords.length > 0) {
+      guidelines = guidelines
+        .map(g => ({ g, score: matchesKeywords(g.error_pattern + ' ' + g.guideline + ' ' + (g.file_context || '')) }))
+        .filter(x => x.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 3)
+        .map(x => x.g);
+    } else {
+      guidelines = guidelines.slice(-5);
+    }
+    if (guidelines.length > 0) {
+      parts.push('\nCORRECTIVE GUIDELINES:');
+      for (const g of guidelines) {
+        parts.push(`- [${g.error_pattern}] ${g.guideline} (seen ${g.times_seen}x)`);
+      }
     }
   }
 
@@ -170,4 +234,32 @@ export function getMemoryContext(repoPath: string): string {
   }
 
   return parts.length > 0 ? parts.join('\n') + '\n\n' : '';
+}
+
+export function recordGuideline(repoPath: string, errorPattern: string, guideline: string, fileContext?: string): void {
+  const memory = loadMemory(repoPath);
+  if (!memory.guidelines) memory.guidelines = [];
+
+  // Deduplicate by error_pattern
+  const existing = memory.guidelines.find(g => g.error_pattern === errorPattern);
+  if (existing) {
+    existing.times_seen += 1;
+    existing.last_seen = new Date().toISOString();
+    existing.guideline = guideline; // update with latest context
+    if (fileContext) existing.file_context = fileContext;
+  } else {
+    memory.guidelines.push({
+      error_pattern: errorPattern,
+      guideline,
+      file_context: fileContext || null,
+      times_seen: 1,
+      last_seen: new Date().toISOString(),
+    });
+  }
+
+  // Keep last 50 guidelines
+  if (memory.guidelines.length > 50) {
+    memory.guidelines = memory.guidelines.slice(-50);
+  }
+  saveMemory(repoPath, memory);
 }

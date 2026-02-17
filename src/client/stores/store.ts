@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
 
 interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
@@ -23,6 +23,7 @@ interface StoreState {
   agentDashboard: Record<string, DashboardData>;
   agentSkillsList: Record<string, Skill[]>;
   agentExperiments: Record<string, Experiment[]>;
+  agentTimeline: Record<string, TimelineRun[]>;
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
@@ -48,6 +49,7 @@ interface StoreState {
   setAgentDashboard: (agentId: string, data: DashboardData) => void;
   setAgentSkillsList: (agentId: string, skills: Skill[]) => void;
   setAgentExperiments: (agentId: string, experiments: Experiment[]) => void;
+  setAgentTimeline: (agentId: string, runs: TimelineRun[]) => void;
   setWorkflows: (workflows: Workflow[]) => void;
   updateWorkflow: (workflow: Workflow) => void;
   removeWorkflow: (workflowId: string) => void;
@@ -86,6 +88,7 @@ export const useStore = create<StoreState>((set) => ({
   agentDashboard: {},
   agentSkillsList: {},
   agentExperiments: {},
+  agentTimeline: {},
   workflows: [],
   activeOutputs: {},
   ui: {
@@ -198,6 +201,11 @@ export const useStore = create<StoreState>((set) => ({
   setAgentExperiments: (agentId, experiments) =>
     set((state) => ({
       agentExperiments: { ...state.agentExperiments, [agentId]: experiments },
+    })),
+
+  setAgentTimeline: (agentId, runs) =>
+    set((state) => ({
+      agentTimeline: { ...state.agentTimeline, [agentId]: runs },
     })),
 
   setWorkflows: (workflows) => set({ workflows }),

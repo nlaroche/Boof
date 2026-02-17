@@ -5,7 +5,7 @@ import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
 import { ansiToHtml } from '../lib/ansi';
 import { timeAgo } from '../lib/format';
-import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent, DashboardData, Skill, Experiment } from '../lib/types';
+import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
 import { getLevel, xpForLevel, XpBar, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from '../components/AgentWidget';
 
 const categoryColors: Record<string, string> = {
@@ -44,6 +44,7 @@ export function AgentScreen({ onSend }: Props) {
   const agentDashboard = useStore((s) => s.agentDashboard);
   const agentSkillsList = useStore((s) => s.agentSkillsList);
   const agentExperiments = useStore((s) => s.agentExperiments);
+  const agentTimelineData = useStore((s) => s.agentTimeline);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const agent = agents.find((a) => a.id === selectedAgentId);
@@ -66,11 +67,15 @@ export function AgentScreen({ onSend }: Props) {
   const dashboard = selectedAgentId ? agentDashboard[selectedAgentId] : undefined;
   const skillsList = selectedAgentId ? (agentSkillsList[selectedAgentId] || []) : [];
   const experiments = selectedAgentId ? (agentExperiments[selectedAgentId] || []) : [];
+  const timeline = selectedAgentId ? (agentTimelineData[selectedAgentId] || []) : [];
 
   // null = history list, 'live' = live output, string = viewing a past command
   const [viewing, setViewing] = useState<string | null>(null);
   const [historyTab, setHistoryTab] = useState<'messages' | 'experience' | 'branches'>('messages');
   const [summaryCommandId, setSummaryCommandId] = useState<string | null>(null);
+  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
+  const [showNewExperiment, setShowNewExperiment] = useState(false);
+  const [newExpForm, setNewExpForm] = useState({ name: '', hypothesis: '', variantA: '', variantB: '' });
   const scrollRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
   const lastScrollTop = useRef(0);
@@ -91,6 +96,7 @@ export function AgentScreen({ onSend }: Props) {
       onSend({ type: 'agent:dashboard', agentId: selectedAgentId });
       onSend({ type: 'agent:skills', agentId: selectedAgentId });
       onSend({ type: 'agent:experiments', agentId: selectedAgentId });
+      onSend({ type: 'agent:timeline', agentId: selectedAgentId });
     }
   }, [selectedAgentId, onSend]);
 
@@ -428,22 +434,25 @@ export function AgentScreen({ onSend }: Props) {
                 {dashboard && (
                   <div className="border-b border-[#1e1e2e]">
                     <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Dashboard</div>
-                    <div className="px-4 py-3 grid grid-cols-3 gap-3">
+                    <div className="px-4 py-3 grid grid-cols-2 gap-3">
                       <div className="text-center">
                         <div className="text-lg font-bold text-[#22c55e]">{dashboard.success_rate_10}%</div>
                         <div className="text-[9px] text-[#6b6b80]">Last 10</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-lg font-bold text-[#f59e0b]">{dashboard.success_rate_50}%</div>
-                        <div className="text-[9px] text-[#6b6b80]">Last 50</div>
+                        <div className="text-lg font-bold text-[#f59e0b]">{dashboard.success_rate_all}%</div>
+                        <div className="text-[9px] text-[#6b6b80]">All time</div>
                       </div>
                       <div className="text-center">
-                        <div className="text-lg font-bold text-[#3b82f6]">{dashboard.success_rate_all}%</div>
-                        <div className="text-[9px] text-[#6b6b80]">All time</div>
+                        <div className="text-lg font-bold text-[#3b82f6]">{dashboard.merge_success_rate}%</div>
+                        <div className="text-[9px] text-[#6b6b80]">Merge rate</div>
+                      </div>
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-[#e2e2ef]">{dashboard.skills_count}</div>
+                        <div className="text-[9px] text-[#6b6b80]">Skills</div>
                       </div>
                     </div>
                     <div className="px-4 pb-3 flex items-center gap-4 text-[10px] text-[#6b6b80]">
-                      <span>{dashboard.skills_count} skills</span>
                       <span>{(dashboard.total_tokens / 1000).toFixed(0)}k tokens</span>
                     </div>
                     {dashboard.top_errors.length > 0 && (
@@ -470,6 +479,59 @@ export function AgentScreen({ onSend }: Props) {
                   </div>
                 )}
 
+                {/* Run Timeline */}
+                {timeline.length > 0 && (
+                  <div className="border-b border-[#1e1e2e]">
+                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Run Timeline</div>
+                    {timeline.slice(0, 10).map((run) => {
+                      const isExpanded = expandedRuns.has(run.id);
+                      const duration = run.totalDurationMs > 0 ? `${(run.totalDurationMs / 1000).toFixed(0)}s` : '';
+                      return (
+                        <div key={run.id} className="border-t border-[#1e1e2e]/50">
+                          <button
+                            onClick={() => {
+                              const next = new Set(expandedRuns);
+                              isExpanded ? next.delete(run.id) : next.add(run.id);
+                              setExpandedRuns(next);
+                            }}
+                            className="w-full px-4 py-2.5 flex items-center gap-2 text-left active:bg-[#14141f]"
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${run.success ? 'bg-[#22c55e]' : 'bg-[#ef4444]'}`} />
+                            <div className="flex-1 min-w-0">
+                              <div className="text-xs text-[#e2e2ef] font-mono truncate">{run.branch}</div>
+                              <div className="flex items-center gap-2 text-[9px] text-[#6b6b80]">
+                                <span>{run.stages.length} stage{run.stages.length !== 1 ? 's' : ''}</span>
+                                {duration && <span>{duration}</span>}
+                                {run.totalTokens > 0 && <span>{(run.totalTokens / 1000).toFixed(0)}k tok</span>}
+                              </div>
+                            </div>
+                            <span className="text-[10px] text-[#6b6b80]">{timeAgo(run.startedAt)}</span>
+                            <span className="text-[10px] text-[#6b6b80]">{isExpanded ? '\u25B2' : '\u25BC'}</span>
+                          </button>
+                          {isExpanded && (
+                            <div className="px-4 pb-2 pl-8 space-y-1">
+                              {run.stages.map((stage, i) => (
+                                <div key={stage.id || i} className="flex items-center gap-2 text-[10px]">
+                                  <span className={stage.success ? 'text-[#22c55e]' : 'text-[#ef4444]'}>
+                                    {stage.success ? '\u2713' : '\u2717'}
+                                  </span>
+                                  <span className="text-[#e2e2ef]">{stage.action}</span>
+                                  {stage.duration_ms > 0 && (
+                                    <span className="text-[#6b6b80]">{(stage.duration_ms / 1000).toFixed(0)}s</span>
+                                  )}
+                                  {(stage.total_tokens || 0) > 0 && (
+                                    <span className="text-[#6b6b80]">{((stage.total_tokens || 0) / 1000).toFixed(0)}k</span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
                 {/* Skills Library */}
                 {skillsList.length > 0 && (
                   <div className="border-b border-[#1e1e2e]">
@@ -489,9 +551,67 @@ export function AgentScreen({ onSend }: Props) {
                 )}
 
                 {/* Experiments */}
-                {experiments.length > 0 && (
-                  <div className="border-b border-[#1e1e2e]">
-                    <div className="px-4 py-2 text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Experiments ({experiments.length})</div>
+                <div className="border-b border-[#1e1e2e]">
+                  <div className="px-4 py-2 flex items-center justify-between">
+                    <span className="text-[10px] font-medium text-[#6b6b80] uppercase tracking-wider">Experiments{experiments.length > 0 ? ` (${experiments.length})` : ''}</span>
+                    <button
+                      onClick={() => setShowNewExperiment(!showNewExperiment)}
+                      className="text-[10px] px-2 py-1 bg-[#7c5bf5]/20 text-[#7c5bf5] rounded active:bg-[#7c5bf5]/30"
+                    >
+                      {showNewExperiment ? 'Cancel' : '+ New'}
+                    </button>
+                  </div>
+                  {showNewExperiment && (
+                    <div className="px-4 pb-3 space-y-2">
+                      <input
+                        className="w-full text-xs bg-[#1e1e2e] text-[#e2e2ef] rounded px-2 py-1.5 placeholder-[#6b6b80]"
+                        placeholder="Experiment name"
+                        value={newExpForm.name}
+                        onChange={(e) => setNewExpForm({ ...newExpForm, name: e.target.value })}
+                      />
+                      <input
+                        className="w-full text-xs bg-[#1e1e2e] text-[#e2e2ef] rounded px-2 py-1.5 placeholder-[#6b6b80]"
+                        placeholder="Hypothesis"
+                        value={newExpForm.hypothesis}
+                        onChange={(e) => setNewExpForm({ ...newExpForm, hypothesis: e.target.value })}
+                      />
+                      <textarea
+                        className="w-full text-xs bg-[#1e1e2e] text-[#e2e2ef] rounded px-2 py-1.5 placeholder-[#6b6b80] resize-none"
+                        rows={2}
+                        placeholder="Variant A text"
+                        value={newExpForm.variantA}
+                        onChange={(e) => setNewExpForm({ ...newExpForm, variantA: e.target.value })}
+                      />
+                      <textarea
+                        className="w-full text-xs bg-[#1e1e2e] text-[#e2e2ef] rounded px-2 py-1.5 placeholder-[#6b6b80] resize-none"
+                        rows={2}
+                        placeholder="Variant B text"
+                        value={newExpForm.variantB}
+                        onChange={(e) => setNewExpForm({ ...newExpForm, variantB: e.target.value })}
+                      />
+                      <button
+                        onClick={() => {
+                          if (newExpForm.name && newExpForm.variantA && newExpForm.variantB) {
+                            onSend({
+                              type: 'agent:create-experiment',
+                              agentId: agent.id,
+                              name: newExpForm.name,
+                              hypothesis: newExpForm.hypothesis,
+                              variantA: newExpForm.variantA,
+                              variantB: newExpForm.variantB,
+                            });
+                            setNewExpForm({ name: '', hypothesis: '', variantA: '', variantB: '' });
+                            setShowNewExperiment(false);
+                          }
+                        }}
+                        className="w-full text-xs py-1.5 bg-[#7c5bf5] text-white rounded active:bg-[#6b4ae4]"
+                      >
+                        Create Experiment
+                      </button>
+                    </div>
+                  )}
+                  {experiments.length > 0 && (
+                    <div>
                     {experiments.map((exp) => (
                       <div key={exp.id} className="px-4 py-2.5 border-t border-[#1e1e2e]/50">
                         <div className="flex items-center justify-between">
@@ -507,8 +627,9 @@ export function AgentScreen({ onSend }: Props) {
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>

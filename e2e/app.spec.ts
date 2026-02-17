@@ -33,7 +33,7 @@ test.describe('Boof PWA', () => {
 
   test('shows empty state on home screen', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('text=No agents running')).toBeVisible();
+    await expect(page.locator('text=No agents yet')).toBeVisible();
   });
 
   test('navigates to Goals screen', async ({ page }) => {

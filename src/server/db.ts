@@ -304,6 +304,9 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
+  // Merge success tracking on run_metrics
+  addColumnIfMissing('run_metrics', 'merge_success', 'INTEGER DEFAULT NULL');
+
   // Reset any agents stuck in 'running' from a previous server crash
   db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 
