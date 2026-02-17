@@ -6,7 +6,7 @@ import path from 'path';
 import os from 'os';
 import { initBoofDir, loadMemory, recordMistake, recordPattern, getMemoryContext, proposeGoals } from '../agent-memory.js';
 import { initDb, runQuery, getOne, getAll } from '../db.js';
-import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters } from '../autopilot.js';
+import { MAX_GOALS_PER_SESSION, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkAndCycleGoal } from '../autopilot.js';
 
 const TEST_DB_PATH = './test-autopilot-safety-overnight.db';
 
@@ -367,5 +367,210 @@ describe('overnight autonomy loop: end-to-end integration', () => {
       assert.equal(saved?.proposed_by, agentId, 'Proposed goals should reference the self-improve agent');
       assert.equal(saved?.status, 'active', 'Proposed goals start as active for cycling');
     }
+  });
+});
+
+describe('overnight cycle via checkAndCycleGoal: end-to-end', () => {
+  let memDir: string;
+
+  beforeEach(async () => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+    memDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-cycle-e2e-'));
+    initBoofDir(memDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    fs.rmSync(memDir, { recursive: true, force: true });
+  });
+
+  function makeId(): string {
+    return Array.from({ length: 16 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join('');
+  }
+
+  function createGoal(name: string, priority: number, status = 'active'): string {
+    const id = makeId();
+    const ts = new Date().toISOString();
+    runQuery(
+      `INSERT INTO goals (id, name, description, status, priority, created_at, updated_at) VALUES (?, ?, '', ?, ?, ?, ?)`,
+      [id, name, status, priority, ts, ts]
+    );
+    return id;
+  }
+
+  function createTask(goalId: string, taskStatus = 'done'): string {
+    const folderId = makeId();
+    const taskId = makeId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT OR IGNORE INTO folders (id, name, icon, created_at, updated_at) VALUES (?, 'Test', '📁', ?, ?)`,
+      [folderId, now, now]
+    );
+    runQuery(
+      `INSERT INTO tasks (id, folder_id, title, description, status, goal_id, created_at, updated_at) VALUES (?, ?, 'Task', '', ?, ?, ?, ?)`,
+      [taskId, folderId, taskStatus, goalId, now, now]
+    );
+    return taskId;
+  }
+
+  it('checkAndCycleGoal: goal with pending tasks returns false (no cycle)', async () => {
+    const agentId = makeId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity) VALUES (?, 'Cycle Agent', ?, 'idle', ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    const goalId = createGoal('Incomplete Goal', 3);
+    createTask(goalId, 'todo'); // pending task
+
+    const cycled = await checkAndCycleGoal(agentId, goalId);
+    assert.equal(cycled, false, 'Should not cycle when tasks remain');
+
+    // Goal should still be active
+    const goal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalId]);
+    assert.equal(goal?.status, 'active', 'Goal should remain active');
+  });
+
+  it('checkAndCycleGoal: all tasks done → marks goal completed and cycles to next', async () => {
+    const agentId = makeId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, status, created_at, last_activity) VALUES (?, 'Cycle Agent', ?, 1, 'idle', ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // First goal: all tasks done
+    const goalA = createGoal('Goal A (high priority)', 5);
+    createTask(goalA, 'done');
+
+    // Second goal: active, lower priority, has a pending task
+    const goalB = createGoal('Goal B (low priority)', 2);
+    createTask(goalB, 'todo');
+
+    // Set agent to goalA
+    runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [goalA, agentId]);
+
+    const cycled = await checkAndCycleGoal(agentId, goalA);
+    assert.equal(cycled, true, 'Should cycle when all tasks done');
+
+    // goalA should now be completed
+    const completedGoal = getOne<{ status: string; completed_at: string | null }>(
+      'SELECT status, completed_at FROM goals WHERE id = ?',
+      [goalA]
+    );
+    assert.equal(completedGoal?.status, 'completed', 'Goal A should be marked completed');
+    assert.ok(completedGoal?.completed_at !== null, 'completed_at should be set');
+
+    // Agent should now be pointing to goalB
+    const agent = getOne<{ autopilot_goal_id: string | null }>(
+      'SELECT autopilot_goal_id FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, goalB, 'Agent should be switched to goal B');
+  });
+
+  it('checkAndCycleGoal: last goal completed → clears goal and proposes new ones', async () => {
+    const agentId = makeId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, status, created_at, last_activity) VALUES (?, 'Solo Agent', ?, 1, 'idle', ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // Only one goal with all tasks done
+    const goalId = createGoal('Only Goal', 3);
+    createTask(goalId, 'done');
+
+    // Seed memory so proposeGoals has material
+    recordPattern(memDir, 'Improve test coverage for all modules', 'overnight');
+
+    runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [goalId, agentId]);
+
+    const cycled = await checkAndCycleGoal(agentId, goalId);
+    assert.equal(cycled, true, 'Should cycle (no more active goals)');
+
+    // Goal should be completed
+    const goal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalId]);
+    assert.equal(goal?.status, 'completed', 'Goal should be marked completed');
+
+    // Agent should have no autopilot_goal_id (cleared when no goals remain)
+    const agent = getOne<{ autopilot_goal_id: string | null }>(
+      'SELECT autopilot_goal_id FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, null, 'autopilot_goal_id should be cleared when no goals remain');
+
+    // New goals should have been proposed and saved to DB
+    const proposedGoals = getAll<{ id: string; proposal_status: string }>(
+      "SELECT id, proposal_status FROM goals WHERE status = 'active' AND proposal_status = 'pending'",
+      []
+    );
+    assert.ok(proposedGoals.length > 0, 'Should propose new goals after last goal completes');
+    assert.ok(proposedGoals.length <= 3, 'Should not propose more than 3 goals');
+  });
+
+  it('full overnight loop: 3 goals cycle sequentially via checkAndCycleGoal', async () => {
+    const agentId = makeId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, status, created_at, last_activity) VALUES (?, 'Night Agent', ?, 1, 'idle', ?, ?)`,
+      [agentId, memDir, now, now]
+    );
+
+    // Three goals in priority order (highest first)
+    const g1 = createGoal('Night Goal 1', 5);
+    const g2 = createGoal('Night Goal 2', 3);
+    const g3 = createGoal('Night Goal 3', 1);
+
+    // All start with done tasks (simulating overnight completion)
+    createTask(g1, 'done');
+    createTask(g2, 'done');
+    createTask(g3, 'done');
+
+    // Cycle 1: g1 completes → switches to g2
+    runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [g1, agentId]);
+    const cycle1 = await checkAndCycleGoal(agentId, g1);
+    assert.equal(cycle1, true, 'Cycle 1 should succeed');
+    assert.equal(
+      getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [g1])?.status,
+      'completed',
+      'Goal 1 should be completed'
+    );
+    const afterCycle1 = getOne<{ autopilot_goal_id: string | null }>('SELECT autopilot_goal_id FROM agents WHERE id = ?', [agentId]);
+    assert.equal(afterCycle1?.autopilot_goal_id, g2, 'Should switch to goal 2 after goal 1 completes');
+
+    // Cycle 2: g2 completes → switches to g3
+    const cycle2 = await checkAndCycleGoal(agentId, g2);
+    assert.equal(cycle2, true, 'Cycle 2 should succeed');
+    assert.equal(
+      getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [g2])?.status,
+      'completed',
+      'Goal 2 should be completed'
+    );
+    const afterCycle2 = getOne<{ autopilot_goal_id: string | null }>('SELECT autopilot_goal_id FROM agents WHERE id = ?', [agentId]);
+    assert.equal(afterCycle2?.autopilot_goal_id, g3, 'Should switch to goal 3 after goal 2 completes');
+
+    // Cycle 3: g3 completes → no more goals, clears autopilot_goal_id
+    // Seed memory so proposals can be generated
+    recordPattern(memDir, 'Add integration tests for all endpoints', 'overnight');
+    const cycle3 = await checkAndCycleGoal(agentId, g3);
+    assert.equal(cycle3, true, 'Cycle 3 should succeed');
+    assert.equal(
+      getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [g3])?.status,
+      'completed',
+      'Goal 3 should be completed'
+    );
+    const afterCycle3 = getOne<{ autopilot_goal_id: string | null }>('SELECT autopilot_goal_id FROM agents WHERE id = ?', [agentId]);
+    assert.equal(afterCycle3?.autopilot_goal_id, null, 'autopilot_goal_id should be cleared after all goals complete');
+
+    // All original goals should be completed
+    const remaining = getAll<{ id: string }>(
+      "SELECT id FROM goals WHERE id IN (?, ?, ?) AND status = 'active'",
+      [g1, g2, g3]
+    );
+    assert.equal(remaining.length, 0, 'No original goals should remain active');
   });
 });
