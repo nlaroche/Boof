@@ -5,7 +5,7 @@ import path from 'path';
 import { runQuery, getOne, getAll } from './db.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache } from './agent-memory.js';
+import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
 import { isProtectedBranch, assertNotProtected } from './branch-guard.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -618,6 +618,97 @@ function parseTasksFromOutput(output: string, goalId: string, agentId: string): 
   return count;
 }
 
+// ── Goal Cycling ────────────────────────────────────────────────────────
+
+/** Update goal_stats after each run */
+function updateGoalStats(goalId: string, durationMs: number, taskSucceeded: boolean): void {
+  const existing = getOne<{ total_runs: number; tasks_completed: number; tasks_failed: number; avg_duration_ms: number }>(
+    'SELECT * FROM goal_stats WHERE goal_id = ?',
+    [goalId]
+  );
+  const now = new Date().toISOString();
+  if (!existing) {
+    runQuery(
+      `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at) VALUES (?, 1, ?, ?, ?, ?)`,
+      [goalId, taskSucceeded ? 1 : 0, taskSucceeded ? 0 : 1, durationMs, now]
+    );
+  } else {
+    const newTotal = existing.total_runs + 1;
+    const newCompleted = existing.tasks_completed + (taskSucceeded ? 1 : 0);
+    const newFailed = existing.tasks_failed + (taskSucceeded ? 0 : 1);
+    const newAvg = (existing.avg_duration_ms * existing.total_runs + durationMs) / newTotal;
+    runQuery(
+      `UPDATE goal_stats SET total_runs = ?, tasks_completed = ?, tasks_failed = ?, avg_duration_ms = ?, last_run_at = ? WHERE goal_id = ?`,
+      [newTotal, newCompleted, newFailed, newAvg, now, goalId]
+    );
+  }
+}
+
+/**
+ * Check if all tasks for a goal are done. If so, mark the goal completed,
+ * find the next highest-priority active goal, and switch the agent.
+ * Returns true if goal was cycled, false if still active.
+ */
+async function checkAndCycleGoal(agentId: string, goalId: string): Promise<boolean> {
+  const broadcast = getBroadcast();
+
+  // Check remaining tasks for this goal
+  const remaining = getOne<{ count: number }>(
+    "SELECT COUNT(*) as count FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress')",
+    [goalId]
+  );
+  const remainingCount = remaining?.count ?? 0;
+
+  if (remainingCount > 0) {
+    return false; // Still tasks to do
+  }
+
+  // All tasks done — mark goal completed
+  const now = new Date().toISOString();
+  runQuery(
+    `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+    [now, now, goalId]
+  );
+
+  const completedGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+  if (completedGoal) {
+    broadcast({ type: 'goal:completed', goalId, agentId, goal: completedGoal });
+    broadcast({ type: 'goal:updated', goal: completedGoal });
+  }
+
+  console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
+
+  // Find next highest-priority active goal (not this one)
+  const nextGoal = getOne<Goal>(
+    "SELECT * FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+    [goalId]
+  );
+
+  if (nextGoal) {
+    // Switch agent to next goal
+    runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [nextGoal.id, agentId]);
+    broadcast({ type: 'goal:switched', agentId, previousGoalId: goalId, newGoalId: nextGoal.id, goal: nextGoal });
+    console.log(`[autopilot] Switched agent ${agentId.slice(0, 6)} to goal "${nextGoal.name}" (priority ${nextGoal.priority})`);
+    return true;
+  }
+
+  // No active goals — propose new ones based on past patterns
+  console.log(`[autopilot] No active goals remaining. Proposing new goals...`);
+  const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+  if (agent) {
+    const agentCwd = getAgentCwd(agent);
+    const proposedGoals = await proposeGoals(agentId, agentCwd);
+    if (proposedGoals.length > 0) {
+      broadcast({ type: 'goal:proposed-auto', agentId, goals: proposedGoals });
+      console.log(`[autopilot] Proposed ${proposedGoals.length} new goals for agent ${agentId.slice(0, 6)}`);
+    }
+  }
+
+  // Clear goal from agent since no active goals exist
+  runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+  return true;
+}
+
 // ── Main Autopilot Run ──────────────────────────────────────────────────
 
 export async function triggerAutopilotRun(agentId: string): Promise<void> {
@@ -1001,6 +1092,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
     const durationMs = Date.now() - startTime;
 
+    // Update goal stats (non-blocking)
+    updateGoalStats(goalId, durationMs, success);
+
     // Log with branch info and token usage
     const branchInfo = agentBranch ? ` [branch: ${agentBranch}]` : '';
     const tokenData = workflowObj
@@ -1169,6 +1263,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         agentBranch = '';
       }
     }
+
+    // Check if goal is complete and cycle to next goal if needed
+    await checkAndCycleGoal(agentId, goalId);
 
   } catch (err: any) {
     console.error(`[autopilot] Error during run for agent ${agentId}:`, err);
