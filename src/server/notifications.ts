@@ -59,3 +59,14 @@ export async function sendNotification(title: string, body: string): Promise<voi
     }
   }
 }
+
+export async function sendGoalCompletedNotification(
+  goalName: string,
+  nextGoalName?: string
+): Promise<void> {
+  const body = nextGoalName
+    ? `Cycling to next goal: "${nextGoalName}"`
+    : 'No more active goals — proposing new goals.';
+
+  await sendNotification(`Goal completed: "${goalName}"`, body);
+}
