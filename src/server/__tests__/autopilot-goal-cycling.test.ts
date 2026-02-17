@@ -248,6 +248,187 @@ describe('goal proposal from past patterns', () => {
   });
 });
 
+describe('goal completion e2e cycle', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    goalCounter = 0;
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'boof-e2e-test-'));
+    initBoofDir(tmpDir);
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('full cycle: tasks complete → goal auto-marked → next priority goal selected', () => {
+    // Setup: two active goals with tasks
+    const goalA = createGoal('Goal A (high priority)', 5);
+    const goalB = createGoal('Goal B (low priority)', 1);
+
+    createTask(goalA, 'Task A1', 'done');
+    createTask(goalA, 'Task A2', 'done');
+    createTask(goalB, 'Task B1', 'todo');
+
+    // Step 1: verify all tasks for goalA are done
+    const remaining = getOne<{ count: number }>(
+      "SELECT COUNT(*) as count FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress')",
+      [goalA]
+    );
+    assert.equal(remaining?.count, 0, 'All tasks for goal A should be done');
+
+    // Step 2: auto-mark goalA completed
+    const now = new Date().toISOString();
+    runQuery(
+      `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+      [now, now, goalA]
+    );
+
+    const completedGoal = getOne<{ status: string; completed_at: string | null }>(
+      'SELECT status, completed_at FROM goals WHERE id = ?',
+      [goalA]
+    );
+    assert.equal(completedGoal?.status, 'completed', 'Goal A should be marked completed');
+    assert.ok(completedGoal?.completed_at !== null, 'completed_at should be set');
+
+    // Step 3: select next highest-priority active goal
+    const nextGoal = getOne<{ id: string; name: string; priority: number }>(
+      "SELECT id, name, priority FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [goalA]
+    );
+    assert.equal(nextGoal?.id, goalB, 'Should select goal B as next active goal');
+    assert.equal(nextGoal?.priority, 1, 'Goal B has priority 1');
+
+    // Step 4: verify goal B still has tasks pending
+    const pendingForB = getOne<{ count: number }>(
+      "SELECT COUNT(*) as count FROM tasks WHERE goal_id = ? AND status IN ('todo', 'in_progress')",
+      [goalB]
+    );
+    assert.ok((pendingForB?.count ?? 0) > 0, 'Goal B should still have pending tasks');
+  });
+
+  it('full cycle: no remaining goals → propose new goals', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, status, created_at, last_activity) VALUES (?, 'E2E Test Agent', ?, 'idle', ?, ?)`,
+      [agentId, tmpDir, now, now]
+    );
+
+    // Setup: one active goal, complete all its tasks
+    const goalId = createGoal('Sole Goal', 3);
+    createTask(goalId, 'Only Task', 'done');
+
+    // Mark goal completed
+    runQuery(
+      `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+      [now, now, goalId]
+    );
+
+    // No active goals remain
+    const activeGoals = getAll<{ id: string }>("SELECT id FROM goals WHERE status = 'active'", []);
+    assert.equal(activeGoals.length, 0, 'No active goals should remain');
+
+    // Record a pattern so proposeGoals has material to work with
+    recordPattern(tmpDir, 'Always add tests for new server modules', 'test');
+
+    // Propose new goals
+    const proposed = await proposeGoals(agentId, tmpDir);
+    assert.ok(proposed.length > 0, 'Should propose at least one new goal');
+    assert.ok(proposed.length <= 3, 'Should not propose more than 3 goals');
+
+    // Verify proposals saved with pending status
+    for (const g of proposed) {
+      const dbGoal = getOne<{ proposal_status: string; proposed_by: string; status: string }>(
+        'SELECT proposal_status, proposed_by, status FROM goals WHERE id = ?',
+        [g.id]
+      );
+      assert.equal(dbGoal?.proposal_status, 'pending', 'Proposed goal should have pending proposal_status');
+      assert.equal(dbGoal?.proposed_by, agentId, 'Proposed goal should reference the agent');
+      assert.equal(dbGoal?.status, 'active', 'Proposed goals start as active');
+    }
+  });
+
+  it('full cycle: goal_stats recorded after each run', () => {
+    const goalId = createGoal('Stats Cycle Goal', 3);
+    createTask(goalId, 'Task 1', 'done');
+
+    const now = new Date().toISOString();
+
+    // Simulate first run completing successfully
+    runQuery(
+      `INSERT INTO goal_stats (goal_id, total_runs, tasks_completed, tasks_failed, avg_duration_ms, last_run_at)
+       VALUES (?, 1, 1, 0, 8000, ?)`,
+      [goalId, now]
+    );
+
+    // Simulate second run completing successfully
+    const existing = getOne<{ total_runs: number; avg_duration_ms: number }>(
+      'SELECT total_runs, avg_duration_ms FROM goal_stats WHERE goal_id = ?',
+      [goalId]
+    );
+    const newTotal = (existing?.total_runs ?? 0) + 1;
+    const newAvg = ((existing?.avg_duration_ms ?? 0) * (existing?.total_runs ?? 0) + 10000) / newTotal;
+    runQuery(
+      `UPDATE goal_stats SET total_runs = ?, tasks_completed = 2, avg_duration_ms = ?, last_run_at = ? WHERE goal_id = ?`,
+      [newTotal, newAvg, now, goalId]
+    );
+
+    // Mark goal completed
+    runQuery(
+      `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
+      [now, now, goalId]
+    );
+
+    // Verify stats reflect both runs
+    const stats = getOne<{ total_runs: number; tasks_completed: number; avg_duration_ms: number }>(
+      'SELECT total_runs, tasks_completed, avg_duration_ms FROM goal_stats WHERE goal_id = ?',
+      [goalId]
+    );
+    assert.equal(stats?.total_runs, 2, 'Should have 2 total runs recorded');
+    assert.equal(stats?.tasks_completed, 2, 'Should have 2 tasks completed');
+    assert.equal(stats?.avg_duration_ms, 9000, 'Average duration should be (8000+10000)/2 = 9000');
+
+    // Verify goal is completed
+    const goal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalId]);
+    assert.equal(goal?.status, 'completed', 'Goal should be marked completed');
+  });
+
+  it('priority ordering: highest priority goal always selected next', () => {
+    const low = createGoal('Low', 1);
+    const med = createGoal('Medium', 3);
+    const high = createGoal('High', 5);
+    const veryHigh = createGoal('Very High', 5); // same priority as high, earlier creation → comes first
+
+    // Mark high as completed
+    const now = new Date().toISOString();
+    runQuery(`UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`, [now, now, high]);
+
+    // Next should be veryHigh (same priority 5 as high, but created earlier among remaining)
+    const next1 = getOne<{ id: string; priority: number }>(
+      "SELECT id, priority FROM goals WHERE status = 'active' AND id != ? ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [high]
+    );
+    assert.equal(next1?.id, veryHigh, 'Should pick veryHigh (priority 5, created before it was completed)');
+    assert.equal(next1?.priority, 5);
+
+    // Mark veryHigh completed too
+    runQuery(`UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`, [now, now, veryHigh]);
+
+    // Next should be med (priority 3)
+    const next2 = getOne<{ id: string; priority: number }>(
+      "SELECT id, priority FROM goals WHERE status = 'active' AND id NOT IN (?, ?) ORDER BY priority DESC, created_at ASC LIMIT 1",
+      [high, veryHigh]
+    );
+    assert.equal(next2?.id, med, 'Should pick medium priority goal next');
+    assert.equal(next2?.priority, 3);
+  });
+});
+
 describe('overnight autonomy safeguards', () => {
   beforeEach(async () => {
     goalCounter = 0;
