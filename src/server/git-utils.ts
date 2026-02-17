@@ -124,7 +124,8 @@ export function commitAgentChanges(workingDirectory: string, prompt: string, age
     }
 
     // Get all modified/untracked files in the repo
-    const statusOutput = execSync('git status --porcelain', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
+    // Use --untracked-files=all to get individual file paths instead of directory summaries
+    const statusOutput = execSync('git status --porcelain --untracked-files=all', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
     if (!statusOutput) return false;
 
     // Extract files the agent touched from the output
