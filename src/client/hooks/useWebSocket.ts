@@ -156,6 +156,15 @@ export function useWebSocket() {
           case 'agent:timeline':
             s.setAgentTimeline(msg.agentId, msg.runs);
             break;
+          case 'goal:completed':
+            s.updateGoal(msg.goal);
+            break;
+          case 'goal:switched':
+            s.updateGoal(msg.goal);
+            break;
+          case 'goal:proposed-auto':
+            for (const g of msg.goals) s.updateGoal(g);
+            break;
         }
       } catch {
         // ignore parse errors
