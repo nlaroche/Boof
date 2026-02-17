@@ -36,6 +36,17 @@ This is a personal PWA + Node server for controlling Claude Code from a phone.
 - Static files are served from `dist/client`, resolved via `process.cwd()` (not `__dirname`).
 - Use `powershell -ExecutionPolicy Bypass -Command` for PowerShell commands from bash.
 
+## Architecture (REQUIRED READING)
+See `ARCHITECTURE.md` for the full engine design. Key rules:
+- **State machines** for all entity lifecycles (agent, goal, task, command, autopilot)
+- **Utility scoring** for task/goal selection (not dumb rotation)
+- **No magic strings** — import from `src/server/engine/constants.ts`
+- **No inline SQL in handlers** — use `src/server/db-helpers.ts` CRUD functions
+- **Test every machine** with `validateMachineDefinition()` + transition tests
+- Machine definitions in `src/server/machines/`
+- Focused systems in `src/server/systems/`
+- Run tests: `npm run test:unit` (includes engine tests)
+
 ## Aider Orchestration
 - `aider-task.ps1` — Send tasks to Aider with conventions prepended
 - `aider-fix.ps1` — Emergency build fixer (max 3 attempts)
