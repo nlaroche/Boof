@@ -710,7 +710,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const srcModules = path.join(agent.working_directory, 'node_modules');
       const dstModules = path.join(wtPath, 'node_modules');
       if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
-        execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+        if (process.platform === 'win32') {
+          execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: 10_000 });
+        } else {
+          fs.symlinkSync(srcModules, dstModules, 'dir');
+        }
       }
       runQuery('UPDATE agents SET worktree_path = ? WHERE id = ?', [wtPath, agent.id]);
       agent.worktree_path = wtPath;

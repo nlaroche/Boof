@@ -171,11 +171,15 @@ export function createWorktree(
       timeout: Timeouts.GIT_CHECKOUT,
     });
 
-    // Symlink node_modules via Windows junction
+    // Symlink node_modules into worktree
     const srcModules = path.join(workingDirectory, 'node_modules');
     const dstModules = path.join(worktreePath, 'node_modules');
     if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
-      execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: Timeouts.JUNCTION });
+      if (process.platform === 'win32') {
+        execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: Timeouts.JUNCTION });
+      } else {
+        fs.symlinkSync(srcModules, dstModules, 'dir');
+      }
     }
 
     console.log(`[git-ops] Worktree created at ${worktreePath}`);
@@ -194,14 +198,18 @@ export function removeWorktree(
   worktreePath: string,
 ): boolean {
   try {
-    // Remove node_modules junction first — git worktree remove can't delete junctions on Windows
+    // Remove node_modules symlink/junction first — git worktree remove can't delete junctions on Windows
     const junctionPath = path.join(worktreePath, 'node_modules');
     try {
       const stat = fs.lstatSync(junctionPath);
       if (stat.isSymbolicLink() || stat.isDirectory()) {
-        execSync(`cmd /c rmdir "${junctionPath}"`, { timeout: Timeouts.GIT_QUICK });
+        if (process.platform === 'win32') {
+          execSync(`cmd /c rmdir "${junctionPath}"`, { timeout: Timeouts.GIT_QUICK });
+        } else {
+          fs.unlinkSync(junctionPath);
+        }
       }
-    } catch { /* junction doesn't exist, fine */ }
+    } catch { /* symlink doesn't exist, fine */ }
 
     execSync(`git worktree remove "${worktreePath}" --force`, {
       cwd: workingDirectory,
