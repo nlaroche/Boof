@@ -75,7 +75,7 @@ const minimaxProvider: AgentProvider = {
 const claudeCliJs = isWindows
   ? join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
   : '';
-const claudeCommand = isWindows ? process.execPath : 'claude';
+const claudeCommand = isWindows ? process.execPath : '/opt/homebrew/bin/claude';
 
 function claudeArgs(prompt: string, model: string): string[] {
   const base = isWindows ? [claudeCliJs] : [];
