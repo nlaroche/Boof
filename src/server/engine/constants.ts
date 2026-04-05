@@ -27,6 +27,12 @@ export const GoalStatus = {
   COMPLETED: 'completed',
 } as const;
 
+export const ProjectStatus = {
+  ACTIVE: 'active',
+  PAUSED: 'paused',
+  ARCHIVED: 'archived',
+} as const;
+
 export const CommandStatus = {
   RUNNING: 'running',
   DONE: 'done',
@@ -66,6 +72,7 @@ export const WorkflowOnFail = {
 export type AgentStatusType = typeof AgentStatus[keyof typeof AgentStatus];
 export type TaskStatusType = typeof TaskStatus[keyof typeof TaskStatus];
 export type GoalStatusType = typeof GoalStatus[keyof typeof GoalStatus];
+export type ProjectStatusType = typeof ProjectStatus[keyof typeof ProjectStatus];
 export type CommandStatusType = typeof CommandStatus[keyof typeof CommandStatus];
 export type ImprovementStatusType = typeof ImprovementStatus[keyof typeof ImprovementStatus];
 export type ExperimentStatusType = typeof ExperimentStatus[keyof typeof ExperimentStatus];
@@ -150,7 +157,7 @@ export const Limits = {
 
 export const Paths = {
   /** Default repos directory */
-  DEFAULT_REPOS_DIR: process.env.REPOS_DIR || 'D:\\Repos',
+  DEFAULT_REPOS_DIR: process.env.REPOS_DIR || (process.platform === 'win32' ? 'D:\\Repos' : `${process.env.HOME}/projects`),
   /** Boof memory directory name */
   BOOF_DIR: '.boof',
   /** Memory file name */

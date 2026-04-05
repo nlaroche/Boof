@@ -31,13 +31,20 @@ function baseEnv(): Record<string, string> {
   return env;
 }
 
-// ── MiniMax M2.5 via cc-mirror ──────────────────────────────────────────
+// ── MiniMax M2.5 via cc-mirror (Windows-only) ──────────────────────────
+// MiniMax provider requires cc-mirror which is only available on Windows.
+// On macOS this provider will be registered but won't work — use Claude providers instead.
+
+import { homedir } from 'os';
+import { join } from 'path';
+
+const home = homedir();
 
 const minimaxProvider: AgentProvider = {
   name: 'MiniMax M2.5',
   command: process.env.MINIMAX_CMD
     || (isWindows
-      ? 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\native\\claude.exe'
+      ? join(home, '.cc-mirror', 'minimax', 'native', 'claude.exe')
       : 'minimax'),
   getArgs(prompt: string) {
     return [
@@ -48,8 +55,8 @@ const minimaxProvider: AgentProvider = {
   },
   getEnv() {
     const env = baseEnv();
-    env['CLAUDE_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\config';
-    env['TWEAKCC_CONFIG_DIR'] = 'C:\\Users\\nlaroche\\.cc-mirror\\minimax\\tweakcc';
+    env['CLAUDE_CONFIG_DIR'] = join(home, '.cc-mirror', 'minimax', 'config');
+    env['TWEAKCC_CONFIG_DIR'] = join(home, '.cc-mirror', 'minimax', 'tweakcc');
     env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
     env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5-lightning';
     env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5-lightning';
@@ -66,7 +73,7 @@ const minimaxProvider: AgentProvider = {
 // Use process.execPath since node is not in the system PATH on this machine.
 
 const claudeCliJs = isWindows
-  ? 'C:\\Users\\nlaroche\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\cli.js'
+  ? join(home, 'AppData', 'Roaming', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js')
   : '';
 const claudeCommand = isWindows ? process.execPath : 'claude';
 
