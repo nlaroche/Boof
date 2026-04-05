@@ -1,11 +1,36 @@
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
+import { spawn as cpSpawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import { getProvider } from './agent-providers.js';
 import type { AgentProvider } from './agent-providers.js';
 
+const usePty = process.platform === 'win32';
+
+/** Wrapper that gives child_process.spawn the same onData/onExit/kill API as node-pty */
+interface ProcHandle {
+  pid: number;
+  kill(): void;
+  onData(cb: (data: string) => void): void;
+  onExit(cb: (e: { exitCode: number }) => void): void;
+}
+
+function wrapChildProcess(cp: ChildProcess): ProcHandle {
+  return {
+    pid: cp.pid!,
+    kill() { cp.kill(); },
+    onData(cb) {
+      cp.stdout?.on('data', (d: Buffer) => cb(d.toString()));
+      cp.stderr?.on('data', (d: Buffer) => cb(d.toString()));
+    },
+    onExit(cb) {
+      cp.on('exit', (code) => cb({ exitCode: code ?? 1 }));
+    },
+  };
+}
+
 interface AgentState {
-  activePty: IPty | null;
+  activePty: ProcHandle | null;
   workingDirectory: string;
   name: string;
   agentType: string;
@@ -247,14 +272,24 @@ function spawnWithProvider(
   const args = provider.getArgs(prompt);
   const env = provider.getEnv();
 
-  console.log(`[agent ${id.slice(0,6)}] spawning ${provider.name} (fresh session) prompt=${text.slice(0, 80)}...`);
+  console.log(`[agent ${id.slice(0,6)}] spawning ${provider.name} (${usePty ? 'pty' : 'child_process'}) prompt=${text.slice(0, 80)}...`);
 
-  const proc = pty.spawn(provider.command, args, {
-    cwd: state.workingDirectory,
-    cols: 1000,
-    rows: 50,
-    env,
-  } as any);
+  let proc: ProcHandle;
+  if (usePty) {
+    proc = pty.spawn(provider.command, args, {
+      cwd: state.workingDirectory,
+      cols: 1000,
+      rows: 50,
+      env,
+    } as any) as unknown as ProcHandle;
+  } else {
+    const cp = cpSpawn(provider.command, args, {
+      cwd: state.workingDirectory,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    proc = wrapChildProcess(cp);
+  }
 
   state.activePty = proc;
 
