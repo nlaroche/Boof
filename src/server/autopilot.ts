@@ -12,6 +12,7 @@ import {
   hasUncommittedChanges, getCurrentBranch, slugify,
   createAgentBranch, abandonBranch, mergeToMain,
   listAgentBranches as gitListAgentBranches, autoCommit,
+  getDefaultBranch,
 } from './systems/git-ops.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
@@ -706,7 +707,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const safeName = agent.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 30);
       const wtPath = path.join(agent.working_directory + '-agents', `${safeName}-${agent.id.slice(0, 8)}`);
       fs.mkdirSync(path.dirname(wtPath), { recursive: true });
-      execSync(`git worktree add --detach "${wtPath}" main`, { cwd: agent.working_directory, timeout: 30_000 });
+      const defaultBranch = getDefaultBranch(agent.working_directory);
+      execSync(`git worktree add --detach "${wtPath}" ${defaultBranch}`, { cwd: agent.working_directory, timeout: 30_000 });
       const srcModules = path.join(agent.working_directory, 'node_modules');
       const dstModules = path.join(wtPath, 'node_modules');
       if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {

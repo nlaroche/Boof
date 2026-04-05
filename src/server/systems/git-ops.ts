@@ -15,6 +15,24 @@ import { Timeouts, Limits } from '../engine/constants.js';
 const execAsync = promisify(exec);
 
 /**
+ * Detect the default branch for a repo (main, develop, master, etc.)
+ */
+export function getDefaultBranch(cwd: string): string {
+  try {
+    return execSync('git symbolic-ref refs/remotes/origin/HEAD', { cwd, encoding: 'utf-8', timeout: 5_000 })
+      .trim().replace('refs/remotes/origin/', '');
+  } catch {
+    // Fallback: check if develop or main exists
+    try {
+      execSync('git rev-parse --verify develop', { cwd, timeout: 5_000 });
+      return 'develop';
+    } catch {
+      return 'main';
+    }
+  }
+}
+
+/**
  * Check if a working directory has uncommitted changes.
  * Ignores .boof/ and boof.db (our own files).
  */
@@ -67,7 +85,8 @@ export async function createAgentBranch(
 ): Promise<string> {
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  await execAsync(`git checkout -b "${branchName}" main`, {
+  const base = getDefaultBranch(worktreePath);
+  await execAsync(`git checkout -b "${branchName}" origin/${base}`, {
     cwd: worktreePath,
     timeout: Timeouts.GIT_CHECKOUT,
   });
@@ -80,7 +99,7 @@ export async function createAgentBranch(
   if (actual !== branchName) {
     throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
   }
-  console.log(`[git-ops] Created branch: ${branchName} (from main) in worktree ${worktreePath}`);
+  console.log(`[git-ops] Created branch: ${branchName} (from origin/${base}) in worktree ${worktreePath}`);
   return branchName;
 }
 
@@ -106,9 +125,10 @@ export async function mergeToMain(
       timeout: Timeouts.GIT_CHECKOUT,
     }).catch(() => {});
 
+    const base = getDefaultBranch(mainRepoDir);
     // Merge from the main repo dir
     const { stdout, stderr } = await execAsync(
-      `git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
+      `git checkout ${base} && git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
       { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
     );
 
@@ -118,8 +138,8 @@ export async function mergeToMain(
       timeout: Timeouts.GIT_QUICK,
     }).catch(() => {});
 
-    // Return worktree to detached HEAD at main
-    await execAsync('git checkout --detach main', {
+    // Return worktree to detached HEAD at base
+    await execAsync(`git checkout --detach ${base}`, {
       cwd: worktreePath,
       timeout: Timeouts.GIT_CHECKOUT,
     }).catch(() => {});
@@ -166,7 +186,8 @@ export function createWorktree(
       .slice(0, Limits.MAX_SAFE_NAME_LENGTH);
     const worktreePath = path.join(workingDirectory + '-agents', `${safeName}-${agentId.slice(0, 8)}`);
     fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
-    execSync(`git worktree add --detach "${worktreePath}" main`, {
+    const base = getDefaultBranch(workingDirectory);
+    execSync(`git worktree add --detach "${worktreePath}" ${base}`, {
       cwd: workingDirectory,
       timeout: Timeouts.GIT_CHECKOUT,
     });
