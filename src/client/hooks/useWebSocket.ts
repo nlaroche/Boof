@@ -8,8 +8,6 @@ export function useWebSocket() {
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const backoff = useRef(1000);
 
-  const store = useStore();
-
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws`;
@@ -21,6 +19,9 @@ export function useWebSocket() {
       setConnected(true);
       backoff.current = 1000;
       ws.send(JSON.stringify({ type: 'sync:request' }));
+      ws.send(JSON.stringify({ type: 'global:skills' }));
+      ws.send(JSON.stringify({ type: 'global:stats' }));
+      ws.send(JSON.stringify({ type: 'global:learnings', limit: 10 }));
     };
 
     ws.onmessage = (event) => {
@@ -35,6 +36,7 @@ export function useWebSocket() {
             s.setAgents(msg.agents);
             s.setGoals(msg.goals);
             s.setWorkflows(msg.workflows);
+            s.setProjects(msg.projects || []);
             if (msg.commands) {
               s.setCommands(msg.commands);
             }
@@ -167,6 +169,33 @@ export function useWebSocket() {
             break;
           case 'goal:proposed-auto':
             for (const g of msg.goals) s.updateGoal(g);
+            break;
+          case 'project:updated':
+            s.updateProject(msg.project);
+            break;
+          case 'project:deleted':
+            s.removeProject(msg.projectId);
+            break;
+          case 'project:list':
+            s.setProjects(msg.projects);
+            break;
+          case 'project:repos':
+            s.setProjectRepos(msg.projectId, msg.repos);
+            break;
+          case 'project:goals':
+            // Goals are already in the main goals list; this is for filtering
+            break;
+          case 'global:skills:result':
+            s.setGlobalSkills(msg.skills);
+            break;
+          case 'global:stats:result':
+            s.setGlobalStats(msg.stats);
+            break;
+          case 'global:learnings:result':
+            s.setRecentLearnings(msg.learnings);
+            break;
+          case 'project:skills:result':
+            s.setProjectSkills(msg.projectId, msg.skills);
             break;
         }
       } catch {

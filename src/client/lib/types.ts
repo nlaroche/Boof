@@ -54,9 +54,20 @@ export interface Goal {
   status: 'active' | 'paused' | 'completed';
   priority: number;
   repo_id: string | null;
+  project_id: string | null;
   proposed_by: string | null;
   proposal_status: 'approved' | 'pending' | 'rejected' | null;
   completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  architecture_plan: string;
+  status: 'active' | 'paused' | 'archived';
   created_at: string;
   updated_at: string;
 }
@@ -248,6 +259,33 @@ export interface TimelineRun {
   totalTokens: number;
 }
 
+// ── Aggregated types for dashboard ──
+
+export interface AggregatedSkill {
+  name: string;
+  category: string;
+  avgProficiency: number;
+  agentCount: number;
+  agentNames: string[];
+}
+
+export interface GlobalStats {
+  totalCommands: number;
+  successRate: number;
+  totalXp: number;
+  totalTokensUsed: number;
+  avgDurationMs: number;
+}
+
+export interface RecentLearning {
+  id: string;
+  agentId: string;
+  agentName: string;
+  type: 'improvement' | 'reflection';
+  text: string;
+  createdAt: string;
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types
@@ -274,7 +312,7 @@ export type WSClientMessage =
   | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
-  | { type: 'goal:create'; name: string; description?: string; repoId?: string }
+  | { type: 'goal:create'; name: string; description?: string; repoId?: string; projectId?: string }
   | { type: 'goal:propose'; agentId: string; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
@@ -299,10 +337,22 @@ export type WSClientMessage =
   | { type: 'agent:create-experiment'; agentId: string; name: string; hypothesis: string; variantA: string; variantB: string }
   | { type: 'agent:timeline'; agentId: string }
   | { type: 'goal:set-priority'; goalId: string; priority: number }
-  | { type: 'goal:get-stats'; goalId: string };
+  | { type: 'goal:get-stats'; goalId: string }
+  | { type: 'project:create'; name: string; description?: string; architecturePlan?: string }
+  | { type: 'project:update'; projectId: string; fields: Partial<Project> }
+  | { type: 'project:delete'; projectId: string }
+  | { type: 'project:list' }
+  | { type: 'project:add-repo'; projectId: string; repoPath: string }
+  | { type: 'project:remove-repo'; projectId: string; repoPath: string }
+  | { type: 'project:get-repos'; projectId: string }
+  | { type: 'project:get-goals'; projectId: string }
+  | { type: 'global:skills' }
+  | { type: 'global:stats' }
+  | { type: 'global:learnings'; limit?: number }
+  | { type: 'project:skills'; projectId: string };
 
 export type WSServerMessage =
-  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; commands?: Command[] }
+  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[] }
   | { type: 'agent:output'; agentId: string; chunk: string }
   | { type: 'agent:updated'; agent: Agent }
   | { type: 'agent:deleted'; agentId: string }
@@ -341,7 +391,16 @@ export type WSServerMessage =
   | { type: 'goal:completed'; goalId: string; agentId: string; goal: Goal }
   | { type: 'goal:switched'; agentId: string; previousGoalId: string | null; newGoalId: string; goal: Goal }
   | { type: 'goal:proposed-auto'; agentId: string; goals: Goal[] }
-  | { type: 'goal:stats'; goalId: string; stats: GoalStats | null };
+  | { type: 'goal:stats'; goalId: string; stats: GoalStats | null }
+  | { type: 'project:updated'; project: Project }
+  | { type: 'project:deleted'; projectId: string }
+  | { type: 'project:list'; projects: Project[] }
+  | { type: 'project:repos'; projectId: string; repos: string[] }
+  | { type: 'project:goals'; projectId: string; goals: Goal[] }
+  | { type: 'global:skills:result'; skills: AggregatedSkill[] }
+  | { type: 'global:stats:result'; stats: GlobalStats }
+  | { type: 'global:learnings:result'; learnings: RecentLearning[] }
+  | { type: 'project:skills:result'; projectId: string; skills: AggregatedSkill[] };
 
 export interface RepoInfo {
   name: string;

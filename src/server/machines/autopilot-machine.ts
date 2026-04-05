@@ -117,55 +117,79 @@ export function createAutopilotMachineDef(ctx: Partial<AutopilotContext> = {}): 
       init: {
         description: 'Initializing autopilot run — validating agent and goal',
         onEnter: recordPhaseStart,
+        meta: { skills: [], toolAccess: [], contextNeeded: ['agent-config', 'goal-description'] },
       },
       preflight: {
         description: 'Running pre-flight test check to ensure clean baseline',
         invariant: (c) => c.goalId !== '',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'init')),
+        meta: { skills: ['build-tooling'], toolAccess: ['build'], contextNeeded: ['working-directory'] },
       },
       planning: {
         description: 'Generating or reviewing tasks for goal via LLM',
         invariant: (c) => c.preflightPassed === true,
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'preflight')),
+        meta: {
+          skills: ['task-decomposition', 'code-analysis'],
+          toolAccess: ['pty'],
+          contextNeeded: ['goal-description', 'repo-context', 'existing-tasks'],
+        },
       },
       selecting: {
         description: 'Scoring and selecting the best task to work on',
-        meta: { usesScoring: true },
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'planning')),
+        meta: {
+          usesScoring: true,
+          skills: ['task-prioritization'],
+          toolAccess: [],
+          contextNeeded: ['task-list', 'agent-skills', 'goal-priority'],
+        },
       },
       implementing: {
         description: 'Agent is implementing the selected task',
         invariant: (c) => c.currentTask !== null,
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'selecting')),
+        meta: {
+          skills: ['code-editing', 'build-tooling'],
+          toolAccess: ['pty', 'filesystem', 'git'],
+          contextNeeded: ['task-description', 'repo-context', 'working-directory'],
+        },
       },
       building: {
         description: 'Running build check on implemented changes',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'implementing')),
+        meta: { skills: ['build-tooling'], toolAccess: ['build'], contextNeeded: ['working-directory'] },
       },
       testing: {
         description: 'Running test suite to verify changes',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'building')),
+        meta: { skills: ['build-tooling'], toolAccess: ['build'], contextNeeded: ['working-directory'] },
       },
       committing: {
         description: 'Auto-committing verified changes',
         invariant: (c) => c.branchName !== null,
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'testing')),
+        meta: { skills: ['git-operations'], toolAccess: ['git'], contextNeeded: ['diff-stats', 'branch-name'] },
       },
       merging: {
         description: 'Merging branch to main',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'committing')),
+        meta: { skills: ['git-branch-strategy'], toolAccess: ['git'], contextNeeded: ['branch-name', 'main-repo-dir'] },
       },
       reflecting: {
         description: 'Post-run reflection — extracting lessons and skills',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'merging')),
+        meta: { skills: ['self-assessment'], toolAccess: ['pty'], contextNeeded: ['run-output', 'phase-timings'] },
       },
       cycling: {
         description: 'Deciding whether to rotate to a different goal',
         onEnter: (c) => recordPhaseStart(recordPhaseTiming(c, 'reflecting')),
+        meta: { usesScoring: true, skills: ['task-prioritization'], toolAccess: [], contextNeeded: ['goal-list'] },
       },
       done: {
         description: 'Autopilot run completed successfully',
         onEnter: (c) => recordPhaseTiming(c, 'cycling'),
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
       failed: {
         description: 'Autopilot run failed',
@@ -175,6 +199,7 @@ export function createAutopilotMachineDef(ctx: Partial<AutopilotContext> = {}): 
             : 'init';
           return recordPhaseTiming(c, phase);
         },
+        meta: { skills: [], toolAccess: [], contextNeeded: ['error'] },
       },
     },
     transitions: [

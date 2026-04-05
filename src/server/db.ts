@@ -143,6 +143,29 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
+  // Projects table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      architecture_plan TEXT DEFAULT '',
+      status TEXT DEFAULT 'active' CHECK (status IN ('active', 'paused', 'archived')),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Project repos — many-to-many between projects and repo paths
+  db.run(`
+    CREATE TABLE IF NOT EXISTS project_repos (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      repo_path TEXT NOT NULL,
+      added_at TEXT NOT NULL,
+      PRIMARY KEY (project_id, repo_path)
+    )
+  `);
+
   // Goals table
   db.run(`
     CREATE TABLE IF NOT EXISTS goals (
@@ -208,6 +231,7 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'workflow_id', 'TEXT DEFAULT NULL');
 
   // Goal columns
+  addColumnIfMissing('goals', 'project_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('goals', 'repo_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('goals', 'proposed_by', 'TEXT DEFAULT NULL');
   addColumnIfMissing('goals', 'proposal_status', 'TEXT DEFAULT NULL');

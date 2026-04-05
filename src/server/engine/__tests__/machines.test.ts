@@ -430,3 +430,643 @@ describe('AutopilotMachine', () => {
     assert.equal(m.state, 'reflecting');
   });
 });
+
+// ============================================================================
+// Invariant Violation Tests
+// ============================================================================
+
+describe('Invariant Violations', () => {
+  it('AgentMachine: running with empty agentId triggers invariant violation', () => {
+    let violated = false;
+    const def = createAgentMachineDef({ agentId: '' }); // empty agentId
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+    m.onInvariantViolation = () => { violated = true; };
+
+    m.send('start', { commandId: 'c1' });
+    // running invariant: agentId !== '' && startedAt !== null
+    // agentId is empty so invariant fails
+    assert.equal(violated, true);
+    assert.equal(m.state, 'running'); // transition still completes
+  });
+
+  it('CommandMachine: reviewing with hasDiff=false triggers invariant violation', () => {
+    let violated = false;
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+    m.onInvariantViolation = () => { violated = true; };
+
+    m.send('exit', { exitCode: 0 });
+    // Manually send needs_review WITHOUT diffStats to leave hasDiff false
+    // Actually needs_review reduce sets hasDiff: true, so we need to trick it
+    // The invariant on reviewing is (c) => c.hasDiff === true
+    // Since the reduce always sets hasDiff: true, let's test the invariant directly
+    // by constructing a machine at reviewing state with hasDiff=false
+    const def2 = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z' });
+    const m2 = new StateMachine<CommandState, CommandEvent, CommandContext>(def2);
+    m2.onInvariantViolation = () => { violated = true; };
+
+    // Snapshot trick: force into reviewing state with hasDiff=false
+    const snap = m2.snapshot();
+    snap.state = 'reviewing' as CommandState;
+    snap.context.hasDiff = false;
+    m2.restore(snap);
+    m2.assertInvariant();
+    assert.equal(violated, true);
+  });
+
+  it('AutopilotMachine: committing with null branchName triggers invariant violation', () => {
+    let violated = false;
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1', branchName: null });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+    m.onInvariantViolation = () => { violated = true; };
+
+    m.send('start');
+    m.send('preflight_pass');
+    m.send('plan_done');
+    m.send('task_selected', { task: { id: 't1', title: 'x', description: '' } });
+    m.send('impl_done');
+    m.send('build_pass');
+    m.send('test_pass');
+    // committing invariant: branchName !== null — but branchName is null
+    assert.equal(violated, true);
+    assert.equal(m.state, 'committing');
+  });
+
+  it('TaskMachine: in_progress with null assignedAgentId triggers invariant violation', () => {
+    let violated = false;
+    const def = createTaskMachineDef({ taskId: 't1' });
+    const m = new StateMachine<TaskState, TaskEvent, TaskContext>(def);
+    m.onInvariantViolation = () => { violated = true; };
+
+    // Start without providing agentId — reduce defaults to existing null
+    m.send('start'); // no payload → assignedAgentId stays null
+    assert.equal(violated, true);
+    assert.equal(m.state, 'in_progress');
+  });
+
+  it('AutopilotMachine: planning without preflightPassed triggers invariant violation', () => {
+    let violated = false;
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+    m.onInvariantViolation = () => { violated = true; };
+
+    // Force into planning without passing preflight via snapshot
+    const snap = m.snapshot();
+    snap.state = 'planning' as AutopilotState;
+    snap.context.preflightPassed = false;
+    m.restore(snap);
+    m.assertInvariant();
+    assert.equal(violated, true);
+  });
+});
+
+// ============================================================================
+// Snapshot/Restore Round-Trip Tests
+// ============================================================================
+
+describe('Snapshot/Restore Round-Trips', () => {
+  it('CommandMachine: snapshot mid-retry, restore, continue retrying', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'fix', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+
+    // Get to retrying state
+    m.send('exit', { exitCode: 1 });
+    m.send('needs_retry');
+    assert.equal(m.state, 'retrying');
+    assert.equal(m.context.retryCount, 1);
+
+    // Snapshot
+    const snap = m.snapshot();
+    assert.equal(snap.state, 'retrying');
+    assert.equal(snap.context.retryCount, 1);
+
+    // Create fresh machine and restore (provide valid context to avoid invariant violation on init)
+    const m2 = new StateMachine<CommandState, CommandEvent, CommandContext>(
+      createCommandMachineDef({ commandId: 'c1', agentId: 'a1', startedAt: '2024-01-01T00:00:00Z' })
+    );
+    m2.restore(snap);
+    assert.equal(m2.state, 'retrying');
+    assert.equal(m2.context.retryCount, 1);
+
+    // Continue from restored state
+    m2.send('retry_sent');
+    assert.equal(m2.state, 'running');
+
+    m2.send('exit', { exitCode: 0 });
+    m2.send('commit', { diffStats: '1 file', filesChanged: ['a.ts'] });
+    m2.send('committed');
+    assert.equal(m2.state, 'done');
+  });
+
+  it('AutopilotMachine: snapshot mid-build, restore, continue', () => {
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1', branchName: 'agent/test' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+
+    // Get to building state
+    m.send('start');
+    m.send('preflight_pass');
+    m.send('plan_done');
+    m.send('task_selected', { task: { id: 't1', title: 'x', description: '' } });
+    m.send('impl_done');
+    assert.equal(m.state, 'building');
+
+    // Snapshot
+    const snap = m.snapshot();
+
+    // Restore to fresh machine
+    const m2 = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(createAutopilotMachineDef());
+    m2.restore(snap);
+    assert.equal(m2.state, 'building');
+    assert.equal(m2.context.currentTask!.id, 't1');
+
+    // Continue
+    m2.send('build_pass');
+    assert.equal(m2.state, 'testing');
+  });
+
+  it('CommandMachine: restore with mismatched machineId throws', () => {
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(
+      createCommandMachineDef({ commandId: 'c1', agentId: 'a1', startedAt: '2024-01-01T00:00:00Z' })
+    );
+    const snap = m.snapshot();
+    snap.machineId = 'wrong-machine';
+    assert.throws(() => m.restore(snap), /doesn't match/);
+  });
+
+  it('GoalMachine: snapshot preserves context counters', () => {
+    const def = createGoalMachineDef({ goalId: 'g1', name: 'Test' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    m.send('task_completed');
+    m.send('task_completed');
+    m.send('task_failed');
+    m.send('run_finished', { timestamp: '2024-06-01T00:00:00Z' });
+
+    const snap = m.snapshot();
+    assert.equal(snap.context.completedTasks, 2);
+    assert.equal(snap.context.failedTasks, 1);
+    assert.equal(snap.context.totalRuns, 1);
+
+    const m2 = new StateMachine<GoalState, GoalEvent, GoalContext>(
+      createGoalMachineDef({ goalId: 'g1' })
+    );
+    m2.restore(snap);
+    assert.equal(m2.context.completedTasks, 2);
+    assert.equal(m2.context.failedTasks, 1);
+  });
+});
+
+// ============================================================================
+// Guard Exhaustion Tests
+// ============================================================================
+
+describe('Guard Exhaustion', () => {
+  it('CommandMachine: exhaust all retries, needs_retry blocked, exhausted works', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+
+    // Retry 1
+    m.send('exit', { exitCode: 1 });
+    m.send('needs_retry');
+    m.send('retry_sent');
+
+    // Retry 2
+    m.send('exit', { exitCode: 1 });
+    m.send('needs_retry');
+    m.send('retry_sent');
+    assert.equal(m.context.retryCount, 2);
+
+    // Retry 3 — should be blocked (maxRetries=2)
+    m.send('exit', { exitCode: 1 });
+    const blocked = m.send('needs_retry');
+    assert.equal(blocked, false);
+    assert.equal(m.state, 'checking');
+
+    // exhausted should work
+    const exhausted = m.send('exhausted');
+    assert.equal(exhausted, true);
+    assert.equal(m.state, 'failed');
+  });
+
+  it('AgentMachine: exhaust MAX_RETRIES, restart blocked', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+
+    // Fail and restart until retries exhausted (MAX_RETRIES=2)
+    m.send('start', { commandId: 'c1' });
+    m.send('fail', { error: 'e1' }); // retries=1
+    m.send('restart', { commandId: 'c2' });
+    m.send('fail', { error: 'e2' }); // retries=2
+
+    // Now at retries=2, restart should be blocked by guard
+    const blocked = m.send('restart', { commandId: 'c3' });
+    assert.equal(blocked, false);
+    assert.equal(m.state, 'error');
+    assert.equal(m.context.retries, 2);
+  });
+
+  it('AutopilotMachine: test failure retries exhaust then fail', () => {
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+
+    m.send('start');
+    m.send('preflight_pass');
+    m.send('plan_done');
+    m.send('task_selected', { task: { id: 't1', title: 'x', description: '' } });
+
+    // Test fail 1 → back to implementing
+    m.send('impl_done');
+    m.send('build_pass');
+    m.send('test_fail', { output: 'fail1' });
+    assert.equal(m.state, 'implementing');
+    assert.equal(m.context.testRetries, 1);
+
+    // Test fail 2 → back to implementing
+    m.send('impl_done');
+    m.send('build_pass');
+    m.send('test_fail', { output: 'fail2' });
+    assert.equal(m.state, 'implementing');
+    assert.equal(m.context.testRetries, 2);
+
+    // Test fail 3 → failed (guard: testRetries >= 2)
+    m.send('impl_done');
+    m.send('build_pass');
+    m.send('test_fail', { output: 'fail3' });
+    assert.equal(m.state, 'failed');
+    assert.ok(m.context.error!.includes('fail3'));
+  });
+});
+
+// ============================================================================
+// Self-Loop Bounds Tests
+// ============================================================================
+
+describe('Self-Loop Bounds', () => {
+  it('GoalMachine: task_completed 100x tracks correctly without infinite loop', () => {
+    const def = createGoalMachineDef({ goalId: 'g1' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    for (let i = 0; i < 100; i++) {
+      m.send('task_completed');
+    }
+
+    assert.equal(m.context.completedTasks, 100);
+    assert.equal(m.state, 'active');
+    assert.equal(m.history.length, 100);
+  });
+
+  it('GoalMachine: task_completed while paused returns false', () => {
+    const def = createGoalMachineDef({ goalId: 'g1' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    m.send('pause');
+    assert.equal(m.state, 'paused');
+
+    const result = m.send('task_completed');
+    assert.equal(result, false);
+    assert.equal(m.context.completedTasks, 0);
+  });
+
+  it('GoalMachine: run_finished while paused returns false', () => {
+    const def = createGoalMachineDef({ goalId: 'g1' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    m.send('pause');
+    const result = m.send('run_finished', { timestamp: '2024-01-01T00:00:00Z' });
+    assert.equal(result, false);
+    assert.equal(m.context.totalRuns, 0);
+  });
+
+  it('CommandMachine: multiple retry cycles track retryCount correctly', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z', maxRetries: 5 });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+
+    for (let i = 0; i < 5; i++) {
+      m.send('exit', { exitCode: 1 });
+      m.send('needs_retry');
+      assert.equal(m.context.retryCount, i + 1);
+      m.send('retry_sent');
+    }
+
+    assert.equal(m.context.retryCount, 5);
+    assert.equal(m.state, 'running');
+  });
+});
+
+// ============================================================================
+// Dead Event Tests
+// ============================================================================
+
+describe('Dead Events', () => {
+  it('CommandMachine: non-existent event returns false', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+
+    // review_done was removed — verify no such event works
+    const result = m.send('review_done' as any);
+    assert.equal(result, false);
+    assert.equal(m.state, 'running');
+  });
+
+  it('AutopilotMachine: cannot send build events from init', () => {
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+
+    assert.equal(m.send('build_pass'), false);
+    assert.equal(m.send('build_fail'), false);
+    assert.equal(m.send('test_pass'), false);
+    assert.equal(m.state, 'init');
+  });
+
+  it('TaskMachine: cannot complete from todo', () => {
+    const def = createTaskMachineDef({ taskId: 't1' });
+    const m = new StateMachine<TaskState, TaskEvent, TaskContext>(def);
+
+    assert.equal(m.send('complete'), false);
+    assert.equal(m.state, 'todo');
+  });
+
+  it('AgentMachine: cannot complete from idle', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+
+    assert.equal(m.send('complete'), false);
+    assert.equal(m.state, 'idle');
+  });
+});
+
+// ============================================================================
+// Transition Logging & History Tests
+// ============================================================================
+
+describe('Transition Logging', () => {
+  it('onTransition fires for every transition with correct record', () => {
+    const records: any[] = [];
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+    m.onTransition = (r) => records.push(r);
+
+    m.send('exit', { exitCode: 0 });
+    m.send('commit', { diffStats: '1 file', filesChanged: ['a.ts'] });
+    m.send('committed');
+
+    assert.equal(records.length, 3);
+
+    assert.equal(records[0].from, 'running');
+    assert.equal(records[0].to, 'checking');
+    assert.equal(records[0].event, 'exit');
+
+    assert.equal(records[1].from, 'checking');
+    assert.equal(records[1].to, 'committing');
+    assert.equal(records[1].event, 'commit');
+
+    assert.equal(records[2].from, 'committing');
+    assert.equal(records[2].to, 'done');
+    assert.equal(records[2].event, 'committed');
+  });
+
+  it('history is append-only, never mutated by subsequent transitions', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+
+    m.send('start', { commandId: 'c1' });
+    const historyAfterFirst = [...m.history];
+    assert.equal(historyAfterFirst.length, 1);
+
+    m.send('complete');
+    assert.equal(m.history.length, 2);
+    // First entry unchanged
+    assert.equal(m.history[0].from, historyAfterFirst[0].from);
+    assert.equal(m.history[0].to, historyAfterFirst[0].to);
+    assert.equal(m.history[0].event, historyAfterFirst[0].event);
+  });
+
+  it('onInvalidTransition fires for blocked events', () => {
+    let invalidInfo: { state: string; event: string } | null = null;
+    const def = createTaskMachineDef({ taskId: 't1' });
+    const m = new StateMachine<TaskState, TaskEvent, TaskContext>(def);
+    m.onInvalidTransition = (s, e) => { invalidInfo = { state: s, event: e }; };
+
+    m.send('complete'); // invalid from todo
+    assert.deepEqual(invalidInfo, { state: 'todo', event: 'complete' });
+  });
+
+  it('contextBefore and contextAfter differ when reduce runs', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+
+    m.send('start', { commandId: 'c1' });
+    m.send('fail', { error: 'boom' });
+
+    const failRecord = m.history[1];
+    assert.equal(failRecord.contextBefore.retries, 0);
+    assert.equal(failRecord.contextAfter.retries, 1);
+    assert.equal(failRecord.contextBefore.lastError, null);
+    assert.equal(failRecord.contextAfter.lastError, 'boom');
+  });
+});
+
+// ============================================================================
+// validEvents() / can() Tests
+// ============================================================================
+
+describe('validEvents and can', () => {
+  it('TaskMachine: validEvents from each state', () => {
+    const def = createTaskMachineDef({ taskId: 't1' });
+    const m = new StateMachine<TaskState, TaskEvent, TaskContext>(def);
+
+    // From todo: start
+    assert.deepEqual(m.validEvents().sort(), ['start']);
+    assert.equal(m.can('start'), true);
+    assert.equal(m.can('complete'), false);
+
+    // From in_progress: complete, fail
+    m.send('start', { agentId: 'a1' });
+    assert.deepEqual(m.validEvents().sort(), ['complete', 'fail']);
+
+    // From done: archive, reopen
+    m.send('complete');
+    assert.deepEqual(m.validEvents().sort(), ['archive', 'reopen']);
+
+    // From archived: reopen
+    m.send('archive');
+    assert.deepEqual(m.validEvents().sort(), ['reopen']);
+  });
+
+  it('GoalMachine: validEvents from each state', () => {
+    const def = createGoalMachineDef({ goalId: 'g1' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    // From active: pause, complete, task_completed, task_failed, run_finished
+    const activeEvents = m.validEvents().sort();
+    assert.deepEqual(activeEvents, ['complete', 'pause', 'run_finished', 'task_completed', 'task_failed']);
+
+    // From paused: resume
+    m.send('pause');
+    assert.deepEqual(m.validEvents().sort(), ['resume']);
+
+    // From completed: reactivate
+    m.send('resume');
+    m.send('complete');
+    assert.deepEqual(m.validEvents().sort(), ['reactivate']);
+  });
+
+  it('AgentMachine: validEvents from each state', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+
+    // From idle: start
+    assert.deepEqual(m.validEvents().sort(), ['start']);
+
+    // From running: complete, fail, kill
+    m.send('start', { commandId: 'c1' });
+    assert.deepEqual(m.validEvents().sort(), ['complete', 'fail', 'kill']);
+
+    // From error (retries < MAX_RETRIES): restart
+    m.send('fail', { error: 'err' });
+    assert.deepEqual(m.validEvents().sort(), ['restart']);
+
+    // From dead: restart
+    m.send('restart', { commandId: 'c2' });
+    m.send('kill');
+    assert.deepEqual(m.validEvents().sort(), ['restart']);
+  });
+
+  it('CommandMachine: validEvents from running', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+
+    assert.deepEqual(m.validEvents().sort(), ['exit']);
+  });
+
+  it('CommandMachine: validEvents from checking', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+    m.send('exit', { exitCode: 0 });
+
+    const events = m.validEvents().sort();
+    // needs_retry (guard: retryCount < maxRetries=2, currently 0 → passes)
+    // needs_review, commit, no_changes, exhausted (guard: retryCount >= maxRetries=2, currently 0 → blocked)
+    assert.ok(events.includes('needs_retry'));
+    assert.ok(events.includes('needs_review'));
+    assert.ok(events.includes('commit'));
+    assert.ok(events.includes('no_changes'));
+    // exhausted should NOT be in validEvents (guard blocks: retryCount=0 < maxRetries=2)
+    assert.ok(!events.includes('exhausted'));
+  });
+
+  it('AutopilotMachine: can() checks abort from any active state', () => {
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+
+    // From init: can abort
+    assert.equal(m.can('abort'), true);
+
+    // From preflight: can abort
+    m.send('start');
+    assert.equal(m.can('abort'), true);
+
+    // From done/failed: cannot abort
+    m.send('preflight_pass');
+    m.send('plan_done');
+    m.send('no_tasks');
+    assert.equal(m.state, 'done');
+    assert.equal(m.can('abort'), false);
+  });
+});
+
+// ============================================================================
+// Meta / StateMeta Tests
+// ============================================================================
+
+describe('StateMeta Annotations', () => {
+  it('AgentMachine: running state has expected meta', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+    m.send('start', { commandId: 'c1' });
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.ok(meta.skills!.includes('code-editing'));
+    assert.ok(meta.toolAccess!.includes('pty'));
+    assert.ok(meta.contextNeeded!.includes('repo-context'));
+  });
+
+  it('AgentMachine: error state is retryable', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+    m.send('start', { commandId: 'c1' });
+    m.send('fail', { error: 'err' });
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.equal(meta.retryable, true);
+  });
+
+  it('AgentMachine: dead state requires new PTY', () => {
+    const def = createAgentMachineDef({ agentId: 'a1' });
+    const m = new StateMachine<AgentState, AgentEvent, AgentContext>(def);
+    m.send('start', { commandId: 'c1' });
+    m.send('kill');
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.equal(meta.requiresNewPty, true);
+  });
+
+  it('AutopilotMachine: selecting state uses scoring', () => {
+    const def = createAutopilotMachineDef({ agentId: 'a1', goalId: 'g1' });
+    const m = new StateMachine<AutopilotState, AutopilotEvent, AutopilotContext>(def);
+    m.send('start');
+    m.send('preflight_pass');
+    m.send('plan_done');
+    assert.equal(m.state, 'selecting');
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.equal(meta.usesScoring, true);
+    assert.ok(meta.skills!.includes('task-prioritization'));
+  });
+
+  it('CommandMachine: reviewing state needs code-review skill and git access', () => {
+    const def = createCommandMachineDef({ commandId: 'c1', agentId: 'a1', prompt: 'test', startedAt: '2024-01-01T00:00:00Z' });
+    const m = new StateMachine<CommandState, CommandEvent, CommandContext>(def);
+    m.send('exit', { exitCode: 0 });
+    m.send('needs_review', { diffStats: '1 file' });
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.ok(meta.skills!.includes('code-review'));
+    assert.ok(meta.toolAccess!.includes('git'));
+  });
+
+  it('GoalMachine: active state uses scoring', () => {
+    const def = createGoalMachineDef({ goalId: 'g1' });
+    const m = new StateMachine<GoalState, GoalEvent, GoalContext>(def);
+
+    const meta = m.getStateMeta();
+    assert.ok(meta);
+    assert.equal(meta.usesScoring, true);
+  });
+
+  it('terminal states have empty meta arrays', () => {
+    const cmdDef = createCommandMachineDef({ commandId: 'c1', startedAt: '2024-01-01T00:00:00Z' });
+    const cm = new StateMachine<CommandState, CommandEvent, CommandContext>(cmdDef);
+    cm.send('exit', { exitCode: 0 });
+    cm.send('no_changes');
+    assert.equal(cm.state, 'failed');
+    const cmdMeta = cm.getStateMeta();
+    assert.ok(cmdMeta);
+    assert.deepEqual(cmdMeta.skills, []);
+    assert.deepEqual(cmdMeta.toolAccess, []);
+
+    const taskDef = createTaskMachineDef({ taskId: 't1' });
+    const tm = new StateMachine<TaskState, TaskEvent, TaskContext>(taskDef);
+    tm.send('start', { agentId: 'a1' });
+    tm.send('complete');
+    assert.equal(tm.state, 'done');
+    const taskMeta = tm.getStateMeta();
+    assert.ok(taskMeta);
+    assert.deepEqual(taskMeta.skills, []);
+  });
+});

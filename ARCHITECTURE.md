@@ -29,7 +29,8 @@ src/server/
     autopilot-machine.ts     # Full autopilot run lifecycle (13 states)
 
   systems/                   # Focused modules (one concern each)
-    git-ops.ts               # Branch management, merging, committing
+    command-lifecycle.ts     # Command exit handling, retry, review, assessment
+    git-ops.ts               # Branch management, merging, worktrees, committing
     build-runner.ts          # Build and test execution
     task-selector.ts         # Utility-scored task/goal selection
 

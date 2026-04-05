@@ -44,12 +44,20 @@ export function createGoalMachineDef(ctx: Partial<GoalContext> = {}): MachineDef
       [GoalStatus.ACTIVE]: {
         description: 'Goal is being actively worked on',
         invariant: (c) => c.goalId !== '',
+        meta: {
+          skills: ['task-decomposition', 'code-analysis'],
+          toolAccess: ['pty', 'filesystem', 'git'],
+          contextNeeded: ['goal-description', 'repo-context', 'task-list'],
+          usesScoring: true,
+        },
       },
       [GoalStatus.PAUSED]: {
         description: 'Goal is paused by user, no work will be scheduled',
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
       [GoalStatus.COMPLETED]: {
         description: 'All tasks for this goal are done',
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
     },
     transitions: [

@@ -1,5 +1,69 @@
 @import "tailwindcss";
 
+@theme {
+  --font-sans: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, monospace;
+
+  /* Zinc-based neutral dark — no purple, clean and modern */
+  --color-background: oklch(0.12 0.003 260);
+  --color-foreground: oklch(0.95 0.003 260);
+  --color-card: oklch(0.17 0.003 260);
+  --color-card-foreground: oklch(0.95 0.003 260);
+  --color-primary: oklch(0.65 0.17 230);         /* teal-blue accent */
+  --color-primary-foreground: oklch(0.12 0.003 260);
+  --color-secondary: oklch(0.22 0.005 260);
+  --color-secondary-foreground: oklch(0.90 0.003 260);
+  --color-muted: oklch(0.22 0.005 260);
+  --color-muted-foreground: oklch(0.55 0.005 260);
+  --color-accent: oklch(0.75 0.15 70);           /* warm amber accent */
+  --color-accent-foreground: oklch(0.15 0.005 260);
+  --color-destructive: oklch(0.58 0.22 25);
+  --color-border: oklch(0.26 0.005 260);
+  --color-input: oklch(0.20 0.003 260);
+  --color-ring: oklch(0.65 0.17 230);
+  --color-success: oklch(0.65 0.19 155);
+  --color-warning: oklch(0.75 0.15 70);
+  --color-info: oklch(0.65 0.15 245);
+
+  --radius: 0.5rem;
+
+  --animate-shimmer: shimmer 2s ease-in-out infinite;
+
+  @keyframes shimmer {
+    0% { opacity: 0.5; }
+    50% { opacity: 1; }
+    100% { opacity: 0.5; }
+  }
+}
+
+/* Custom scrollbar — thin, dark, unobtrusive */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+
+/* Hide scrollbar for horizontal scroll areas */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 /* Lock viewport to prevent scroll bounce */
 html, body, #root {
   height: 100dvh;
@@ -20,11 +84,13 @@ body {
 /* Vaul drawer styles */
 [vaul-overlay] {
   background-color: rgba(0, 0, 0, 0.6) !important;
+  backdrop-filter: blur(4px) !important;
+  -webkit-backdrop-filter: blur(4px) !important;
 }
 
 [vaul-drawer] {
-  background-color: #14141f !important;
-  border-top: 1px solid #1e1e2e;
+  background-color: var(--color-card) !important;
+  border-top: 1px solid var(--color-border);
 }
 
 /* Radix Select dark theme */
@@ -33,8 +99,8 @@ body {
 }
 
 .radix-select-content {
-  background-color: #14141f;
-  border: 1px solid #1e1e2e;
+  background-color: var(--color-card);
+  border: 1px solid var(--color-border);
   border-radius: 0.5rem;
   overflow: hidden;
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
@@ -43,18 +109,18 @@ body {
 .radix-select-item {
   padding: 0.5rem 0.75rem;
   font-size: 0.875rem;
-  color: #e2e2ef;
+  color: var(--color-foreground);
   cursor: pointer;
   outline: none;
 }
 
 .radix-select-item[data-highlighted] {
-  background-color: #7c5bf5;
+  background-color: var(--color-primary);
   color: white;
 }
 
 .radix-select-item[data-state="checked"] {
-  color: #7c5bf5;
+  color: var(--color-primary);
 }
 
 .radix-select-item[data-highlighted][data-state="checked"] {

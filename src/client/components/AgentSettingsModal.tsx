@@ -4,8 +4,12 @@ import * as Select from '@radix-ui/react-select';
 import type { Agent, WSClientMessage } from '../lib/types';
 import { ProfileSelector } from './ProfileSelector';
 import { useStore } from '../stores/store';
+import { cn } from '@/lib/utils';
 import { DrawerModal } from './DrawerModal';
-import { Label, Input, Textarea, Button } from './ui';
+import { Label } from './ui/label';
+import { Input } from './ui/input';
+import { Textarea } from './ui/textarea';
+import { Button } from './ui/button';
 
 const AVAILABLE_SKILLS = [
   { id: 'commit', label: 'Commit', desc: 'Auto-commit changes' },
@@ -30,9 +34,9 @@ function RadixSelect({ value, onValueChange, placeholder, items }: {
 }) {
   return (
     <Select.Root value={value} onValueChange={onValueChange}>
-      <Select.Trigger className="w-full flex items-center justify-between bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 text-sm text-[#e2e2ef] focus:outline-none focus:border-[#7c5bf5]">
+      <Select.Trigger className="w-full flex items-center justify-between bg-background border border-input rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-2 focus:ring-ring/25 transition-all">
         <Select.Value placeholder={placeholder} />
-        <Select.Icon className="text-[#6b6b80]">▾</Select.Icon>
+        <Select.Icon className="text-muted-foreground">&#9662;</Select.Icon>
       </Select.Trigger>
       <Select.Portal>
         <Select.Content className="radix-select-content z-[60]" position="popper" sideOffset={4}>
@@ -113,184 +117,203 @@ export function AgentSettingsModal({ agent, onSend, onClose }: Props) {
 
   return (
     <DrawerModal open title="Agent Settings" onClose={onClose} snapPoints={[0.85, 1]}>
-            {/* Name */}
-            <Label>Name</Label>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              className="mb-4"
-            />
+      <div className="space-y-5">
+        {/* Name */}
+        <div>
+          <Label className="mb-1.5">Name</Label>
+          <Input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+        </div>
 
-            {/* Profile */}
-            <Label className="mb-1.5">Profile</Label>
-            <div className="mb-4">
-              <ProfileSelector selected={profileId} onSelect={setProfileId} />
-            </div>
+        {/* Profile */}
+        <div>
+          <Label className="mb-1.5">Profile</Label>
+          <ProfileSelector selected={profileId} onSelect={setProfileId} />
+        </div>
 
-            {/* Instructions */}
-            <Label>Instructions</Label>
-            <Textarea
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              placeholder="Custom system prompt for this agent..."
-              rows={4}
-              className="mb-4"
-            />
+        {/* Instructions */}
+        <div>
+          <Label className="mb-1.5">Instructions</Label>
+          <Textarea
+            value={instructions}
+            onChange={(e) => setInstructions(e.target.value)}
+            placeholder="Custom system prompt for this agent..."
+            rows={4}
+          />
+        </div>
 
-            {/* Skills */}
-            <label className="text-xs text-[#6b6b80] mb-2 block">Skills</label>
-            <div className="flex flex-wrap gap-2 mb-4">
-              {AVAILABLE_SKILLS.map((skill) => (
-                <button
-                  key={skill.id}
-                  onClick={() => toggleSkill(skill.id)}
-                  className={`px-3 py-1.5 rounded-lg text-xs transition-colors ${
-                    skills.includes(skill.id)
-                      ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
-                      : 'bg-[#0a0a0f] text-[#6b6b80] border border-[#1e1e2e]'
-                  }`}
-                  title={skill.desc}
-                >
-                  {skill.label}
-                </button>
-              ))}
-            </div>
-
-            {/* Autopilot */}
-            <label className="text-xs text-[#6b6b80] mb-1.5 block">Autopilot</label>
-            <div className="flex items-center gap-2 mb-2">
-              <Switch.Root
-                checked={autopilot}
-                onCheckedChange={setAutopilot}
-                className="w-10 h-5 rounded-full transition-colors data-[state=checked]:bg-[#22c55e] data-[state=unchecked]:bg-[#1e1e2e] relative"
+        {/* Skills */}
+        <div>
+          <Label className="mb-2">Skills</Label>
+          <div className="flex flex-wrap gap-2">
+            {AVAILABLE_SKILLS.map((skill) => (
+              <Button
+                key={skill.id}
+                variant="outline"
+                size="sm"
+                onClick={() => toggleSkill(skill.id)}
+                className={cn(
+                  'transition-colors',
+                  skills.includes(skill.id)
+                    ? 'border-primary/40 bg-primary/10 text-primary hover:bg-primary/20'
+                    : ''
+                )}
+                title={skill.desc}
               >
-                <Switch.Thumb className="block w-4 h-4 rounded-full bg-white transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
-              </Switch.Root>
-              <span className="text-xs text-[#6b6b80]">
-                {autopilot ? 'Enabled' : 'Disabled'}
-              </span>
-            </div>
+                {skill.label}
+              </Button>
+            ))}
+          </div>
+        </div>
 
-            {autopilot && (
-              <>
-                <label className="text-xs text-[#6b6b80] mb-1.5 block">Interval</label>
-                <div className="flex gap-1.5 mb-3">
+        {/* Autopilot */}
+        <div>
+          <Label className="mb-1.5">Autopilot</Label>
+          <div className="flex items-center gap-2 mb-2">
+            <Switch.Root
+              checked={autopilot}
+              onCheckedChange={setAutopilot}
+              className="w-10 h-5 rounded-full transition-colors data-[state=checked]:bg-success data-[state=unchecked]:bg-secondary relative"
+            >
+              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
+            </Switch.Root>
+            <span className="text-xs text-muted-foreground">
+              {autopilot ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
+
+          {autopilot && (
+            <div className="space-y-3 pl-1">
+              <div>
+                <Label className="mb-1.5 text-xs">Interval</Label>
+                <div className="flex gap-1.5">
                   {[
                     { label: '5min', val: 300 },
                     { label: '10min', val: 600 },
                     { label: '30min', val: 1800 },
                     { label: '1hr', val: 3600 },
                   ].map((preset) => (
-                    <button
+                    <Button
                       key={preset.val}
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setAutopilotInterval(preset.val)}
-                      className={`px-2 py-1 rounded text-xs ${
+                      className={cn(
                         autopilotInterval === preset.val
-                          ? 'bg-[#22c55e]/20 text-[#22c55e]'
-                          : 'bg-[#0a0a0f] text-[#6b6b80]'
-                      }`}
+                          ? 'bg-success/20 text-success hover:bg-success/30 hover:text-success'
+                          : ''
+                      )}
                     >
                       {preset.label}
-                    </button>
+                    </Button>
                   ))}
                 </div>
+              </div>
 
-                <label className="text-xs text-[#6b6b80] mb-1.5 block">Goal</label>
-                <div className="mb-3">
-                  <RadixSelect
-                    value={autopilotGoalId}
-                    onValueChange={setAutopilotGoalId}
-                    placeholder="No goal selected"
-                    items={goals.filter((g) => g.status === 'active').map((g) => ({
-                      value: g.id,
-                      label: g.name,
-                    }))}
-                  />
-                </div>
+              <div>
+                <Label className="mb-1.5 text-xs">Goal</Label>
+                <RadixSelect
+                  value={autopilotGoalId}
+                  onValueChange={setAutopilotGoalId}
+                  placeholder="No goal selected"
+                  items={goals.filter((g) => g.status === 'active').map((g) => ({
+                    value: g.id,
+                    label: g.name,
+                  }))}
+                />
+              </div>
 
-                <label className="text-xs text-[#6b6b80] mb-1.5 block">Workflow</label>
-                <div className="mb-3">
-                  <RadixSelect
-                    value={workflowId}
-                    onValueChange={setWorkflowId}
-                    placeholder="No workflow (simple mode)"
-                    items={workflows.map((w) => ({
-                      value: w.id,
-                      label: `${w.name} (${w.steps.length} steps)`,
-                    }))}
-                  />
-                </div>
+              <div>
+                <Label className="mb-1.5 text-xs">Workflow</Label>
+                <RadixSelect
+                  value={workflowId}
+                  onValueChange={setWorkflowId}
+                  placeholder="No workflow (simple mode)"
+                  items={workflows.map((w) => ({
+                    value: w.id,
+                    label: `${w.name} (${w.steps.length} steps)`,
+                  }))}
+                />
+              </div>
 
-                <button
-                  onClick={() => onSend({ type: 'agent:autopilot:trigger', agentId: agent.id })}
-                  className="w-full bg-[#22c55e]/20 text-[#22c55e] border border-[#22c55e]/40 py-2 rounded-lg text-sm font-medium mb-3 active:bg-[#22c55e]/30"
-                >
-                  Run Now
-                </button>
-
-                {agent.autopilot_last_run && (
-                  <p className="text-[10px] text-[#6b6b80] mb-3">
-                    Last run: {new Date(agent.autopilot_last_run).toLocaleString()}
-                  </p>
-                )}
-              </>
-            )}
-
-            {/* Schedule */}
-            <label className="text-xs text-[#6b6b80] mb-1.5 block">Schedule</label>
-            <div className="flex items-center gap-2 mb-2">
-              <Switch.Root
-                checked={scheduleEnabled}
-                onCheckedChange={setScheduleEnabled}
-                className="w-10 h-5 rounded-full transition-colors data-[state=checked]:bg-[#7c5bf5] data-[state=unchecked]:bg-[#1e1e2e] relative"
+              <Button
+                variant="outline"
+                onClick={() => onSend({ type: 'agent:autopilot:trigger', agentId: agent.id })}
+                className="w-full border-success/40 text-success hover:bg-success/10 hover:text-success"
               >
-                <Switch.Thumb className="block w-4 h-4 rounded-full bg-white transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
-              </Switch.Root>
-              <span className="text-xs text-[#6b6b80]">
-                {scheduleEnabled ? 'Enabled' : 'Disabled'}
-              </span>
+                Run Now
+              </Button>
+
+              {agent.autopilot_last_run && (
+                <p className="text-[10px] text-muted-foreground">
+                  Last run: {new Date(agent.autopilot_last_run).toLocaleString()}
+                </p>
+              )}
             </div>
+          )}
+        </div>
 
-            <div className="flex gap-1.5 mb-2">
-              {[
-                { label: '1min', val: '*/1 * * * *' },
-                { label: 'Hourly', val: '0 * * * *' },
-                { label: 'Daily', val: '0 9 * * *' },
-                { label: 'Weekly', val: '0 9 * * 1' },
-              ].map((preset) => (
-                <button
-                  key={preset.val}
-                  onClick={() => setSchedule(preset.val)}
-                  className={`px-2 py-1 rounded text-xs ${
-                    schedule === preset.val
-                      ? 'bg-[#7c5bf5]/20 text-[#7c5bf5]'
-                      : 'bg-[#0a0a0f] text-[#6b6b80]'
-                  }`}
-                >
-                  {preset.label}
-                </button>
-              ))}
-            </div>
+        {/* Schedule */}
+        <div>
+          <Label className="mb-1.5">Schedule</Label>
+          <div className="flex items-center gap-2 mb-2">
+            <Switch.Root
+              checked={scheduleEnabled}
+              onCheckedChange={setScheduleEnabled}
+              className="w-10 h-5 rounded-full transition-colors data-[state=checked]:bg-primary data-[state=unchecked]:bg-secondary relative"
+            >
+              <Switch.Thumb className="block w-4 h-4 rounded-full bg-white transition-transform data-[state=checked]:translate-x-5 data-[state=unchecked]:translate-x-0.5" />
+            </Switch.Root>
+            <span className="text-xs text-muted-foreground">
+              {scheduleEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </div>
 
-            <Input
-              value={schedule}
-              onChange={(e) => setSchedule(e.target.value)}
-              placeholder="Cron expression (e.g. */5 * * * *)"
-              className="mb-2 font-mono"
-            />
+          <div className="flex gap-1.5 mb-2">
+            {[
+              { label: '1min', val: '*/1 * * * *' },
+              { label: 'Hourly', val: '0 * * * *' },
+              { label: 'Daily', val: '0 9 * * *' },
+              { label: 'Weekly', val: '0 9 * * 1' },
+            ].map((preset) => (
+              <Button
+                key={preset.val}
+                variant="ghost"
+                size="sm"
+                onClick={() => setSchedule(preset.val)}
+                className={cn(
+                  schedule === preset.val
+                    ? 'bg-primary/20 text-primary hover:bg-primary/30 hover:text-primary'
+                    : ''
+                )}
+              >
+                {preset.label}
+              </Button>
+            ))}
+          </div>
 
-            <Textarea
-              value={schedulePrompt}
-              onChange={(e) => setSchedulePrompt(e.target.value)}
-              placeholder="Prompt to send when schedule fires..."
-              rows={2}
-              className="mb-4"
-            />
+          <Input
+            value={schedule}
+            onChange={(e) => setSchedule(e.target.value)}
+            placeholder="Cron expression (e.g. */5 * * * *)"
+            className="mb-2 font-mono"
+          />
 
-            {/* Save */}
-            <Button onClick={handleSave} className="w-full">
-              Save Settings
-            </Button>
+          <Textarea
+            value={schedulePrompt}
+            onChange={(e) => setSchedulePrompt(e.target.value)}
+            placeholder="Prompt to send when schedule fires..."
+            rows={2}
+          />
+        </div>
+
+        {/* Save */}
+        <Button onClick={handleSave} className="w-full">
+          Save Settings
+        </Button>
+      </div>
     </DrawerModal>
   );
 }

@@ -1,7 +1,9 @@
 import type { Command } from '../lib/types';
 import { timeAgo, formatDuration } from '../lib/format';
 import { DrawerModal } from './DrawerModal';
-import { Card, StatusBadge } from './ui';
+import { Card } from './ui/card';
+import { Button } from './ui/button';
+import { StatusBadge } from './StatusBadge';
 
 interface Props {
   command: Command;
@@ -22,22 +24,22 @@ export function TaskSummaryModal({ command, onClose, onViewRaw }: Props) {
       <div className="flex items-center gap-3 mb-4">
         <StatusBadge status={command.status} />
         {duration !== null && (
-          <span className="text-xs text-[#6b6b80]">{formatDuration(duration)}</span>
+          <span className="text-xs text-muted-foreground">{formatDuration(duration)}</span>
         )}
-        <span className="text-xs text-[#6b6b80] ml-auto">{timeAgo(command.started_at)}</span>
+        <span className="text-xs text-muted-foreground ml-auto">{timeAgo(command.started_at)}</span>
       </div>
 
       {/* Prompt */}
       <Card className="p-3 mb-3">
-        <div className="text-[10px] text-[#6b6b80] mb-1 uppercase tracking-wider">Prompt</div>
-        <p className="text-sm text-[#e2e2ef] break-words">{command.prompt}</p>
+        <div className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Prompt</div>
+        <p className="text-sm text-foreground break-words">{command.prompt}</p>
       </Card>
 
       {/* Summary */}
       {command.summary && (
         <Card className="p-3 mb-3">
-          <div className="text-[10px] text-[#6b6b80] mb-1 uppercase tracking-wider">Summary</div>
-          <div className="text-sm text-[#e2e2ef] whitespace-pre-wrap break-words">
+          <div className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">Summary</div>
+          <div className="text-sm text-foreground whitespace-pre-wrap break-words">
             {command.summary}
           </div>
         </Card>
@@ -46,12 +48,12 @@ export function TaskSummaryModal({ command, onClose, onViewRaw }: Props) {
       {/* Files Changed */}
       {filesChanged.length > 0 && (
         <Card className="p-3 mb-3">
-          <div className="text-[10px] text-[#6b6b80] mb-1 uppercase tracking-wider">
+          <div className="text-[10px] text-muted-foreground mb-1 uppercase tracking-wider">
             Files Changed ({filesChanged.length})
           </div>
           <div className="space-y-1">
             {filesChanged.map((f, i) => (
-              <div key={i} className="text-xs text-[#e2e2ef] font-mono truncate">{f}</div>
+              <div key={i} className="text-xs text-foreground font-mono truncate">{f}</div>
             ))}
           </div>
         </Card>
@@ -60,11 +62,11 @@ export function TaskSummaryModal({ command, onClose, onViewRaw }: Props) {
       {/* Raw Output */}
       {command.raw_output && (
         <details className="mb-3">
-          <summary className="text-xs text-[#6b6b80] cursor-pointer hover:text-[#e2e2ef] transition-colors">
+          <summary className="text-xs text-muted-foreground cursor-pointer hover:text-foreground transition-colors">
             Raw Output
           </summary>
           <Card className="p-3 mt-2">
-            <pre className="text-[11px] text-[#e2e2ef] font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
+            <pre className="text-[11px] text-foreground font-mono whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
               {command.raw_output}
             </pre>
           </Card>
@@ -72,12 +74,13 @@ export function TaskSummaryModal({ command, onClose, onViewRaw }: Props) {
       )}
 
       {/* View raw button */}
-      <button
+      <Button
+        variant="secondary"
         onClick={onViewRaw}
-        className="w-full py-2.5 bg-[#1e1e2e] text-[#e2e2ef] rounded-lg text-sm active:bg-[#2e2e3e] transition-colors"
+        className="w-full"
       >
         View Full Output
-      </button>
+      </Button>
     </DrawerModal>
   );
 }

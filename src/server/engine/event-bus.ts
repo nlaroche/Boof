@@ -27,6 +27,9 @@ export interface BusEvents {
   'autopilot:run-started': { agentId: string; goalId: string };
   'autopilot:run-finished': { agentId: string; goalId: string; success: boolean };
 
+  // State machine transitions
+  'machine:transition': { machineId: string; entityId: string; from: string; to: string; event: string; timestamp: string };
+
   // WebSocket broadcast (replaces getBroadcast circular dependency)
   'ws:broadcast': { message: any };
   'ws:send': { ws: any; message: any };

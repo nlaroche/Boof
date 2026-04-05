@@ -51,20 +51,37 @@ export function createAgentMachineDef(ctx: Partial<AgentContext> = {}): MachineD
         description: 'Agent is idle, waiting for work',
         invariant: (c) => c.commandId === null,
         onEnter: (c) => ({ ...c, retries: 0, lastError: null, startedAt: null, commandId: null }),
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
       [AgentStatus.RUNNING]: {
         description: 'Agent is executing a command',
         invariant: (c) => c.startedAt !== null && c.agentId !== '',
         onEnter: (c) => ({ ...c, startedAt: c.startedAt || new Date().toISOString() }),
+        meta: {
+          skills: ['code-editing', 'build-tooling'],
+          toolAccess: ['pty', 'filesystem', 'git'],
+          contextNeeded: ['task-description', 'repo-context', 'working-directory'],
+        },
       },
       [AgentStatus.ERROR]: {
         description: 'Agent hit an error, may retry',
         invariant: (c) => c.lastError !== null,
-        meta: { retryable: true },
+        meta: {
+          retryable: true,
+          skills: ['error-diagnosis'],
+          toolAccess: [],
+          contextNeeded: ['error-output'],
+        },
       },
       [AgentStatus.DEAD]: {
         description: 'Agent process was killed or crashed',
-        meta: { retryable: true, requiresNewPty: true },
+        meta: {
+          retryable: true,
+          requiresNewPty: true,
+          skills: [],
+          toolAccess: [],
+          contextNeeded: [],
+        },
       },
     },
     transitions: [

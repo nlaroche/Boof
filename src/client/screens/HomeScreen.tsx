@@ -1,5 +1,6 @@
 import { useStore } from '../stores/store';
 import { AgentCard } from '../components/AgentCard';
+import { Button } from '../components/ui/button';
 import type { Agent, Command } from '../lib/types';
 
 interface Props {
@@ -38,13 +39,13 @@ export function HomeScreen({ onSendToAgent }: Props) {
   return (
     <div className="min-h-full pb-20">
       <div className="p-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-[#e2e2ef]">Boof</h1>
-        <button
+        <h1 className="text-2xl font-bold text-foreground">Boof</h1>
+        <Button
           onClick={() => setActiveScreen('agents')}
-          className="bg-[#7c5bf5] text-white text-sm px-4 py-2 rounded-lg active:bg-[#6b4ae4] transition-colors"
+          size="sm"
         >
           + Agent
-        </button>
+        </Button>
       </div>
 
       {sorted.length > 0 ? (
@@ -58,7 +59,7 @@ export function HomeScreen({ onSendToAgent }: Props) {
           ))}
         </div>
       ) : (
-        <div className="px-4 py-12 text-center text-[#6b6b80]">
+        <div className="px-4 py-12 text-center text-muted-foreground">
           <div className="text-lg font-mono mb-2">(._. )</div>
           <p>No agents yet</p>
           <p className="text-sm mt-1">Create one to get started</p>

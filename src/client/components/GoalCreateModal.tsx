@@ -1,8 +1,14 @@
 import { useState, useEffect } from 'react';
 import type { WSClientMessage, Goal } from '../lib/types';
 import { useStore } from '../stores/store';
+import { cn } from '@/lib/utils';
 import { DrawerModal } from './DrawerModal';
-import { Label, Input, Textarea, Button } from './ui';
+import { Label } from './ui/label';
+import { Input } from './ui/input';
+import { Textarea } from './ui/textarea';
+import { Button } from './ui/button';
+import { Badge } from './ui/badge';
+import { Card } from './ui/card';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -39,9 +45,9 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
 
   const handleCreate = () => {
     if (!name.trim()) return;
-    onSend({ 
-      type: 'goal:create', 
-      name: name.trim(), 
+    onSend({
+      type: 'goal:create',
+      name: name.trim(),
       description: description.trim(),
       repoId: repoId || undefined
     });
@@ -72,80 +78,80 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
 
   return (
     <DrawerModal open title={isEdit ? 'Edit Goal' : 'New Goal'} onClose={onClose}>
-          <Label>Name</Label>
+      <div className="space-y-4">
+        <div>
+          <Label className="mb-1.5">Name</Label>
           <Input
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Improve Boof UI polish"
-            className="mb-4"
           />
+        </div>
 
-          <Label>Description</Label>
+        <div>
+          <Label className="mb-1.5">Description</Label>
           <Textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="What should the agent work towards?"
             rows={3}
-            className="mb-4"
+          />
+        </div>
+
+        <div>
+          <Label className="mb-1.5">Repo (optional)</Label>
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search repos..."
+            className="mb-2"
           />
 
-          <Label>Repo (optional)</Label>
-          <div className="mb-2">
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search repos..."
-              className="mb-2"
-            />
-          </div>
-          
-          <div className="max-h-40 overflow-y-auto space-y-1 mb-3">
+          <div className="max-h-40 overflow-y-auto space-y-1.5">
             {filteredRepos.length === 0 ? (
-              <p className="text-center text-[#6b6b80] text-sm py-2">
+              <p className="text-center text-muted-foreground text-sm py-2">
                 {repos.length === 0 ? 'No repos available' : 'No matching repos'}
               </p>
             ) : (
               filteredRepos.map((repo) => (
-                <button
+                <Card
                   key={repo.path}
                   onClick={() => handleSelectRepo(repo.path)}
-                  className={`w-full text-left px-3 py-2.5 rounded-lg transition-colors flex items-center justify-between ${
+                  className={cn(
+                    'p-2.5 cursor-pointer transition-colors flex items-center justify-between',
                     repoId === repo.path
-                      ? 'bg-[#7c5bf5]/20 border border-[#7c5bf5]/40'
-                      : 'bg-[#0a0a0f] border border-[#1e1e2e] hover:bg-[#1e1e2e] active:bg-[#1e1e2e]'
-                  }`}
-                >
-                  <span className="text-sm text-[#e2e2ef] truncate">{repo.name}</span>
-                  {repo.hasGit && (
-                    <span className="text-[10px] text-[#6b6b80] bg-[#1e1e2e] px-1.5 py-0.5 rounded ml-2 shrink-0">
-                      git
-                    </span>
+                      ? 'border-primary/40 bg-primary/10'
+                      : 'hover:bg-secondary'
                   )}
-                </button>
+                >
+                  <span className="text-sm text-foreground truncate">{repo.name}</span>
+                  {repo.hasGit && (
+                    <Badge variant="secondary" className="ml-2 shrink-0">git</Badge>
+                  )}
+                </Card>
               ))
             )}
           </div>
+        </div>
 
-          {selectedRepo && (
-            <div className="flex items-center gap-2 mb-4">
-              <span className="text-xs text-[#6b6b80]">Selected:</span>
-              <span className="text-xs text-[#e2e2ef]">{selectedRepo.name}</span>
-              <button
-                onClick={handleClearRepo}
-                className="text-xs text-[#ef4444] hover:text-[#f87171]"
-              >
-                Clear
-              </button>
-            </div>
-          )}
+        {selectedRepo && (
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Selected:</span>
+            <Badge variant="default">{selectedRepo.name}</Badge>
+            <Button variant="ghost" size="sm" onClick={handleClearRepo} className="text-xs text-destructive hover:text-destructive h-6 px-2">
+              Clear
+            </Button>
+          </div>
+        )}
 
-          <Button
-            onClick={isEdit ? handleUpdate : handleCreate}
-            disabled={!name.trim()}
-            className="w-full"
-          >
-            {isEdit ? 'Save Changes' : 'Create Goal'}
-          </Button>
+        <Button
+          onClick={isEdit ? handleUpdate : handleCreate}
+          disabled={!name.trim()}
+          className="w-full"
+        >
+          {isEdit ? 'Save Changes' : 'Create Goal'}
+        </Button>
+      </div>
     </DrawerModal>
   );
 }

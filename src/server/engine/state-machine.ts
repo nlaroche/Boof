@@ -17,6 +17,24 @@ import { assertInvariant } from './assert.js';
 // Types
 // ============================================================================
 
+/** Typed metadata for state definitions — skills, tool access, context needs */
+export interface StateMeta {
+  /** Skill names this state may need (e.g. 'code-editing', 'git-branch-strategy') */
+  skills?: string[];
+  /** Tool access categories needed (e.g. 'pty', 'filesystem', 'git', 'build') */
+  toolAccess?: string[];
+  /** Context keys expected to be available (e.g. 'task-description', 'repo-context') */
+  contextNeeded?: string[];
+  /** Whether this state is retryable */
+  retryable?: boolean;
+  /** Whether a new PTY process is required */
+  requiresNewPty?: boolean;
+  /** Whether this state uses the scoring system */
+  usesScoring?: boolean;
+  /** Arbitrary additional metadata */
+  [key: string]: unknown;
+}
+
 /** Definition of a single state — pure data */
 export interface StateDefinition<C> {
   /** Human-readable description (for debugging, docs, UI, agent prompts) */
@@ -29,8 +47,8 @@ export interface StateDefinition<C> {
   invariant?: (ctx: C) => boolean;
   /** Prompt template associated with this state (static string or dynamic from context) */
   prompt?: string | ((ctx: C) => string);
-  /** Metadata bag — store anything state-specific (retryable, scoring weights, etc.) */
-  meta?: Record<string, unknown>;
+  /** Metadata bag — structured annotations for skills, tools, and context needs */
+  meta?: StateMeta;
 }
 
 /** A transition between states — fully data-driven */
@@ -263,7 +281,7 @@ export class StateMachine<S extends string, E extends string, C> {
   }
 
   /** Get metadata for the current state */
-  getStateMeta(): Record<string, unknown> | null {
+  getStateMeta(): StateMeta | null {
     return this._definition.states[this._state]?.meta ?? null;
   }
 

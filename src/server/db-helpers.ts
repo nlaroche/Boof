@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -270,6 +270,7 @@ export interface GoalCreateInput {
   name: string;
   description?: string;
   repoId?: string;
+  projectId?: string;
   proposedBy?: string;
   proposalStatus?: string;
 }
@@ -279,14 +280,14 @@ export function createGoal(input: GoalCreateInput, broadcast: (goal: Goal) => vo
   const now = getNow();
 
   const sql = input.proposedBy
-    ? `INSERT INTO goals (id, name, description, status, priority, repo_id, proposed_by, proposal_status, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?, ?)`
-    : `INSERT INTO goals (id, name, description, status, priority, repo_id, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 0, ?, ?, ?)`;
+    ? `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, proposed_by, proposal_status, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`
+    : `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?)`;
 
   const params = input.proposedBy
-    ? [id, input.name, input.description || '', input.repoId || null, input.proposedBy, input.proposalStatus || 'pending', now, now]
-    : [id, input.name, input.description || '', input.repoId || null, now, now];
+    ? [id, input.name, input.description || '', input.repoId || null, input.projectId || null, input.proposedBy, input.proposalStatus || 'pending', now, now]
+    : [id, input.name, input.description || '', input.repoId || null, input.projectId || null, now, now];
 
   runQuery(sql, params);
   const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
@@ -300,6 +301,7 @@ export interface GoalUpdateInput {
   status?: string;
   priority?: number;
   repo_id?: string | null;
+  project_id?: string | null;
   proposal_status?: string | null;
 }
 
@@ -312,6 +314,7 @@ export function updateGoal(goalId: string, fields: GoalUpdateInput, broadcast: (
   if (fields.status !== undefined) { updates.push('status = ?'); values.push(fields.status); }
   if (fields.priority !== undefined) { updates.push('priority = ?'); values.push(fields.priority); }
   if (fields.repo_id !== undefined) { updates.push('repo_id = ?'); values.push(fields.repo_id); }
+  if (fields.project_id !== undefined) { updates.push('project_id = ?'); values.push(fields.project_id); }
   if (fields.proposal_status !== undefined) { updates.push('proposal_status = ?'); values.push(fields.proposal_status); }
 
   return updateAndFetch<Goal>('goals', goalId, updates, values, broadcast);
@@ -495,6 +498,80 @@ export function listAgentActivity(agentId: string, limit = 50): GoalLogEntry[] {
     'SELECT * FROM goal_log WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?',
     [agentId, limit]
   );
+}
+
+// ============================================================================
+// Project Helpers
+// ============================================================================
+
+export interface ProjectCreateInput {
+  name: string;
+  description?: string;
+  architecturePlan?: string;
+}
+
+export function createProject(input: ProjectCreateInput, broadcast: (project: Project) => void): Project | null {
+  const id = generateId();
+  const now = getNow();
+  return createAndFetch<Project>(
+    'projects', id,
+    `INSERT INTO projects (id, name, description, architecture_plan, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'active', ?, ?)`,
+    [id, input.name, input.description || '', input.architecturePlan || '', now, now],
+    broadcast
+  );
+}
+
+export interface ProjectUpdateInput {
+  name?: string;
+  description?: string;
+  architecture_plan?: string;
+  status?: string;
+}
+
+export function updateProject(projectId: string, fields: ProjectUpdateInput, broadcast: (project: Project) => void): Project | null {
+  const updates: string[] = [];
+  const values: unknown[] = [];
+
+  if (fields.name !== undefined) { updates.push('name = ?'); values.push(fields.name); }
+  if (fields.description !== undefined) { updates.push('description = ?'); values.push(fields.description); }
+  if (fields.architecture_plan !== undefined) { updates.push('architecture_plan = ?'); values.push(fields.architecture_plan); }
+  if (fields.status !== undefined) { updates.push('status = ?'); values.push(fields.status); }
+
+  return updateAndFetch<Project>('projects', projectId, updates, values, broadcast);
+}
+
+export function deleteProject(projectId: string, broadcast: (id: string) => void): void {
+  // Unlink goals from this project
+  runQuery('UPDATE goals SET project_id = NULL WHERE project_id = ?', [projectId]);
+  // Delete project repos
+  runQuery('DELETE FROM project_repos WHERE project_id = ?', [projectId]);
+  deleteAndBroadcast('projects', projectId, broadcast);
+}
+
+export function listProjects(): Project[] {
+  return getAll<Project>('SELECT * FROM projects ORDER BY created_at DESC');
+}
+
+export function addProjectRepo(projectId: string, repoPath: string): void {
+  const now = getNow();
+  runQuery(
+    `INSERT OR IGNORE INTO project_repos (project_id, repo_path, added_at) VALUES (?, ?, ?)`,
+    [projectId, repoPath, now]
+  );
+}
+
+export function removeProjectRepo(projectId: string, repoPath: string): void {
+  runQuery('DELETE FROM project_repos WHERE project_id = ? AND repo_path = ?', [projectId, repoPath]);
+}
+
+export function listProjectRepos(projectId: string): string[] {
+  const rows = getAll<{ repo_path: string }>('SELECT repo_path FROM project_repos WHERE project_id = ?', [projectId]);
+  return rows.map(r => r.repo_path);
+}
+
+export function getProjectGoals(projectId: string): Goal[] {
+  return getAll<Goal>('SELECT * FROM goals WHERE project_id = ? ORDER BY priority DESC, created_at', [projectId]);
 }
 
 // ============================================================================

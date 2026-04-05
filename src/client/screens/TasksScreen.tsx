@@ -3,7 +3,11 @@ import { useStore } from '../stores/store';
 import { FolderList } from '../components/FolderList';
 import { TaskItem } from '../components/TaskItem';
 import type { WSClientMessage, Folder } from '../lib/types';
-import { Input, Button, EmptyState } from '../components/ui';
+import { cn } from '@/lib/utils';
+import { Input } from '../components/ui/input';
+import { Button } from '../components/ui/button';
+import { Card } from '../components/ui/card';
+import { EmptyState } from '../components/EmptyState';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -81,7 +85,7 @@ export function TasksScreen({ onSend }: Props) {
   return (
     <div className="min-h-full pb-20">
       <div className="p-4">
-        <h1 className="text-xl font-bold text-[#e2e2ef]">Tasks</h1>
+        <h1 className="text-xl font-bold text-foreground">Tasks</h1>
       </div>
 
       {showNewFolder && (
@@ -93,7 +97,7 @@ export function TasksScreen({ onSend }: Props) {
             onKeyDown={(e) => e.key === 'Enter' && handleCreateFolder()}
             className="flex-1"
           />
-          <Button onClick={handleCreateFolder} className="px-4">
+          <Button onClick={handleCreateFolder}>
             Add
           </Button>
         </div>
@@ -113,34 +117,30 @@ export function TasksScreen({ onSend }: Props) {
         <div className="p-3">
           {/* Goal filter pills */}
           {activeGoals.length > 0 && (
-            <div className="flex gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-hide">
-              <button
+            <div className="flex gap-1.5 overflow-x-auto pb-2 mb-2 scrollbar-none">
+              <Button
+                variant={!filterGoalId ? 'default' : 'outline'}
+                size="sm"
                 onClick={() => setFilterGoalId(null)}
-                className={`px-3 py-1 rounded-full text-xs whitespace-nowrap shrink-0 ${
-                  !filterGoalId
-                    ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
-                    : 'bg-[#1e1e2e] text-[#6b6b80] border border-[#1e1e2e]'
-                }`}
+                className="rounded-full whitespace-nowrap shrink-0"
               >
                 All
-              </button>
+              </Button>
               {activeGoals.map((g) => (
-                <button
+                <Button
                   key={g.id}
+                  variant={filterGoalId === g.id ? 'default' : 'outline'}
+                  size="sm"
                   onClick={() => setFilterGoalId(filterGoalId === g.id ? null : g.id)}
-                  className={`px-3 py-1 rounded-full text-xs whitespace-nowrap shrink-0 ${
-                    filterGoalId === g.id
-                      ? 'bg-[#7c5bf5]/20 text-[#7c5bf5] border border-[#7c5bf5]/40'
-                      : 'bg-[#1e1e2e] text-[#6b6b80] border border-[#1e1e2e]'
-                  }`}
+                  className="rounded-full whitespace-nowrap shrink-0"
                 >
                   {g.name}
-                </button>
+                </Button>
               ))}
             </div>
           )}
 
-          <div className="bg-[#14141f] rounded-xl border border-[#1e1e2e] overflow-hidden">
+          <Card className="overflow-hidden">
             {folderTasks.length === 0 ? (
               <EmptyState icon="📋" title="No tasks yet" description="Add a task below to get started" />
             ) : (
@@ -161,7 +161,7 @@ export function TasksScreen({ onSend }: Props) {
               })
             )}
 
-            <div className="flex gap-2 p-3 border-t border-[#1e1e2e]">
+            <div className="flex gap-2 p-3 border-t border-border">
               <Input
                 value={newTaskTitle}
                 onChange={(e) => setNewTaskTitle(e.target.value)}
@@ -172,16 +172,15 @@ export function TasksScreen({ onSend }: Props) {
               <Button
                 onClick={handleAddTask}
                 disabled={!newTaskTitle.trim()}
-                className="px-3"
               >
                 +
               </Button>
             </div>
-          </div>
+          </Card>
         </div>
       )}
       <div className="fixed bottom-2 left-0 right-0 text-center">
-        <span className="text-xs text-[#4a4a5a]">Boof v1.0</span>
+        <span className="text-xs text-muted-foreground/60">Boof v1.0</span>
       </div>
     </div>
   );

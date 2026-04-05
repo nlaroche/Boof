@@ -1,3 +1,5 @@
+import { Card } from './ui/card';
+
 const defaultActions = [
   { label: 'Continue', icon: '\u25B6', prompt: 'continue where you left off' },
   { label: 'Test', icon: '\uD83E\uDDEA', prompt: 'run the test suite and report results' },
@@ -17,18 +19,19 @@ interface Props {
 export function QuickActions({ onAction, disabled }: Props) {
   return (
     <div className="p-3">
-      <h3 className="text-sm font-medium text-[#6b6b80] mb-2">Quick Actions</h3>
+      <h3 className="text-sm font-medium text-muted-foreground mb-2">Quick Actions</h3>
       <div className="grid grid-cols-3 gap-2">
         {defaultActions.map((action) => (
-          <button
+          <Card
             key={action.label}
-            onClick={() => onAction(action.prompt)}
-            disabled={disabled}
-            className="bg-[#14141f] border border-[#1e1e2e] rounded-lg p-3 text-center active:bg-[#1e1e2e] transition-colors disabled:opacity-40 min-h-[48px]"
+            className="p-3 text-center cursor-pointer active:bg-secondary transition-colors disabled:opacity-40 min-h-[48px] hover:border-primary/30"
+            onClick={() => !disabled && onAction(action.prompt)}
+            role="button"
+            aria-disabled={disabled}
           >
             <div className="text-lg">{action.icon}</div>
-            <div className="text-xs text-[#e2e2ef] mt-1">{action.label}</div>
-          </button>
+            <div className="text-xs text-foreground mt-1">{action.label}</div>
+          </Card>
         ))}
       </div>
     </div>

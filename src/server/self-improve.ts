@@ -1,5 +1,5 @@
 import { runQuery, getOne, getAll, generateId, getNow } from './db-helpers.js';
-import type { Assessment, Improvement, Agent, Command, XpEvent, RunMetric, Reflection, Skill, PromptVersion, Experiment, DashboardData } from '../client/lib/types.js';
+import type { Assessment, Improvement, Agent, Command, XpEvent, RunMetric, Reflection, Skill, PromptVersion, Experiment, DashboardData, AggregatedSkill, GlobalStats, RecentLearning } from '../client/lib/types.js';
 
 // ── XP & Leveling ──
 
@@ -664,4 +664,140 @@ export function getAgentAssessments(agentId: string): Assessment[] {
     'SELECT * FROM assessments WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50',
     [agentId]
   );
+}
+
+// ── Global Aggregations ──
+
+export function getGlobalSkills(): AggregatedSkill[] {
+  const allSkills = getAll<Skill & { agent_name?: string }>(
+    `SELECT s.*, a.name as agent_name FROM skills s JOIN agents a ON s.agent_id = a.id ORDER BY s.name`
+  );
+
+  const grouped = new Map<string, { skills: (Skill & { agent_name?: string })[] }>();
+  for (const skill of allSkills) {
+    const key = skill.name.toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, { skills: [] });
+    grouped.get(key)!.skills.push(skill);
+  }
+
+  const result: AggregatedSkill[] = [];
+  for (const [, { skills }] of grouped) {
+    const avgProficiency = skills.reduce((sum, s) => sum + s.avg_score, 0) / skills.length;
+    const tags = skills[0].tags ? (typeof skills[0].tags === 'string' ? JSON.parse(skills[0].tags) : skills[0].tags) : [];
+    result.push({
+      name: skills[0].name,
+      category: Array.isArray(tags) && tags.length > 0 ? tags[0] : 'general',
+      avgProficiency: Math.round(avgProficiency),
+      agentCount: skills.length,
+      agentNames: skills.map(s => s.agent_name || 'Unknown'),
+    });
+  }
+
+  return result.sort((a, b) => b.avgProficiency - a.avgProficiency);
+}
+
+export function getGlobalStats(): GlobalStats {
+  const cmdCount = getOne<{ c: number }>('SELECT COUNT(*) as c FROM commands');
+  const successCount = getOne<{ c: number }>('SELECT COUNT(*) as c FROM run_metrics WHERE success = 1');
+  const totalCount = getOne<{ c: number }>('SELECT COUNT(*) as c FROM run_metrics');
+  const xpSum = getOne<{ total: number }>('SELECT COALESCE(SUM(xp), 0) as total FROM agents');
+  const tokenSum = getOne<{ total: number }>('SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) as total FROM run_metrics');
+  const avgDur = getOne<{ avg: number }>('SELECT COALESCE(AVG(duration_ms), 0) as avg FROM run_metrics');
+
+  const total = totalCount?.c || 0;
+  return {
+    totalCommands: cmdCount?.c || 0,
+    successRate: total > 0 ? Math.round((successCount?.c || 0) / total * 100) : 0,
+    totalXp: xpSum?.total || 0,
+    totalTokensUsed: tokenSum?.total || 0,
+    avgDurationMs: Math.round(avgDur?.avg || 0),
+  };
+}
+
+export function getProjectSkills(projectId: string): AggregatedSkill[] {
+  // Skills from agents that have commands linked to goals in this project
+  const skills = getAll<Skill & { agent_name?: string }>(
+    `SELECT DISTINCT s.*, a.name as agent_name FROM skills s
+     JOIN agents a ON s.agent_id = a.id
+     JOIN commands c ON c.agent_id = s.agent_id
+     JOIN tasks t ON c.task_id = t.id
+     JOIN goals g ON t.goal_id = g.id
+     WHERE g.project_id = ?
+     ORDER BY s.name`,
+    [projectId]
+  );
+
+  // If no skills via tasks, try via autopilot goal assignment
+  const fallbackSkills = skills.length === 0 ? getAll<Skill & { agent_name?: string }>(
+    `SELECT DISTINCT s.*, a.name as agent_name FROM skills s
+     JOIN agents a ON s.agent_id = a.id
+     JOIN goals g ON a.autopilot_goal_id = g.id
+     WHERE g.project_id = ?
+     ORDER BY s.name`,
+    [projectId]
+  ) : skills;
+
+  const allSkills = skills.length > 0 ? skills : fallbackSkills;
+
+  const grouped = new Map<string, (Skill & { agent_name?: string })[]>();
+  for (const skill of allSkills) {
+    const key = skill.name.toLowerCase();
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key)!.push(skill);
+  }
+
+  const result: AggregatedSkill[] = [];
+  for (const [, group] of grouped) {
+    const avgProficiency = group.reduce((sum, s) => sum + s.avg_score, 0) / group.length;
+    const tags = group[0].tags ? (typeof group[0].tags === 'string' ? JSON.parse(group[0].tags) : group[0].tags) : [];
+    result.push({
+      name: group[0].name,
+      category: Array.isArray(tags) && tags.length > 0 ? tags[0] : 'general',
+      avgProficiency: Math.round(avgProficiency),
+      agentCount: group.length,
+      agentNames: group.map(s => s.agent_name || 'Unknown'),
+    });
+  }
+
+  return result.sort((a, b) => b.avgProficiency - a.avgProficiency);
+}
+
+export function getRecentLearnings(limit: number = 5): RecentLearning[] {
+  const improvements = getAll<Improvement & { agent_name?: string }>(
+    `SELECT i.*, a.name as agent_name FROM improvements i
+     JOIN agents a ON i.agent_id = a.id
+     WHERE i.status = 'completed'
+     ORDER BY i.completed_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  const reflections = getAll<Reflection & { agent_name?: string }>(
+    `SELECT r.*, a.name as agent_name FROM reflections r
+     JOIN agents a ON r.agent_id = a.id
+     ORDER BY r.created_at DESC LIMIT ?`,
+    [limit]
+  );
+
+  const learnings: RecentLearning[] = [
+    ...improvements.map(i => ({
+      id: i.id,
+      agentId: i.agent_id,
+      agentName: i.agent_name || 'Unknown',
+      type: 'improvement' as const,
+      text: i.description,
+      createdAt: i.completed_at || i.created_at,
+    })),
+    ...reflections.map(r => ({
+      id: r.id,
+      agentId: r.agent_id,
+      agentName: r.agent_name || 'Unknown',
+      type: 'reflection' as const,
+      text: r.pattern || r.went_well,
+      createdAt: r.created_at,
+    })),
+  ];
+
+  return learnings
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, limit);
 }

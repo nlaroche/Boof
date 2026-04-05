@@ -4,6 +4,12 @@ import { AgentCard } from '../components/AgentCard';
 import { ProfileSelector } from '../components/ProfileSelector';
 import { AgentSettingsModal } from '../components/AgentSettingsModal';
 import type { Agent, WSClientMessage } from '../lib/types';
+import { cn } from '@/lib/utils';
+import { Button } from '../components/ui/button';
+import { Input } from '../components/ui/input';
+import { Label } from '../components/ui/label';
+import { Card, CardContent } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -60,60 +66,65 @@ export function AgentsScreen({ onSend }: Props) {
   return (
     <div className="min-h-full pb-20">
       <div className="p-4 flex items-center justify-between">
-        <h1 className="text-xl font-bold text-[#e2e2ef]">Agents</h1>
-        <button
+        <h1 className="text-xl font-bold text-foreground">Agents</h1>
+        <Button
           onClick={() => setShowNew(!showNew)}
-          className="bg-[#7c5bf5] text-white text-sm px-4 py-2 rounded-lg active:bg-[#6b4ae4] transition-colors"
+          size="sm"
         >
           + New
-        </button>
+        </Button>
       </div>
 
       {showNew && (
-        <div className="mx-3 mb-4 bg-[#14141f] border border-[#1e1e2e] rounded-xl p-4">
-          <input
-            value={newName}
-            onChange={(e) => setNewName(e.target.value)}
-            placeholder="Agent name (optional)"
-            className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-2 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5]"
-          />
-          <div className="mb-3">
-            <label className="text-xs text-[#6b6b80] mb-1.5 block">Profile</label>
-            <ProfileSelector selected={selectedProfile} onSelect={setSelectedProfile} />
-          </div>
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search repos..."
-            className="w-full bg-[#0a0a0f] border border-[#1e1e2e] rounded-lg px-3 py-2 mb-3 text-sm text-[#e2e2ef] placeholder-[#6b6b80] focus:outline-none focus:border-[#7c5bf5]"
-          />
-          <div className="max-h-64 overflow-y-auto space-y-1">
-            {filtered.length === 0 ? (
-              <p className="text-center text-[#6b6b80] text-sm py-4">
-                {repos.length === 0 ? 'Loading repos...' : 'No matching repos'}
-              </p>
-            ) : (
-              filtered.map((repo) => (
-                <button
-                  key={repo.path}
-                  onClick={() => handleCreate(repo.path, repo.name)}
-                  className="w-full text-left px-3 py-2.5 rounded-lg bg-[#0a0a0f] hover:bg-[#1e1e2e] active:bg-[#1e1e2e] transition-colors flex items-center justify-between"
-                >
-                  <span className="text-sm text-[#e2e2ef] truncate">{repo.name}</span>
-                  {repo.hasGit && (
-                    <span className="text-[10px] text-[#6b6b80] bg-[#1e1e2e] px-1.5 py-0.5 rounded ml-2 shrink-0">
-                      git
-                    </span>
-                  )}
-                </button>
-              ))
-            )}
-          </div>
-        </div>
+        <Card className="mx-3 mb-4">
+          <CardContent className="p-4 space-y-3">
+            <div>
+              <Label className="mb-1.5">Agent Name (optional)</Label>
+              <Input
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="Agent name (optional)"
+              />
+            </div>
+            <div>
+              <Label className="mb-1.5">Profile</Label>
+              <ProfileSelector selected={selectedProfile} onSelect={setSelectedProfile} />
+            </div>
+            <div>
+              <Label className="mb-1.5">Select Repo</Label>
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search repos..."
+                className="mb-2"
+              />
+            </div>
+            <div className="max-h-64 overflow-y-auto space-y-1.5">
+              {filtered.length === 0 ? (
+                <p className="text-center text-muted-foreground text-sm py-4">
+                  {repos.length === 0 ? 'Loading repos...' : 'No matching repos'}
+                </p>
+              ) : (
+                filtered.map((repo) => (
+                  <Card
+                    key={repo.path}
+                    onClick={() => handleCreate(repo.path, repo.name)}
+                    className="p-2.5 cursor-pointer hover:bg-secondary active:bg-secondary transition-colors flex items-center justify-between"
+                  >
+                    <span className="text-sm text-foreground truncate">{repo.name}</span>
+                    {repo.hasGit && (
+                      <Badge variant="secondary" className="ml-2 shrink-0">git</Badge>
+                    )}
+                  </Card>
+                ))
+              )}
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       {agents.length === 0 ? (
-        <div className="px-4 py-12 text-center text-[#6b6b80]">
+        <div className="px-4 py-12 text-center text-muted-foreground">
           <div className="text-lg font-mono mb-2">--</div>
           <p>No agents yet</p>
           <p className="text-sm mt-1">Create one to get started</p>
@@ -124,36 +135,44 @@ export function AgentsScreen({ onSend }: Props) {
             <div key={agent.id} className="relative">
               <AgentCard agent={agent} />
               <div className="absolute top-3 right-3 flex gap-1">
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={(e) => { e.stopPropagation(); setSettingsAgent(agent); }}
-                  className="px-2 py-1 bg-[#1e1e2e] text-[#6b6b80] rounded text-xs"
                   title="Settings"
+                  className="px-2 py-1 h-7"
                 >
                   &#9881;
-                </button>
+                </Button>
                 {agent.status !== 'dead' && (
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={(e) => { e.stopPropagation(); handleKill(agent.id); }}
-                    className="px-2 py-1 bg-[#ef4444]/20 text-[#ef4444] rounded text-xs"
+                    className="px-2 py-1 h-7 text-destructive hover:text-destructive hover:bg-destructive/10"
                   >
                     Kill
-                  </button>
+                  </Button>
                 )}
                 {agent.status === 'dead' && (
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={(e) => { e.stopPropagation(); handleRestart(agent.id); }}
-                    className="px-2 py-1 bg-[#22c55e]/20 text-[#22c55e] rounded text-xs"
+                    className="px-2 py-1 h-7 text-success hover:text-success hover:bg-success/10"
                   >
                     Restart
-                  </button>
+                  </Button>
                 )}
                 {(agent.status === 'dead' || agent.status === 'idle') && (
-                  <button
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     onClick={(e) => { e.stopPropagation(); handleDelete(agent.id, agent.name); }}
-                    className="px-2 py-1 bg-[#6b6b80]/20 text-[#6b6b80] rounded text-xs"
+                    className="px-2 py-1 h-7"
                   >
                     Delete
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>

@@ -7,6 +7,8 @@
 import { execSync } from 'child_process';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 import { isProtectedBranch } from '../branch-guard.js';
 import { Timeouts, Limits } from '../engine/constants.js';
 
@@ -142,6 +144,74 @@ export async function listAgentBranches(workingDirectory: string): Promise<strin
       .filter(Boolean);
   } catch {
     return [];
+  }
+}
+
+// ── Worktree Management ──
+
+/**
+ * Create a git worktree for an agent with a symlinked node_modules.
+ * Returns the worktree path on success, null on failure.
+ */
+export function createWorktree(
+  workingDirectory: string,
+  agentName: string,
+  agentId: string,
+): string | null {
+  try {
+    const safeName = (agentName || 'agent')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, Limits.MAX_SAFE_NAME_LENGTH);
+    const worktreePath = path.join(workingDirectory + '-agents', `${safeName}-${agentId.slice(0, 8)}`);
+    fs.mkdirSync(path.dirname(worktreePath), { recursive: true });
+    execSync(`git worktree add --detach "${worktreePath}" main`, {
+      cwd: workingDirectory,
+      timeout: Timeouts.GIT_CHECKOUT,
+    });
+
+    // Symlink node_modules via Windows junction
+    const srcModules = path.join(workingDirectory, 'node_modules');
+    const dstModules = path.join(worktreePath, 'node_modules');
+    if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {
+      execSync(`cmd /c mklink /J "${dstModules}" "${srcModules}"`, { timeout: Timeouts.JUNCTION });
+    }
+
+    console.log(`[git-ops] Worktree created at ${worktreePath}`);
+    return worktreePath;
+  } catch (err: any) {
+    console.error(`[git-ops] Failed to create worktree:`, err.message || err);
+    return null;
+  }
+}
+
+/**
+ * Remove a git worktree and its node_modules junction.
+ */
+export function removeWorktree(
+  workingDirectory: string,
+  worktreePath: string,
+): boolean {
+  try {
+    // Remove node_modules junction first — git worktree remove can't delete junctions on Windows
+    const junctionPath = path.join(worktreePath, 'node_modules');
+    try {
+      const stat = fs.lstatSync(junctionPath);
+      if (stat.isSymbolicLink() || stat.isDirectory()) {
+        execSync(`cmd /c rmdir "${junctionPath}"`, { timeout: Timeouts.GIT_QUICK });
+      }
+    } catch { /* junction doesn't exist, fine */ }
+
+    execSync(`git worktree remove "${worktreePath}" --force`, {
+      cwd: workingDirectory,
+      timeout: Timeouts.GIT_CHECKOUT,
+    });
+    console.log(`[git-ops] Worktree removed: ${worktreePath}`);
+    return true;
+  } catch (err: any) {
+    console.error(`[git-ops] Failed to remove worktree:`, err.message || err);
+    return false;
   }
 }
 

@@ -1,5 +1,6 @@
 import { useStore } from '../stores/store';
 import { SummaryCard } from '../components/SummaryCard';
+import { Separator } from '../components/ui/separator';
 
 export function HistoryScreen() {
   const commands = useStore((s) => s.commands);
@@ -11,24 +12,24 @@ export function HistoryScreen() {
   return (
     <div className="min-h-full pb-20">
       <div className="p-4">
-        <h1 className="text-xl font-bold text-[#e2e2ef]">History</h1>
+        <h1 className="text-xl font-bold text-foreground">History</h1>
       </div>
 
       {sortedCommands.length === 0 ? (
-        <div className="px-4 py-12 text-center text-[#6b6b80]">
-          <div className="text-lg font-mono mb-2">---</div>
-          <p>No command history yet</p>
-          <p className="text-sm mt-1">Send commands to agents to see them here</p>
+        <div className="px-4 py-12 text-center text-muted-foreground">
+          <div className="text-lg font-mono mb-2 text-muted-foreground/60">---</div>
+          <p className="text-foreground">No command history yet</p>
+          <p className="text-sm mt-1 text-muted-foreground">Send commands to agents to see them here</p>
         </div>
       ) : (
-        <div className="px-3">
+        <div className="px-3 space-y-3">
           {sortedCommands.map((cmd) => {
             const agent = agents.find((a) => a.id === cmd.agent_id);
             return (
               <div key={cmd.id}>
                 {agent && (
-                  <div className="text-xs text-[#6b6b80] mb-1 px-1">
-                    {agent.name} &middot; {agent.working_directory}
+                  <div className="text-xs text-muted-foreground mb-1 px-1">
+                    {agent.name} <span className="text-muted-foreground/60">&middot;</span> {agent.working_directory}
                   </div>
                 )}
                 <SummaryCard command={cmd} />

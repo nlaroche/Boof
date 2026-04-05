@@ -3,7 +3,10 @@ import { useStore } from '../stores/store';
 import { GoalCard } from '../components/GoalCard';
 import { GoalCreateModal } from '../components/GoalCreateModal';
 import type { WSClientMessage, Goal } from '../lib/types';
-import { Button, EmptyState } from '../components/ui';
+import { Button } from '../components/ui/button';
+import { Card, CardContent } from '../components/ui/card';
+import { Badge } from '../components/ui/badge';
+import { EmptyState } from '../components/EmptyState';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -56,8 +59,8 @@ export function GoalsScreen({ onSend }: Props) {
   return (
     <div className="min-h-full pb-20 px-4 pt-4">
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-bold text-[#e2e2ef]">Goals</h1>
-        <Button onClick={() => setShowCreate(true)} className="px-3 py-1.5 text-sm">
+        <h1 className="text-xl font-bold text-foreground">Goals</h1>
+        <Button onClick={() => setShowCreate(true)} size="sm">
           + New
         </Button>
       </div>
@@ -67,47 +70,49 @@ export function GoalsScreen({ onSend }: Props) {
           icon="🎯"
           title="No goals yet"
           description="Create a goal for your agents to work towards"
-          action={<Button onClick={() => setShowCreate(true)} className="px-4 py-2">+ New Goal</Button>}
+          action={<Button onClick={() => setShowCreate(true)}>+ New Goal</Button>}
         />
       ) : (
         <div className="space-y-3">
           {/* Proposed Goals */}
           {proposedGoals.length > 0 && (
             <>
-              <h2 className="text-xs text-[#f59e0b] font-medium mb-2">Proposed by Agents</h2>
+              <h2 className="text-xs text-warning font-medium mb-2">Proposed by Agents</h2>
               <div className="space-y-2">
                 {proposedGoals.map((g) => (
-                  <div
+                  <Card
                     key={g.id}
-                    className="bg-[#14141f] border border-[#f59e0b]/30 rounded-xl overflow-hidden"
+                    className="border-warning/30 overflow-hidden"
                   >
-                    <div className="p-3">
+                    <CardContent className="p-3 pb-0">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="w-2 h-2 rounded-full bg-[#f59e0b] animate-pulse" />
-                        <h3 className="text-sm font-medium text-[#e2e2ef] truncate flex-1">{g.name}</h3>
+                        <span className="w-2 h-2 rounded-full bg-warning animate-pulse" />
+                        <h3 className="text-sm font-medium text-foreground truncate flex-1">{g.name}</h3>
                       </div>
                       {g.description && (
-                        <p className="text-xs text-[#6b6b80] mb-2 line-clamp-2">{g.description}</p>
+                        <p className="text-xs text-muted-foreground mb-2 line-clamp-2">{g.description}</p>
                       )}
-                      <div className="text-[10px] text-[#6b6b80]">
+                      <div className="text-[10px] text-muted-foreground mb-3">
                         Proposed by {getAgentName(g.proposed_by)}
                       </div>
-                    </div>
-                    <div className="flex border-t border-[#f59e0b]/20">
-                      <button
+                    </CardContent>
+                    <div className="flex border-t border-warning/20">
+                      <Button
+                        variant="ghost"
                         onClick={() => handleReject(g)}
-                        className="flex-1 py-2.5 text-xs text-[#6b6b80] hover:text-[#ef4444] hover:bg-[#ef4444]/5 transition-colors active:bg-[#ef4444]/10"
+                        className="flex-1 rounded-none h-10 text-xs text-muted-foreground hover:text-destructive hover:bg-destructive/5"
                       >
                         Reject
-                      </button>
-                      <button
+                      </Button>
+                      <Button
+                        variant="ghost"
                         onClick={() => handleApprove(g)}
-                        className="flex-1 py-2.5 text-xs text-[#22c55e] hover:bg-[#22c55e]/5 border-l border-[#f59e0b]/20 transition-colors active:bg-[#22c55e]/10 font-medium"
+                        className="flex-1 rounded-none h-10 text-xs text-success hover:bg-success/5 border-l border-warning/20 font-medium"
                       >
                         Approve
-                      </button>
+                      </Button>
                     </div>
-                  </div>
+                  </Card>
                 ))}
               </div>
             </>
@@ -120,7 +125,7 @@ export function GoalsScreen({ onSend }: Props) {
           )}
           {pausedGoals.length > 0 && (
             <>
-              <h2 className="text-xs text-[#6b6b80] font-medium mt-4">Paused</h2>
+              <h2 className="text-xs text-muted-foreground font-medium mt-4">Paused</h2>
               <div className="space-y-2">
                 {pausedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} onEdit={handleEdit} />)}
               </div>
@@ -128,7 +133,7 @@ export function GoalsScreen({ onSend }: Props) {
           )}
           {completedGoals.length > 0 && (
             <>
-              <h2 className="text-xs text-[#6b6b80] font-medium mt-4">Completed</h2>
+              <h2 className="text-xs text-muted-foreground font-medium mt-4">Completed</h2>
               <div className="space-y-2">
                 {completedGoals.map((g) => <GoalCard key={g.id} goal={g} onSend={onSend} onEdit={handleEdit} />)}
               </div>

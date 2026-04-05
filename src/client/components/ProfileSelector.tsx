@@ -1,4 +1,5 @@
 import { profiles } from '../lib/ascii-profiles';
+import { cn } from '@/lib/utils';
 
 interface Props {
   selected: string;
@@ -12,11 +13,12 @@ export function ProfileSelector({ selected, onSelect }: Props) {
         <button
           key={p.id}
           onClick={() => onSelect(p.id)}
-          className={`shrink-0 flex flex-col items-center gap-1 p-2 rounded-lg border transition-colors ${
+          className={cn(
+            'shrink-0 flex flex-col items-center gap-1 p-2 rounded-lg border transition-colors',
             selected === p.id
-              ? 'border-[#7c5bf5] bg-[#7c5bf5]/10'
-              : 'border-[#1e1e2e] bg-[#0a0a0f] active:bg-[#1e1e2e]'
-          }`}
+              ? 'border-primary bg-primary/10'
+              : 'border-border bg-card active:bg-secondary'
+          )}
         >
           <pre
             className="text-[7px] leading-[8px] font-mono"
@@ -24,7 +26,7 @@ export function ProfileSelector({ selected, onSelect }: Props) {
           >
             {p.art}
           </pre>
-          <span className="text-[10px] text-[#6b6b80]">{p.name}</span>
+          <span className="text-[10px] text-muted-foreground">{p.name}</span>
         </button>
       ))}
     </div>

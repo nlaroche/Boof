@@ -1,13 +1,18 @@
 import { useState } from 'react';
 import type { Goal, GoalLogEntry, WSClientMessage } from '../lib/types';
 import { useStore } from '../stores/store';
+import { cn } from '@/lib/utils';
+import { Card, CardContent } from './ui/card';
+import { Badge } from './ui/badge';
+import { Button } from './ui/button';
+import { Progress } from './ui/progress';
 
-const PRIORITY_LABELS: Record<number, { label: string; color: string }> = {
-  5: { label: 'P1', color: 'text-red-400' },
-  4: { label: 'P2', color: 'text-orange-400' },
-  3: { label: 'P3', color: 'text-yellow-400' },
-  2: { label: 'P4', color: 'text-blue-400' },
-  1: { label: 'P5', color: 'text-[#6b6b80]' },
+const PRIORITY_LABELS: Record<number, { label: string; variant: 'destructive' | 'warning' | 'default' | 'muted' }> = {
+  5: { label: 'P1', variant: 'destructive' },
+  4: { label: 'P2', variant: 'warning' },
+  3: { label: 'P3', variant: 'warning' },
+  2: { label: 'P4', variant: 'default' },
+  1: { label: 'P5', variant: 'muted' },
 };
 
 interface Props {
@@ -16,10 +21,10 @@ interface Props {
   onEdit: (goal: Goal) => void;
 }
 
-const STATUS_COLORS: Record<string, { bg: string; text: string; label: string }> = {
-  active: { bg: 'bg-[#22c55e]/20', text: 'text-[#22c55e]', label: 'Active' },
-  paused: { bg: 'bg-[#f59e0b]/20', text: 'text-[#f59e0b]', label: 'Paused' },
-  completed: { bg: 'bg-[#6b6b80]/20', text: 'text-[#6b6b80]', label: 'Done' },
+const STATUS_CONFIG: Record<string, { variant: 'success' | 'warning' | 'muted'; label: string }> = {
+  active: { variant: 'success', label: 'Active' },
+  paused: { variant: 'warning', label: 'Paused' },
+  completed: { variant: 'muted', label: 'Done' },
 };
 
 function formatTime(iso: string): string {
@@ -44,7 +49,7 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
 
   const linkedAgents = agents.filter((a) => a.autopilot_goal_id === goal.id);
   const linkedTasks = tasks.filter((t: any) => t.goal_id === goal.id);
-  const status = STATUS_COLORS[goal.status] || STATUS_COLORS.active;
+  const statusConfig = STATUS_CONFIG[goal.status] || STATUS_CONFIG.active;
   const linkedRepo = repos.find((r) => r.path === goal.repo_id);
 
   const handleExpand = () => {
@@ -78,8 +83,6 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
       alert('No repos available. Add a repo first.');
       return;
     }
-    const currentRepoId = goal.repo_id || '';
-    const options = repos.map((r) => `${r.path}${r.path === currentRepoId ? ' (current)' : ''}`).join('\n');
     const choice = prompt(`Select a repo (enter number):\n\n${repos.map((r, i) => `${i + 1}. ${r.path}`).join('\n')}`);
     if (choice) {
       const idx = parseInt(choice, 10) - 1;
@@ -89,126 +92,119 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
     }
   };
 
+  const doneTasks = linkedTasks.filter((t: any) => t.status === 'done').length;
+  const taskPct = linkedTasks.length > 0 ? Math.round((doneTasks / linkedTasks.length) * 100) : 0;
+
   return (
-    <div className="bg-[#14141f] border border-[#1e1e2e] rounded-xl overflow-hidden">
-      <div className="p-3 flex items-start gap-3" onClick={handleExpand}>
+    <Card className="overflow-hidden">
+      <div className="p-3 flex items-start gap-3 cursor-pointer" onClick={handleExpand}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-sm font-medium text-[#e2e2ef] truncate">{goal.name}</h3>
-            <button
+            <h3 className="text-sm font-medium text-foreground truncate">{goal.name}</h3>
+            <Badge
+              variant={statusConfig.variant}
+              className="cursor-pointer"
               onClick={(e) => { e.stopPropagation(); cycleStatus(); }}
-              className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${status.bg} ${status.text}`}
             >
-              {status.label}
-            </button>
+              {statusConfig.label}
+            </Badge>
             {goal.priority > 0 && (() => {
               const p = PRIORITY_LABELS[goal.priority];
               return p ? (
-                <span className={`text-[10px] font-bold ${p.color}`}>{p.label}</span>
+                <Badge variant={p.variant} className="font-bold">{p.label}</Badge>
               ) : null;
             })()}
           </div>
           {goal.description && (
-            <p className="text-xs text-[#6b6b80] line-clamp-2">{goal.description}</p>
+            <p className="text-xs text-muted-foreground line-clamp-2">{goal.description}</p>
           )}
-          <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[#6b6b80]">
-            {linkedRepo && <span className="text-[#7c5bf5]">{linkedRepo.name}</span>}
+          <div className="flex items-center gap-3 mt-1.5 text-[10px] text-muted-foreground">
+            {linkedRepo && <span className="text-primary">{linkedRepo.name}</span>}
             {linkedAgents.length > 0 && <span>{linkedAgents.length} agent{linkedAgents.length !== 1 ? 's' : ''}</span>}
-            {linkedTasks.length > 0 && (() => {
-              const done = linkedTasks.filter((t: any) => t.status === 'done').length;
-              return <span>{done}/{linkedTasks.length} tasks done</span>;
-            })()}
+            {linkedTasks.length > 0 && <span>{doneTasks}/{linkedTasks.length} tasks done</span>}
             <span>{formatTime(goal.updated_at)}</span>
           </div>
-          {linkedTasks.length > 0 && (() => {
-            const done = linkedTasks.filter((t: any) => t.status === 'done').length;
-            const pct = Math.round((done / linkedTasks.length) * 100);
-            return (
-              <div className="mt-2 h-1 bg-[#1e1e2e] rounded-full overflow-hidden">
-                <div className="h-full bg-[#22c55e] rounded-full transition-all" style={{ width: `${pct}%` }} />
-              </div>
-            );
-          })()}
+          {linkedTasks.length > 0 && (
+            <Progress value={taskPct} className="mt-2 h-1" />
+          )}
         </div>
-        <span className="text-[#6b6b80] text-xs mt-1">{expanded ? '\u25B2' : '\u25BC'}</span>
+        <span className="text-muted-foreground text-xs mt-1">{expanded ? '\u25B2' : '\u25BC'}</span>
       </div>
 
       {expanded && (
-        <div className="border-t border-[#1e1e2e] p-3">
+        <CardContent className="border-t border-border p-3 pt-3">
           <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-medium text-[#6b6b80]">Activity Log</span>
-            <div className="flex gap-2">
-              <button
-                onClick={handleAssignRepo}
-                className="text-[10px] text-[#7c5bf5] hover:text-[#9d7fff]"
-              >
+            <span className="text-xs font-medium text-muted-foreground">Activity Log</span>
+            <div className="flex gap-1">
+              <Button variant="ghost" size="sm" onClick={handleAssignRepo} className="text-[10px] h-6 px-2 text-primary">
                 Assign Repo
-              </button>
-              <button
-                onClick={handleEdit}
-                className="text-[10px] text-[#6b6b80] hover:text-[#e2e2ef]"
-              >
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleEdit} className="text-[10px] h-6 px-2">
                 Edit
-              </button>
-              <button
-                onClick={handleDelete}
-                className="text-[10px] text-red-400/60 hover:text-red-400"
-              >
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleDelete} className="text-[10px] h-6 px-2 text-destructive hover:text-destructive">
                 Delete
-              </button>
+              </Button>
             </div>
           </div>
           <div className="mb-3">
             <div className="flex items-center gap-1.5 mb-1">
-              <span className="text-[10px] text-[#6b6b80]">Priority:</span>
+              <span className="text-[10px] text-muted-foreground">Priority:</span>
               {[1, 2, 3, 4, 5].map((p) => (
-                <button
+                <Button
                   key={p}
+                  variant="ghost"
+                  size="sm"
                   onClick={(e) => { e.stopPropagation(); onSend({ type: 'goal:set-priority', goalId: goal.id, priority: p }); }}
-                  className={`w-5 h-5 rounded text-[10px] font-bold transition-colors ${goal.priority === p ? 'bg-[#7c5bf5] text-white' : 'bg-[#1e1e2e] text-[#6b6b80] hover:text-[#e2e2ef]'}`}
+                  className={cn(
+                    'w-5 h-5 p-0 rounded text-[10px] font-bold',
+                    goal.priority === p ? 'bg-primary text-primary-foreground hover:bg-primary/90' : ''
+                  )}
                 >
                   {p}
-                </button>
+                </Button>
               ))}
               {goal.priority > 0 && (
-                <button
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={(e) => { e.stopPropagation(); onSend({ type: 'goal:set-priority', goalId: goal.id, priority: 0 }); }}
-                  className="text-[10px] text-[#6b6b80] hover:text-red-400 ml-1"
+                  className="text-[10px] h-5 px-1 text-muted-foreground hover:text-destructive"
                 >
                   clear
-                </button>
+                </Button>
               )}
             </div>
             {goalStats && (
-              <div className="flex gap-3 text-[10px] text-[#6b6b80]">
+              <div className="flex gap-3 text-[10px] text-muted-foreground">
                 <span>{goalStats.total_runs} runs</span>
-                <span className="text-[#22c55e]">{goalStats.tasks_completed} done</span>
-                {goalStats.tasks_failed > 0 && <span className="text-red-400">{goalStats.tasks_failed} failed</span>}
+                <span className="text-success">{goalStats.tasks_completed} done</span>
+                {goalStats.tasks_failed > 0 && <span className="text-destructive">{goalStats.tasks_failed} failed</span>}
                 {goalStats.avg_duration_ms > 0 && <span>{Math.round(goalStats.avg_duration_ms / 60000)}m avg</span>}
               </div>
             )}
           </div>
           {goalLogs.length === 0 ? (
-            <p className="text-xs text-[#6b6b80] italic">No activity yet</p>
+            <p className="text-xs text-muted-foreground italic">No activity yet</p>
           ) : (
             <div className="space-y-2 max-h-60 overflow-y-auto">
               {goalLogs.map((log: GoalLogEntry) => (
                 <div key={log.id} className="text-xs">
                   <div className="flex items-center gap-2">
-                    <span className={log.success ? 'text-[#22c55e]' : 'text-red-400'}>
+                    <span className={log.success ? 'text-success' : 'text-destructive'}>
                       {log.success ? '\u2713' : '\u2717'}
                     </span>
-                    <span className="text-[#e2e2ef]">{log.action}</span>
-                    <span className="text-[#6b6b80] ml-auto">{formatTime(log.created_at)}</span>
+                    <span className="text-foreground">{log.action}</span>
+                    <span className="text-muted-foreground ml-auto">{formatTime(log.created_at)}</span>
                   </div>
-                  {log.summary && <p className="text-[#6b6b80] ml-5 mt-0.5">{log.summary}</p>}
-                  {log.diff_stats && <pre className="text-[#6b6b80] ml-5 mt-0.5 text-[10px]">{log.diff_stats}</pre>}
+                  {log.summary && <p className="text-muted-foreground ml-5 mt-0.5">{log.summary}</p>}
+                  {log.diff_stats && <pre className="text-muted-foreground ml-5 mt-0.5 text-[10px]">{log.diff_stats}</pre>}
                 </div>
               ))}
             </div>
           )}
-        </div>
+        </CardContent>
       )}
-    </div>
+    </Card>
   );
 }

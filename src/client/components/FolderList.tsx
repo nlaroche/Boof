@@ -1,7 +1,11 @@
 import { useState } from 'react';
 import type { Folder, Task } from '../lib/types';
+import { cn } from '@/lib/utils';
 import { DrawerModal } from './DrawerModal';
-import { Input, Button } from './ui';
+import { Input } from './ui/input';
+import { Label } from './ui/label';
+import { Button } from './ui/button';
+import { Card } from './ui/card';
 
 interface Props {
   folders: Folder[];
@@ -33,7 +37,6 @@ export function FolderList({
   const handleLongPress = (folder: Folder) => {
     setLongPressTriggered(true);
     setDeleteFolder(folder);
-    // Reset the flag after a short delay to allow the click handler to check it
     setTimeout(() => setLongPressTriggered(false), 100);
   };
 
@@ -53,12 +56,9 @@ export function FolderList({
 
   const handleTouchStart = (folder: Folder, e: React.TouchEvent) => {
     setLongPressTriggered(false);
-    // Start a timer for long press - but we handle this differently
-    // to avoid memory leaks, we'll just set a timeout
     const timer = setTimeout(() => {
       handleLongPress(folder);
     }, 500);
-    // Store timer id on the element via dataset (hacky but works)
     (e.currentTarget as HTMLButtonElement).dataset.timerId = String(timer);
   };
 
@@ -100,13 +100,15 @@ export function FolderList({
   return (
     <div className="p-3">
       <div className="flex items-center justify-between mb-3">
-        <h2 className="text-lg font-semibold text-[#e2e2ef]">Folders</h2>
-        <button
+        <h2 className="text-lg font-semibold text-foreground">Folders</h2>
+        <Button
+          variant="secondary"
+          size="icon"
           onClick={onCreateFolder}
-          className="min-w-[44px] min-h-[44px] bg-[#1e1e2e] text-[#7c5bf5] rounded-lg flex items-center justify-center active:bg-[#2e2e3e] text-xl font-bold"
+          className="min-w-[44px] min-h-[44px] text-primary text-xl font-bold"
         >
           +
-        </button>
+        </Button>
       </div>
       <div className="grid grid-cols-2 gap-2">
         {folders.map((folder) => {
@@ -115,35 +117,38 @@ export function FolderList({
           const isSelected = selectedFolderId === folder.id;
 
           return (
-            <button
+            <Card
               key={folder.id}
               onClick={() => handleClick(folder.id)}
-              onTouchStart={(e) => handleTouchStart(folder, e)}
-              onTouchEnd={handleTouchEnd}
-              onMouseDown={(e) => handleMouseDown(folder, e)}
-              onMouseUp={handleMouseUp}
-              onMouseLeave={handleMouseUp}
-              className={`p-3 rounded-xl text-left transition-all duration-200 border relative ${
+              onTouchStart={(e: any) => handleTouchStart(folder, e)}
+              onTouchEnd={handleTouchEnd as any}
+              onMouseDown={(e: any) => handleMouseDown(folder, e)}
+              onMouseUp={handleMouseUp as any}
+              onMouseLeave={handleMouseUp as any}
+              className={cn(
+                'p-3 text-left transition-all duration-200 cursor-pointer relative',
                 isSelected
-                  ? 'bg-[#1e1e2e] border-[#7c5bf5] shadow-lg shadow-[#7c5bf5]/10'
-                  : 'bg-[#14141f] border-[#1e1e2e] hover:border-[#3a3a4a] active:bg-[#1e1e2e]'
-              }`}
+                  ? 'border-primary bg-secondary shadow-lg shadow-primary/10'
+                  : 'hover:border-muted-foreground/30 active:bg-secondary'
+              )}
             >
-              <button
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={(e) => {
                   e.stopPropagation();
                   setDeleteFolder(folder);
                 }}
-                className="absolute top-2 right-2 w-7 h-7 rounded-lg bg-[#0a0a0f] flex items-center justify-center text-sm opacity-60 hover:opacity-100 active:bg-[#2e2e3e]"
+                className="absolute top-1 right-1 w-7 h-7 p-0 text-sm opacity-60 hover:opacity-100"
               >
-                ⚙️
-              </button>
+                &#9881;
+              </Button>
               <div className="text-lg mb-1">{folder.icon}</div>
-              <div className="text-sm font-medium text-[#e2e2ef] truncate">{folder.name}</div>
-              <div className="text-xs text-[#6b6b80]">
+              <div className="text-sm font-medium text-foreground truncate">{folder.name}</div>
+              <div className="text-xs text-muted-foreground">
                 {done}/{folderTasks.length}
               </div>
-            </button>
+            </Card>
           );
         })}
       </div>
@@ -151,25 +156,28 @@ export function FolderList({
       {/* Edit Modal */}
       {editingFolder && (
         <DrawerModal open title="Edit Folder" onClose={() => setEditingFolder(null)}>
-            <Input
-              value={editName}
-              onChange={(e) => setEditName(e.target.value)}
-              placeholder="Folder name"
-              className="mb-3"
-            />
-            <div className="mb-4">
-              <div className="text-xs text-[#6b6b80] mb-2">Icon</div>
+          <div className="space-y-4">
+            <div>
+              <Label className="mb-1.5">Folder Name</Label>
+              <Input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                placeholder="Folder name"
+              />
+            </div>
+            <div>
+              <Label className="mb-1.5">Icon</Label>
               <div className="flex flex-wrap gap-2">
                 {FOLDER_ICONS.map((icon) => (
-                  <button
+                  <Button
                     key={icon}
+                    variant={editIcon === icon ? 'default' : 'secondary'}
+                    size="icon"
                     onClick={() => setEditIcon(icon)}
-                    className={`w-10 h-10 rounded-lg flex items-center justify-center text-xl ${
-                      editIcon === icon ? 'bg-[#7c5bf5]' : 'bg-[#1e1e2e]'
-                    }`}
+                    className="w-10 h-10 text-xl"
                   >
                     {icon}
-                  </button>
+                  </Button>
                 ))}
               </div>
             </div>
@@ -181,26 +189,27 @@ export function FolderList({
                 Save
               </Button>
             </div>
+          </div>
         </DrawerModal>
       )}
 
       {/* Delete Confirmation Modal */}
       {deleteFolder && (
-        <DrawerModal open title="Delete Folder?" onClose={() => setDeleteFolder(null)}>
-            <p className="text-sm text-[#6b6b80] mb-4">
-              Delete "{deleteFolder.name}" and all its tasks? This cannot be undone.
-            </p>
-            <div className="flex gap-2">
-              <Button variant="secondary" onClick={() => setDeleteFolder(null)} className="flex-1">
-                Cancel
-              </Button>
-              <Button variant="secondary" onClick={() => { handleEditFolder(deleteFolder); }} className="flex-1">
-                Edit
-              </Button>
-              <Button variant="danger" onClick={handleConfirmDelete} className="flex-1">
-                Delete
-              </Button>
-            </div>
+        <DrawerModal open title="Folder Options" onClose={() => setDeleteFolder(null)}>
+          <p className="text-sm text-muted-foreground mb-4">
+            Delete "{deleteFolder.name}" and all its tasks? This cannot be undone.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={() => setDeleteFolder(null)} className="flex-1">
+              Cancel
+            </Button>
+            <Button variant="secondary" onClick={() => { handleEditFolder(deleteFolder); }} className="flex-1">
+              Edit
+            </Button>
+            <Button variant="destructive" onClick={handleConfirmDelete} className="flex-1">
+              Delete
+            </Button>
+          </div>
         </DrawerModal>
       )}
     </div>

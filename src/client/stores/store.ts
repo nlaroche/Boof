@@ -1,10 +1,11 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun, Project, AggregatedSkill, GlobalStats, RecentLearning } from '../lib/types';
 
 interface UIState {
-  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals';
+  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals' | 'projects' | 'dashboard';
   selectedAgentId: string | null;
   selectedFolderId: string | null;
+  selectedProjectId: string | null;
 }
 
 interface StoreState {
@@ -25,10 +26,24 @@ interface StoreState {
   agentSkillsList: Record<string, Skill[]>;
   agentExperiments: Record<string, Experiment[]>;
   agentTimeline: Record<string, TimelineRun[]>;
+  projects: Project[];
+  projectRepos: Record<string, string[]>;
+  projectSkills: Record<string, AggregatedSkill[]>;
+  globalSkills: AggregatedSkill[];
+  globalStats: GlobalStats | null;
+  recentLearnings: RecentLearning[];
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
   ui: UIState;
 
+  setProjects: (projects: Project[]) => void;
+  updateProject: (project: Project) => void;
+  removeProject: (projectId: string) => void;
+  setProjectRepos: (projectId: string, repos: string[]) => void;
+  setProjectSkills: (projectId: string, skills: AggregatedSkill[]) => void;
+  setGlobalSkills: (skills: AggregatedSkill[]) => void;
+  setGlobalStats: (stats: GlobalStats) => void;
+  setRecentLearnings: (learnings: RecentLearning[]) => void;
   setFolders: (folders: Folder[]) => void;
   setTasks: (tasks: Task[]) => void;
   setAgents: (agents: Agent[]) => void;
@@ -70,6 +85,7 @@ interface StoreState {
   setActiveScreen: (screen: UIState['activeScreen']) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedFolderId: (id: string | null) => void;
+  setSelectedProjectId: (id: string | null) => void;
 }
 
 const MAX_OUTPUT_LINES = 500;
@@ -92,13 +108,54 @@ export const useStore = create<StoreState>((set) => ({
   agentSkillsList: {},
   agentExperiments: {},
   agentTimeline: {},
+  projects: [],
+  projectRepos: {},
+  projectSkills: {},
+  globalSkills: [],
+  globalStats: null,
+  recentLearnings: [],
   workflows: [],
   activeOutputs: {},
   ui: {
     activeScreen: 'home',
     selectedAgentId: null,
     selectedFolderId: null,
+    selectedProjectId: null,
   },
+
+  setProjects: (projects) => set({ projects }),
+
+  updateProject: (project) =>
+    set((state) => {
+      const index = state.projects.findIndex((p) => p.id === project.id);
+      if (index >= 0) {
+        const updated = [...state.projects];
+        updated[index] = project;
+        return { projects: updated };
+      }
+      return { projects: [...state.projects, project] };
+    }),
+
+  removeProject: (projectId) =>
+    set((state) => ({
+      projects: state.projects.filter((p) => p.id !== projectId),
+    })),
+
+  setProjectRepos: (projectId, repos) =>
+    set((state) => ({
+      projectRepos: { ...state.projectRepos, [projectId]: repos },
+    })),
+
+  setProjectSkills: (projectId, skills) =>
+    set((state) => ({
+      projectSkills: { ...state.projectSkills, [projectId]: skills },
+    })),
+
+  setGlobalSkills: (skills) => set({ globalSkills: skills }),
+
+  setGlobalStats: (stats) => set({ globalStats: stats }),
+
+  setRecentLearnings: (learnings) => set({ recentLearnings: learnings }),
 
   setFolders: (folders) => set({ folders }),
 
@@ -353,5 +410,10 @@ export const useStore = create<StoreState>((set) => ({
   setSelectedFolderId: (id) =>
     set((state) => ({
       ui: { ...state.ui, selectedFolderId: id },
+    })),
+
+  setSelectedProjectId: (id) =>
+    set((state) => ({
+      ui: { ...state.ui, selectedProjectId: id },
     })),
 }));

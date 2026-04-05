@@ -24,10 +24,10 @@ export function AgentOutput({ lines }: { lines: string[] }) {
     <div
       ref={containerRef}
       onScroll={handleScroll}
-      className="flex-1 overflow-y-auto bg-[#0a0a0f] p-3 font-mono text-sm leading-relaxed"
+      className="flex-1 overflow-y-auto bg-background p-3 font-mono text-sm leading-relaxed text-foreground"
     >
       {lines.length === 0 ? (
-        <div className="text-[#6b6b80] italic">No output yet. Send a command to get started.</div>
+        <div className="text-muted-foreground italic">No output yet. Send a command to get started.</div>
       ) : (
         lines.map((line, i) => (
           <div

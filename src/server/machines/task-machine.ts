@@ -43,16 +43,24 @@ export function createTaskMachineDef(ctx: Partial<TaskContext> = {}): MachineDef
         description: 'Task not yet started, available for assignment',
         invariant: (c) => c.assignedAgentId === null,
         onEnter: (c) => ({ ...c, assignedAgentId: null }),
+        meta: { skills: [], toolAccess: [], contextNeeded: ['goal-context'] },
       },
       [TaskStatus.IN_PROGRESS]: {
         description: 'Task is being worked on by an agent',
         invariant: (c) => c.assignedAgentId !== null,
+        meta: {
+          skills: ['code-editing'],
+          toolAccess: ['pty', 'filesystem'],
+          contextNeeded: ['task-description', 'goal-context', 'repo-context'],
+        },
       },
       [TaskStatus.DONE]: {
         description: 'Task completed successfully',
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
       [TaskStatus.ARCHIVED]: {
         description: 'Task archived (no longer relevant)',
+        meta: { skills: [], toolAccess: [], contextNeeded: [] },
       },
     },
     transitions: [
