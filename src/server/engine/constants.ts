@@ -52,6 +52,52 @@ export const ExperimentStatus = {
   COMPLETED: 'completed',
 } as const;
 
+export const MergeGateStatus = {
+  PENDING: 'pending',
+  CONSOLIDATING: 'consolidating',
+  REVIEWING: 'reviewing',
+  REVISING: 'revising',
+  TESTING: 'testing',
+  HEALING: 'healing',
+  APPROVED: 'approved',
+  MERGING: 'merging',
+  MERGED: 'merged',
+  FAILED: 'failed',
+} as const;
+
+export const ReviewSeverity = {
+  CRITICAL: 'critical',
+  WARNING: 'warning',
+  INFO: 'info',
+  SUGGESTION: 'suggestion',
+} as const;
+
+export const ReviewCategory = {
+  BUG: 'bug',
+  SECURITY: 'security',
+  PERFORMANCE: 'performance',
+  STYLE: 'style',
+  ARCHITECTURE: 'architecture',
+  TEST_COVERAGE: 'test-coverage',
+} as const;
+
+export const AuditActionType = {
+  CONSOLIDATE: 'consolidate',
+  REVIEW: 'review',
+  TEST: 'test',
+  HEAL: 'heal',
+  MERGE: 'merge',
+  DECISION: 'decision',
+  ERROR: 'error',
+} as const;
+
+export const AuditOutcome = {
+  SUCCESS: 'success',
+  FAILURE: 'failure',
+  TIMEOUT: 'timeout',
+  ESCALATED: 'escalated',
+} as const;
+
 export const ProposalStatus = {
   PENDING: 'pending',
   APPROVED: 'approved',
@@ -76,6 +122,11 @@ export type ProjectStatusType = typeof ProjectStatus[keyof typeof ProjectStatus]
 export type CommandStatusType = typeof CommandStatus[keyof typeof CommandStatus];
 export type ImprovementStatusType = typeof ImprovementStatus[keyof typeof ImprovementStatus];
 export type ExperimentStatusType = typeof ExperimentStatus[keyof typeof ExperimentStatus];
+export type MergeGateStatusType = typeof MergeGateStatus[keyof typeof MergeGateStatus];
+export type ReviewSeverityType = typeof ReviewSeverity[keyof typeof ReviewSeverity];
+export type ReviewCategoryType = typeof ReviewCategory[keyof typeof ReviewCategory];
+export type AuditActionTypeType = typeof AuditActionType[keyof typeof AuditActionType];
+export type AuditOutcomeType = typeof AuditOutcome[keyof typeof AuditOutcome];
 export type ProposalStatusType = typeof ProposalStatus[keyof typeof ProposalStatus];
 export type WorkflowOnFailType = typeof WorkflowOnFail[keyof typeof WorkflowOnFail];
 
@@ -102,6 +153,12 @@ export const Timeouts = {
   JUNCTION: 10_000,
   /** UI verification (Playwright) */
   UI_VERIFY: 30_000,
+  /** E2E test suite (repo-specific) */
+  E2E_TEST: 300_000,
+  /** Review agent analysis */
+  REVIEW: 120_000,
+  /** Consolidation (merging multiple branches) */
+  CONSOLIDATION: 180_000,
   /** Scheduler check interval */
   SCHEDULER_INTERVAL: 60_000,
 } as const;
@@ -143,6 +200,14 @@ export const Limits = {
   MAX_REFLECTIONS_IN_PROMPT: 5,
   /** Max pending improvements to include in prompt */
   MAX_IMPROVEMENTS_IN_PROMPT: 3,
+  /** Max review cycles (review → revise → re-review) */
+  MAX_REVIEW_CYCLES: 3,
+  /** Max self-heal attempts per merge gate */
+  MAX_HEAL_ATTEMPTS: 2,
+  /** Min review score to pass (0-100) */
+  MIN_REVIEW_SCORE: 70,
+  /** Consolidation cooldown before auto-trigger (ms) */
+  CONSOLIDATION_COOLDOWN_MS: 300_000,
   /** Max matching skills to include in prompt */
   MAX_SKILLS_IN_PROMPT: 3,
   /** Agent name slug max length */

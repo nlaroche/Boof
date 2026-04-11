@@ -22,8 +22,10 @@ import {
   addProjectRepo, removeProjectRepo, listProjectRepos, getProjectGoals,
   listTasks, listFolders, listAgents, listGoals, listWorkflows, listCommands, listProjects,
   listGoalLog, listAgentCommands, listAgentActivity,
+  listGuidelines as dbListGuidelines, updateGuidelineStatus, updateGuideline,
+  createGuideline, deleteGuideline as dbDeleteGuideline, approveAllGuidelines,
 } from './db-helpers.js';
-import type { Agent, Command, GoalLogEntry, GoalStats, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun } from '../client/lib/types.js';
+import type { Agent, Command, GoalLogEntry, GoalStats, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun, ReviewGuideline } from '../client/lib/types.js';
 import {
   getAgentXpEvents,
   skipImprovement, markImprovementRunning,
@@ -34,6 +36,7 @@ import {
 import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, restartAgent, hasAgent } from './pty-manager.js';
 import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd, resetAgentSessionCounters } from './autopilot.js';
 import { createWorktree, removeWorktree } from './systems/git-ops.js';
+import { scanRepoForGuidelines, scanFolderForGuidelines, buildDeepScanPrompt, parseDeepScanOutput, storeDeepScanGuidelines } from './systems/review-agent.js';
 import {
   parseCommand, parseCommands,
   appendAgentOutput, clearAgentOutput, getAgentOutputBuffer,
@@ -535,6 +538,108 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
     case 'project:skills': {
       const { projectId } = message as any;
       send(ws, { type: 'project:skills:result', projectId, skills: getProjectSkills(projectId) });
+      break;
+    }
+
+    // ── Guidelines ──
+
+    case 'guidelines:scan': {
+      const { repoPath } = message as any;
+      const broadcastGuideline = (g: ReviewGuideline) => broadcast({ type: 'guidelines:updated', guideline: g } as any);
+      const result = scanRepoForGuidelines(repoPath, broadcastGuideline);
+      send(ws, { type: 'guidelines:scanned', repoPath, proposed: result.proposed, existingCount: result.existingCount } as any);
+      break;
+    }
+
+    case 'guidelines:list': {
+      const { repoPath } = message as any;
+      const guidelines = dbListGuidelines(repoPath);
+      send(ws, { type: 'guidelines:list', repoPath, guidelines } as any);
+      break;
+    }
+
+    case 'guidelines:approve': {
+      const { guidelineId } = message as any;
+      const updated = updateGuidelineStatus(guidelineId, 'approved', (g) => broadcast({ type: 'guidelines:updated', guideline: g } as any));
+      break;
+    }
+
+    case 'guidelines:reject': {
+      const { guidelineId } = message as any;
+      const updated = updateGuidelineStatus(guidelineId, 'rejected', (g) => broadcast({ type: 'guidelines:updated', guideline: g } as any));
+      break;
+    }
+
+    case 'guidelines:approve-all': {
+      const { repoPath } = message as any;
+      const approved = approveAllGuidelines(repoPath);
+      for (const g of approved) {
+        broadcast({ type: 'guidelines:updated', guideline: g } as any);
+      }
+      break;
+    }
+
+    case 'guidelines:update': {
+      const { guidelineId, fields } = message as any;
+      updateGuideline(guidelineId, fields, (g) => broadcast({ type: 'guidelines:updated', guideline: g } as any));
+      break;
+    }
+
+    case 'guidelines:add': {
+      const { repoPath, name, content, type: gType, scope } = message as any;
+      createGuideline({
+        repoPath,
+        name,
+        content,
+        type: gType || 'custom',
+        source: 'manual',
+        scope: scope || '*',
+        status: 'approved', // user-added guidelines are approved by default
+      }, (g) => broadcast({ type: 'guidelines:updated', guideline: g } as any));
+      break;
+    }
+
+    case 'guidelines:add-folder': {
+      const { repoPath, folderPath, type: fType } = message as any;
+      const created = scanFolderForGuidelines(
+        repoPath, folderPath, fType || 'custom',
+        (g) => broadcast({ type: 'guidelines:updated', guideline: g } as any)
+      );
+      // Send back the full list so the UI can update
+      const allGuidelines = dbListGuidelines(repoPath);
+      send(ws, { type: 'guidelines:list', repoPath, guidelines: allGuidelines } as any);
+      break;
+    }
+
+    case 'guidelines:delete': {
+      const { guidelineId } = message as any;
+      dbDeleteGuideline(guidelineId, (id) => broadcast({ type: 'guidelines:deleted', guidelineId: id } as any));
+      break;
+    }
+
+    case 'guidelines:deep-scan': {
+      const { repoPath } = message as any;
+      const broadcastGuideline = (g: ReviewGuideline) => broadcast({ type: 'guidelines:updated', guideline: g } as any);
+
+      // Build the source map and prompt
+      const { prompt, sourceMap } = buildDeepScanPrompt(repoPath);
+
+      if (!prompt) {
+        send(ws, { type: 'guidelines:deep-scan:result', repoPath, sourceMapSize: 0, prompt: '', guidelines: [] } as any);
+        break;
+      }
+
+      // The deep-scan prompt is returned to the client so it can be sent to an agent.
+      // The client (or autopilot) sends the prompt to an LLM, gets the response,
+      // then the response can be parsed and stored as guidelines.
+      // For now, we return the prompt and source map size so the UI can orchestrate this.
+      send(ws, {
+        type: 'guidelines:deep-scan:result',
+        repoPath,
+        sourceMapSize: sourceMap.length,
+        prompt,
+        guidelines: [],
+      } as any);
       break;
     }
 

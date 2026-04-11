@@ -11,9 +11,11 @@ import { stripAnsi } from './git-utils.js';
 import {
   hasUncommittedChanges, getCurrentBranch, slugify,
   createAgentBranch, abandonBranch, mergeToMain,
+  mergeToGoalBranch, createGoalBranch,
   listAgentBranches as gitListAgentBranches, autoCommit,
   getDefaultBranch,
 } from './systems/git-ops.js';
+import { isGoalReadyForConsolidation, initiateConsolidation } from './systems/consolidation.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -1226,18 +1228,33 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.error('[autopilot] Self-improve error:', err);
     }
 
-    // Auto-merge successful branches into main
+    // Merge successful branches into goal branch (not main — consolidation layer handles final merge)
     if (agentBranch) {
       if (success && diffStats) {
-        // Build passed, code committed — merge into main
-        const mergeResult = await mergeToMain(agent.working_directory, agentCwd, agentBranch);
+        // Build passed, code committed — merge into goal branch
+        const goalSlugForBranch = slugify(goal.name);
+        const targetBranch = getDefaultBranch(agent.working_directory);
+        const goalBranch = await createGoalBranch(agent.working_directory, goalSlugForBranch, targetBranch);
+        const mergeResult = await mergeToGoalBranch(agent.working_directory, agentBranch, goalBranch);
         if (mergeResult.success) {
-          console.log(`[autopilot] Auto-merged ${agentBranch} into main`);
-          logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch}`, '', 0, true);
+          console.log(`[autopilot] Merged ${agentBranch} into goal branch ${goalBranch}`);
+          logToGoal(goalId, agentId, 'branch_merged', `Merged ${agentBranch} → ${goalBranch}`, '', 0, true);
           updateRunMetricMerge(agentId, goalId, currentTask.id, true);
           agentBranch = '';
+
+          // Check if goal is ready for consolidation (all tasks done)
+          if (isGoalReadyForConsolidation(goalId)) {
+            console.log(`[autopilot] Goal ${goalId} ready for consolidation — triggering merge gate`);
+            logToGoal(goalId, agentId, 'consolidation_triggered', `All tasks done, initiating review & merge`, '', 0, true);
+            // Fire-and-forget — consolidation runs asynchronously
+            initiateConsolidation(goalId, agent.working_directory, (gate) => {
+              broadcast({ type: 'merge-gate:updated' as any, gate });
+            }).catch(err => {
+              console.error(`[autopilot] Consolidation error for goal ${goalId}:`, err);
+            });
+          }
         } else {
-          console.log(`[autopilot] Merge failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);
+          console.log(`[autopilot] Merge to goal branch failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);
           logToGoal(goalId, agentId, 'merge_failed', `Merge conflict: ${mergeResult.output.slice(0, 150)}`, '', 0, false);
           updateRunMetricMerge(agentId, goalId, currentTask.id, false);
           // Stay on agent branch — don't lose work

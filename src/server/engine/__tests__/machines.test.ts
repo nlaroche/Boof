@@ -18,6 +18,7 @@ import { createGoalMachineDef, type GoalState, type GoalEvent, type GoalContext 
 import { createAgentMachineDef, type AgentState, type AgentEvent, type AgentContext } from '../../machines/agent-machine.js';
 import { createCommandMachineDef, type CommandState, type CommandEvent, type CommandContext } from '../../machines/command-machine.js';
 import { createAutopilotMachineDef, type AutopilotState, type AutopilotEvent, type AutopilotContext } from '../../machines/autopilot-machine.js';
+import { createMergeGateMachineDef, type MergeGateState, type MergeGateEvent, type MergeGateContext } from '../../machines/merge-gate-machine.js';
 
 // ============================================================================
 // Task Machine
@@ -1068,5 +1069,174 @@ describe('StateMeta Annotations', () => {
     const taskMeta = tm.getStateMeta();
     assert.ok(taskMeta);
     assert.deepEqual(taskMeta.skills, []);
+  });
+});
+
+// ============================================================================
+// Merge Gate Machine
+// ============================================================================
+
+describe('MergeGateMachine', () => {
+  it('passes structural validation', () => {
+    const def = createMergeGateMachineDef();
+    const errors = validateMachineDefinition(def, ['merged', 'failed'] as MergeGateState[]);
+    assert.deepEqual(errors, [], `Validation errors: ${JSON.stringify(errors)}`);
+  });
+
+  it('follows happy path: pending → consolidating → reviewing → testing → approved → merging → merged', () => {
+    const def = createMergeGateMachineDef({
+      mergeGateId: 'mg1',
+      goalId: 'g1',
+      taskBranches: ['agent/bot/task-1', 'agent/bot/task-2'],
+    });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    assert.equal(m.state, 'pending');
+
+    m.send('consolidate', { branches: ['agent/bot/task-1', 'agent/bot/task-2'] });
+    assert.equal(m.state, 'consolidating');
+
+    m.send('consolidated', { goalBranch: 'goal/my-feature', diff: 'diff content' });
+    assert.equal(m.state, 'reviewing');
+    assert.equal(m.context.goalBranchName, 'goal/my-feature');
+
+    m.send('approved', { verdict: { score: 85, verdict: 'approve', summary: 'LGTM' } });
+    assert.equal(m.state, 'testing');
+
+    m.send('tests_passed', { results: { success: true, output: '', failures: [] } });
+    assert.equal(m.state, 'approved');
+
+    m.send('merge');
+    assert.equal(m.state, 'merging');
+
+    m.send('merged');
+    assert.equal(m.state, 'merged');
+  });
+
+  it('handles review → revise → re-review loop', () => {
+    const def = createMergeGateMachineDef({
+      mergeGateId: 'mg2',
+      goalId: 'g2',
+      goalBranchName: 'goal/test',
+      maxReviewCycles: 3,
+    });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+    assert.equal(m.state, 'reviewing');
+
+    // First review: changes requested
+    m.send('changes_requested', { verdict: { score: 40, verdict: 'changes_requested', summary: 'Fix issues' } });
+    assert.equal(m.state, 'revising');
+    assert.equal(m.context.reviewCycles, 1);
+
+    // Revision complete
+    m.send('revised', { diff: 'updated diff' });
+    assert.equal(m.state, 'reviewing');
+
+    // Second review: approved
+    m.send('approved', { verdict: { score: 90, verdict: 'approve', summary: 'LGTM' } });
+    assert.equal(m.state, 'testing');
+    assert.equal(m.context.reviewCycles, 2);
+  });
+
+  it('fails after max review cycles', () => {
+    const def = createMergeGateMachineDef({
+      mergeGateId: 'mg3',
+      goalBranchName: 'goal/test',
+      maxReviewCycles: 1,
+    });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+
+    // First review uses a cycle
+    m.send('changes_requested', { verdict: { score: 30, verdict: 'changes_requested', summary: 'Needs work' } });
+    assert.equal(m.state, 'revising');
+    assert.equal(m.context.reviewCycles, 1);
+
+    m.send('revised');
+    assert.equal(m.state, 'reviewing');
+
+    // Second review at max cycles → fails
+    m.send('changes_requested');
+    assert.equal(m.state, 'failed');
+  });
+
+  it('handles test failure → heal → re-test', () => {
+    const def = createMergeGateMachineDef({
+      mergeGateId: 'mg4',
+      goalBranchName: 'goal/test',
+      maxHealAttempts: 2,
+    });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+    m.send('approved', { verdict: { score: 95, verdict: 'approve', summary: 'Good' } });
+    assert.equal(m.state, 'testing');
+
+    // Tests fail → healing
+    m.send('tests_failed', { results: { success: false, output: 'error', failures: ['test1'] } });
+    assert.equal(m.state, 'healing');
+
+    // Heal succeeds → back to testing
+    m.send('healed');
+    assert.equal(m.state, 'testing');
+    assert.equal(m.context.healAttempts, 1);
+
+    // Tests pass
+    m.send('tests_passed', { results: { success: true, output: '', failures: [] } });
+    assert.equal(m.state, 'approved');
+  });
+
+  it('fails after max heal attempts', () => {
+    const def = createMergeGateMachineDef({
+      mergeGateId: 'mg5',
+      goalBranchName: 'goal/test',
+      maxHealAttempts: 1,
+    });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+    m.send('approved', { verdict: { score: 95, verdict: 'approve', summary: 'OK' } });
+
+    // Test fail → heal
+    m.send('tests_failed');
+    assert.equal(m.state, 'healing');
+    m.send('healed');
+    assert.equal(m.context.healAttempts, 1);
+
+    // Test fail again → should fail (max heal attempts reached)
+    m.send('tests_failed');
+    assert.equal(m.state, 'failed');
+  });
+
+  it('handles abort from any active state', () => {
+    const def = createMergeGateMachineDef({ mergeGateId: 'mg6', goalBranchName: 'goal/test' });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+    assert.equal(m.state, 'reviewing');
+
+    m.send('abort', { error: 'User cancelled' });
+    assert.equal(m.state, 'failed');
+    assert.equal(m.context.error, 'User cancelled');
+  });
+
+  it('handles rejection immediately', () => {
+    const def = createMergeGateMachineDef({ mergeGateId: 'mg7', goalBranchName: 'goal/test' });
+    const m = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    m.send('consolidate', { branches: ['b1'] });
+    m.send('consolidated', { goalBranch: 'goal/test', diff: 'diff' });
+
+    m.send('rejected', { verdict: { score: 10, verdict: 'reject', summary: 'Dangerous changes' } });
+    assert.equal(m.state, 'failed');
+    assert.equal(m.context.error, 'Review rejected');
   });
 });

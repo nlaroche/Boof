@@ -349,6 +349,108 @@ export async function initDb(): Promise<Database> {
   // Merge success tracking on run_metrics
   addColumnIfMissing('run_metrics', 'merge_success', 'INTEGER DEFAULT NULL');
 
+  // ── Review & Merge Layer ──
+
+  // Review configurations per repo (review-as-code)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_configs (
+      id TEXT PRIMARY KEY,
+      repo_path TEXT NOT NULL,
+      rules TEXT NOT NULL DEFAULT '{}',
+      architecture_doc TEXT DEFAULT '',
+      conventions TEXT DEFAULT '',
+      test_command TEXT DEFAULT '',
+      target_branch TEXT DEFAULT 'develop',
+      merge_strategy TEXT DEFAULT 'squash',
+      min_review_score INTEGER DEFAULT 70,
+      max_review_cycles INTEGER DEFAULT 3,
+      max_heal_attempts INTEGER DEFAULT 2,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Merge gate state tracking
+  db.run(`
+    CREATE TABLE IF NOT EXISTS merge_gates (
+      id TEXT PRIMARY KEY,
+      goal_id TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      goal_branch TEXT NOT NULL,
+      target_branch TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      review_agent_id TEXT,
+      review_cycles INTEGER DEFAULT 0,
+      heal_attempts INTEGER DEFAULT 0,
+      review_verdict TEXT DEFAULT NULL,
+      test_results TEXT DEFAULT NULL,
+      consolidated_diff TEXT DEFAULT NULL,
+      merge_strategy TEXT DEFAULT 'squash',
+      merged_at TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  // Hash-chained audit log
+  db.run(`
+    CREATE TABLE IF NOT EXISTS audit_records (
+      id TEXT PRIMARY KEY,
+      prev_hash TEXT DEFAULT NULL,
+      timestamp TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      session_id TEXT DEFAULT NULL,
+      merge_gate_id TEXT DEFAULT NULL,
+      goal_id TEXT DEFAULT NULL,
+      action_type TEXT NOT NULL,
+      action_detail TEXT NOT NULL DEFAULT '{}',
+      outcome TEXT NOT NULL,
+      confidence REAL DEFAULT NULL,
+      duration_ms INTEGER DEFAULT NULL,
+      tokens_used INTEGER DEFAULT NULL,
+      cost_usd REAL DEFAULT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Review findings (individual issues found during review)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_findings (
+      id TEXT PRIMARY KEY,
+      merge_gate_id TEXT NOT NULL,
+      review_cycle INTEGER NOT NULL DEFAULT 1,
+      severity TEXT NOT NULL,
+      file_path TEXT NOT NULL,
+      line_start INTEGER DEFAULT NULL,
+      line_end INTEGER DEFAULT NULL,
+      category TEXT NOT NULL,
+      description TEXT NOT NULL,
+      suggestion TEXT DEFAULT NULL,
+      resolved INTEGER DEFAULT 0,
+      resolved_by TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Review guidelines — individual, approvable guideline entries per repo
+  db.run(`
+    CREATE TABLE IF NOT EXISTS review_guidelines (
+      id TEXT PRIMARY KEY,
+      repo_path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT DEFAULT '',
+      type TEXT NOT NULL DEFAULT 'architecture',
+      source TEXT NOT NULL DEFAULT 'discovered',
+      source_path TEXT DEFAULT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      scope TEXT DEFAULT '*',
+      status TEXT NOT NULL DEFAULT 'proposed',
+      priority INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
   // Reset any agents stuck in 'running' from a previous server crash
   db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 

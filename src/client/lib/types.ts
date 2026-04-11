@@ -286,6 +286,100 @@ export interface RecentLearning {
   createdAt: string;
 }
 
+// ── Review & Merge Layer ──
+
+export interface ReviewConfig {
+  id: string;
+  repo_path: string;
+  rules: string;
+  architecture_doc: string;
+  conventions: string;
+  test_command: string;
+  target_branch: string;
+  merge_strategy: 'squash' | 'no-ff';
+  min_review_score: number;
+  max_review_cycles: number;
+  max_heal_attempts: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MergeGate {
+  id: string;
+  goal_id: string;
+  repo_path: string;
+  goal_branch: string;
+  target_branch: string;
+  status: 'pending' | 'consolidating' | 'reviewing' | 'revising' | 'testing' | 'healing' | 'approved' | 'merging' | 'merged' | 'failed';
+  review_agent_id: string | null;
+  review_cycles: number;
+  heal_attempts: number;
+  review_verdict: string | null;
+  test_results: string | null;
+  consolidated_diff: string | null;
+  merge_strategy: string;
+  merged_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AuditRecord {
+  id: string;
+  prev_hash: string | null;
+  timestamp: string;
+  agent_id: string;
+  session_id: string | null;
+  merge_gate_id: string | null;
+  goal_id: string | null;
+  action_type: 'consolidate' | 'review' | 'test' | 'heal' | 'merge' | 'decision' | 'error';
+  action_detail: string;
+  outcome: 'success' | 'failure' | 'timeout' | 'escalated';
+  confidence: number | null;
+  duration_ms: number | null;
+  tokens_used: number | null;
+  cost_usd: number | null;
+  created_at: string;
+}
+
+export interface ReviewFinding {
+  id: string;
+  merge_gate_id: string;
+  review_cycle: number;
+  severity: 'critical' | 'warning' | 'info' | 'suggestion';
+  file_path: string;
+  line_start: number | null;
+  line_end: number | null;
+  category: 'bug' | 'security' | 'performance' | 'style' | 'architecture' | 'test-coverage';
+  description: string;
+  suggestion: string | null;
+  resolved: number;
+  resolved_by: string | null;
+  created_at: string;
+}
+
+export interface ReviewGuideline {
+  id: string;
+  repo_path: string;
+  name: string;
+  description: string;
+  /** architecture = structural docs, convention = style/rules, custom = user-added */
+  type: 'architecture' | 'convention' | 'custom' | 'test' | 'security';
+  /** How it got here: discovered = auto-scan, manual = user-added, folder = from assigned folder */
+  source: 'discovered' | 'manual' | 'folder';
+  /** File path this was discovered from (null for manual) */
+  source_path: string | null;
+  /** The actual guideline content (MD text) */
+  content: string;
+  /** Glob pattern for which files this guideline applies to ('*' = all) */
+  scope: string;
+  /** proposed = needs user approval, approved = active, rejected = user dismissed */
+  status: 'proposed' | 'approved' | 'rejected';
+  /** Higher priority guidelines are shown first in the review prompt */
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types
@@ -349,7 +443,17 @@ export type WSClientMessage =
   | { type: 'global:skills' }
   | { type: 'global:stats' }
   | { type: 'global:learnings'; limit?: number }
-  | { type: 'project:skills'; projectId: string };
+  | { type: 'project:skills'; projectId: string }
+  | { type: 'guidelines:scan'; repoPath: string }
+  | { type: 'guidelines:list'; repoPath: string }
+  | { type: 'guidelines:approve'; guidelineId: string }
+  | { type: 'guidelines:reject'; guidelineId: string }
+  | { type: 'guidelines:approve-all'; repoPath: string }
+  | { type: 'guidelines:update'; guidelineId: string; fields: { name?: string; content?: string; scope?: string; priority?: number; type?: ReviewGuideline['type'] } }
+  | { type: 'guidelines:add'; repoPath: string; name: string; content: string; type?: ReviewGuideline['type']; scope?: string }
+  | { type: 'guidelines:add-folder'; repoPath: string; folderPath: string; type?: ReviewGuideline['type'] }
+  | { type: 'guidelines:delete'; guidelineId: string }
+  | { type: 'guidelines:deep-scan'; repoPath: string };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[] }
@@ -400,7 +504,12 @@ export type WSServerMessage =
   | { type: 'global:skills:result'; skills: AggregatedSkill[] }
   | { type: 'global:stats:result'; stats: GlobalStats }
   | { type: 'global:learnings:result'; learnings: RecentLearning[] }
-  | { type: 'project:skills:result'; projectId: string; skills: AggregatedSkill[] };
+  | { type: 'project:skills:result'; projectId: string; skills: AggregatedSkill[] }
+  | { type: 'guidelines:list'; repoPath: string; guidelines: ReviewGuideline[] }
+  | { type: 'guidelines:scanned'; repoPath: string; proposed: ReviewGuideline[]; existingCount: number }
+  | { type: 'guidelines:updated'; guideline: ReviewGuideline }
+  | { type: 'guidelines:deleted'; guidelineId: string }
+  | { type: 'guidelines:deep-scan:result'; repoPath: string; sourceMapSize: number; prompt: string; guidelines: ReviewGuideline[] };
 
 export interface RepoInfo {
   name: string;

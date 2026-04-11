@@ -19,3 +19,25 @@ export function assertNotProtected(name: string): void {
     throw new Error(`Refusing to operate on protected branch: ${name}`);
   }
 }
+
+/** Check if a branch is a goal branch (goal/{slug}) */
+export function isGoalBranch(name: string): boolean {
+  return name.startsWith('goal/');
+}
+
+/** Check if a branch is an agent branch (agent/{name}/{slug}) */
+export function isAgentBranch(name: string): boolean {
+  return name.startsWith('agent/');
+}
+
+/**
+ * Check if direct commits are allowed on this branch.
+ * Protected branches: never. Goal branches: only during revision/healing.
+ * Agent branches: always.
+ */
+export function canCommitTo(name: string, context?: { isRevision?: boolean; isHealing?: boolean }): boolean {
+  if (isProtectedBranch(name)) return false;
+  if (isGoalBranch(name)) return !!(context?.isRevision || context?.isHealing);
+  if (isAgentBranch(name)) return true;
+  return false;
+}

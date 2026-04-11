@@ -151,6 +151,189 @@ export async function mergeToMain(
   }
 }
 
+// ── Goal Branch Operations ──
+
+/**
+ * Create a goal branch from the target branch.
+ * Returns the branch name (goal/{goalSlug}).
+ */
+export async function createGoalBranch(
+  cwd: string,
+  goalSlug: string,
+  targetBranch?: string,
+): Promise<string> {
+  const base = targetBranch || getDefaultBranch(cwd);
+  const branchName = `goal/${slugify(goalSlug)}`;
+
+  // Check if branch already exists
+  try {
+    await execAsync(`git rev-parse --verify "${branchName}"`, {
+      cwd,
+      timeout: Timeouts.GIT_QUICK,
+    });
+    // Branch exists — just checkout
+    console.log(`[git-ops] Goal branch already exists: ${branchName}`);
+    return branchName;
+  } catch {
+    // Branch doesn't exist — create it
+  }
+
+  await execAsync(`git branch "${branchName}" origin/${base}`, {
+    cwd,
+    timeout: Timeouts.GIT_CHECKOUT,
+  });
+
+  console.log(`[git-ops] Created goal branch: ${branchName} (from origin/${base})`);
+  return branchName;
+}
+
+/**
+ * Merge a task/agent branch into a goal branch.
+ * Operates from the main repo dir (not a worktree).
+ */
+export async function mergeToGoalBranch(
+  mainRepoDir: string,
+  taskBranch: string,
+  goalBranch: string,
+): Promise<{ success: boolean; output: string }> {
+  try {
+    // Save current branch to restore later
+    let originalBranch: string;
+    try {
+      const { stdout } = await execAsync('git branch --show-current', {
+        cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
+      });
+      originalBranch = stdout.trim();
+    } catch {
+      originalBranch = getDefaultBranch(mainRepoDir);
+    }
+
+    const { stdout, stderr } = await execAsync(
+      `git checkout "${goalBranch}" && git merge --no-ff "${taskBranch}" -m "Merge task ${taskBranch} into ${goalBranch}"`,
+      { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
+    );
+
+    // Delete the merged task branch
+    await execAsync(`git branch -d "${taskBranch}"`, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
+    }).catch(() => {});
+
+    // Return to original branch
+    await execAsync(`git checkout "${originalBranch}"`, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
+    }).catch(() => {});
+
+    console.log(`[git-ops] Merged ${taskBranch} → ${goalBranch}`);
+    return { success: true, output: stdout + stderr };
+  } catch (err: any) {
+    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
+    // Try to return to a safe branch
+    await execAsync(`git checkout ${getDefaultBranch(mainRepoDir)}`, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
+    }).catch(() => {});
+    return { success: false, output: err.stderr || err.stdout || String(err) };
+  }
+}
+
+/**
+ * Merge a goal branch into the target branch (final merge).
+ * Supports squash or no-ff merge strategies.
+ */
+export async function mergeGoalToTarget(
+  mainRepoDir: string,
+  goalBranch: string,
+  targetBranch: string,
+  strategy: 'squash' | 'no-ff' = 'squash',
+): Promise<{ success: boolean; output: string }> {
+  try {
+    let mergeCmd: string;
+    if (strategy === 'squash') {
+      mergeCmd = `git checkout "${targetBranch}" && git merge --squash "${goalBranch}" && git commit -m "Merge goal ${goalBranch}"`;
+    } else {
+      mergeCmd = `git checkout "${targetBranch}" && git merge --no-ff "${goalBranch}" -m "Merge goal ${goalBranch}"`;
+    }
+
+    const { stdout, stderr } = await execAsync(mergeCmd, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE,
+    });
+
+    // Delete the goal branch after successful merge
+    await execAsync(`git branch -d "${goalBranch}"`, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
+    }).catch(() => {
+      // Force delete if not fully merged (squash merges don't register as merged)
+      execAsync(`git branch -D "${goalBranch}"`, {
+        cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
+      }).catch(() => {});
+    });
+
+    console.log(`[git-ops] Merged ${goalBranch} → ${targetBranch} (strategy: ${strategy})`);
+    return { success: true, output: stdout + stderr };
+  } catch (err: any) {
+    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
+    await execAsync(`git checkout ${targetBranch}`, {
+      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
+    }).catch(() => {});
+    return { success: false, output: err.stderr || err.stdout || String(err) };
+  }
+}
+
+/**
+ * Get the consolidated diff between a goal branch and its target branch.
+ * This is what the review agent sees.
+ */
+export async function getConsolidatedDiff(
+  cwd: string,
+  goalBranch: string,
+  targetBranch: string,
+): Promise<string> {
+  try {
+    const { stdout } = await execAsync(
+      `git diff "${targetBranch}...${goalBranch}"`,
+      { cwd, timeout: Timeouts.GIT_MERGE, maxBuffer: 10 * 1024 * 1024 }
+    );
+    return stdout;
+  } catch (err: any) {
+    console.error(`[git-ops] Failed to get consolidated diff:`, err.message || err);
+    return '';
+  }
+}
+
+/**
+ * List files changed between a goal branch and its target branch.
+ */
+export async function getGoalBranchFiles(
+  cwd: string,
+  goalBranch: string,
+  targetBranch: string,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync(
+      `git diff --name-only "${targetBranch}...${goalBranch}"`,
+      { cwd, timeout: Timeouts.GIT_QUICK }
+    );
+    return stdout.split('\n').filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/** List all goal branches for a given working directory. */
+export async function listGoalBranches(workingDirectory: string): Promise<string[]> {
+  try {
+    const { stdout } = await execAsync('git branch --list "goal/*"', {
+      cwd: workingDirectory,
+      timeout: Timeouts.GIT_QUICK,
+    });
+    return stdout
+      .split('\n')
+      .map(b => b.trim().replace(/^\*\s*/, ''))
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 /** List all agent branches for a given working directory. */
 export async function listAgentBranches(workingDirectory: string): Promise<string[]> {
   try {

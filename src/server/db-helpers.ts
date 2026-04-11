@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -601,4 +601,249 @@ export function getSummarizerContext(limit = 5): SummarizerContext {
   );
 
   return { recentCompletions, cyclingHistory };
+}
+
+// ============================================================================
+// Merge Gate Helpers
+// ============================================================================
+
+export interface MergeGateCreateInput {
+  goalId: string;
+  repoPath: string;
+  goalBranch: string;
+  targetBranch: string;
+  mergeStrategy?: string;
+}
+
+export function createMergeGate(input: MergeGateCreateInput, broadcast: (gate: MergeGate) => void): MergeGate | null {
+  const id = generateId();
+  const now = getNow();
+  return createAndFetch<MergeGate>(
+    'merge_gates', id,
+    `INSERT INTO merge_gates (id, goal_id, repo_path, goal_branch, target_branch, status, merge_strategy, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+    [id, input.goalId, input.repoPath, input.goalBranch, input.targetBranch, input.mergeStrategy || 'squash', now, now],
+    broadcast
+  );
+}
+
+export function getMergeGate(id: string): MergeGate | null {
+  return getOne<MergeGate>('SELECT * FROM merge_gates WHERE id = ?', [id]);
+}
+
+export function getMergeGateForGoal(goalId: string): MergeGate | null {
+  return getOne<MergeGate>('SELECT * FROM merge_gates WHERE goal_id = ? ORDER BY created_at DESC LIMIT 1', [goalId]);
+}
+
+export function updateMergeGate(id: string, fields: Partial<MergeGate>, broadcast: (gate: MergeGate) => void): MergeGate | null {
+  const updates: string[] = [];
+  const values: unknown[] = [];
+
+  if (fields.status !== undefined) { updates.push('status = ?'); values.push(fields.status); }
+  if (fields.review_agent_id !== undefined) { updates.push('review_agent_id = ?'); values.push(fields.review_agent_id); }
+  if (fields.review_cycles !== undefined) { updates.push('review_cycles = ?'); values.push(fields.review_cycles); }
+  if (fields.heal_attempts !== undefined) { updates.push('heal_attempts = ?'); values.push(fields.heal_attempts); }
+  if (fields.review_verdict !== undefined) { updates.push('review_verdict = ?'); values.push(fields.review_verdict); }
+  if (fields.test_results !== undefined) { updates.push('test_results = ?'); values.push(fields.test_results); }
+  if (fields.consolidated_diff !== undefined) { updates.push('consolidated_diff = ?'); values.push(fields.consolidated_diff); }
+  if (fields.merged_at !== undefined) { updates.push('merged_at = ?'); values.push(fields.merged_at); }
+
+  return updateAndFetch<MergeGate>('merge_gates', id, updates, values, broadcast);
+}
+
+export function listMergeGates(status?: string): MergeGate[] {
+  if (status) {
+    return getAll<MergeGate>('SELECT * FROM merge_gates WHERE status = ? ORDER BY created_at DESC', [status]);
+  }
+  return getAll<MergeGate>('SELECT * FROM merge_gates ORDER BY created_at DESC');
+}
+
+// ============================================================================
+// Review Config Helpers
+// ============================================================================
+
+export function getReviewConfig(repoPath: string): ReviewConfig | null {
+  return getOne<ReviewConfig>('SELECT * FROM review_configs WHERE repo_path = ?', [repoPath]);
+}
+
+export function upsertReviewConfig(config: Partial<ReviewConfig> & { repo_path: string }): ReviewConfig | null {
+  const existing = getReviewConfig(config.repo_path);
+  const now = getNow();
+
+  if (existing) {
+    const updates: string[] = [];
+    const values: unknown[] = [];
+    if (config.rules !== undefined) { updates.push('rules = ?'); values.push(config.rules); }
+    if (config.architecture_doc !== undefined) { updates.push('architecture_doc = ?'); values.push(config.architecture_doc); }
+    if (config.conventions !== undefined) { updates.push('conventions = ?'); values.push(config.conventions); }
+    if (config.test_command !== undefined) { updates.push('test_command = ?'); values.push(config.test_command); }
+    if (config.target_branch !== undefined) { updates.push('target_branch = ?'); values.push(config.target_branch); }
+    if (config.merge_strategy !== undefined) { updates.push('merge_strategy = ?'); values.push(config.merge_strategy); }
+    if (config.min_review_score !== undefined) { updates.push('min_review_score = ?'); values.push(config.min_review_score); }
+    if (config.max_review_cycles !== undefined) { updates.push('max_review_cycles = ?'); values.push(config.max_review_cycles); }
+    if (config.max_heal_attempts !== undefined) { updates.push('max_heal_attempts = ?'); values.push(config.max_heal_attempts); }
+    if (updates.length > 0) {
+      updates.push('updated_at = ?'); values.push(now); values.push(existing.id);
+      runQuery(`UPDATE review_configs SET ${updates.join(', ')} WHERE id = ?`, values);
+    }
+    return getOne<ReviewConfig>('SELECT * FROM review_configs WHERE id = ?', [existing.id]);
+  }
+
+  const id = generateId();
+  runQuery(
+    `INSERT INTO review_configs (id, repo_path, rules, architecture_doc, conventions, test_command, target_branch, merge_strategy, min_review_score, max_review_cycles, max_heal_attempts, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, config.repo_path, config.rules || '{}', config.architecture_doc || '', config.conventions || '', config.test_command || '', config.target_branch || 'develop', config.merge_strategy || 'squash', config.min_review_score ?? 70, config.max_review_cycles ?? 3, config.max_heal_attempts ?? 2, now, now]
+  );
+  return getOne<ReviewConfig>('SELECT * FROM review_configs WHERE id = ?', [id]);
+}
+
+// ============================================================================
+// Audit Record Helpers
+// ============================================================================
+
+export function insertAuditRecord(record: Omit<AuditRecord, 'created_at'>): void {
+  const now = getNow();
+  runQuery(
+    `INSERT INTO audit_records (id, prev_hash, timestamp, agent_id, session_id, merge_gate_id, goal_id, action_type, action_detail, outcome, confidence, duration_ms, tokens_used, cost_usd, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [record.id, record.prev_hash, record.timestamp, record.agent_id, record.session_id, record.merge_gate_id, record.goal_id, record.action_type, record.action_detail, record.outcome, record.confidence, record.duration_ms, record.tokens_used, record.cost_usd, now]
+  );
+}
+
+export function getAuditRecords(mergeGateId: string): AuditRecord[] {
+  return getAll<AuditRecord>('SELECT * FROM audit_records WHERE merge_gate_id = ? ORDER BY timestamp ASC', [mergeGateId]);
+}
+
+export function getLastAuditRecord(mergeGateId: string): AuditRecord | null {
+  return getOne<AuditRecord>('SELECT * FROM audit_records WHERE merge_gate_id = ? ORDER BY timestamp DESC LIMIT 1', [mergeGateId]);
+}
+
+export function getAuditRecordsByGoal(goalId: string): AuditRecord[] {
+  return getAll<AuditRecord>('SELECT * FROM audit_records WHERE goal_id = ? ORDER BY timestamp ASC', [goalId]);
+}
+
+// ============================================================================
+// Review Finding Helpers
+// ============================================================================
+
+export function insertReviewFinding(finding: Omit<ReviewFinding, 'created_at'>): void {
+  const now = getNow();
+  runQuery(
+    `INSERT INTO review_findings (id, merge_gate_id, review_cycle, severity, file_path, line_start, line_end, category, description, suggestion, resolved, resolved_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [finding.id, finding.merge_gate_id, finding.review_cycle, finding.severity, finding.file_path, finding.line_start, finding.line_end, finding.category, finding.description, finding.suggestion, finding.resolved, finding.resolved_by, now]
+  );
+}
+
+export function getReviewFindings(mergeGateId: string, cycle?: number): ReviewFinding[] {
+  if (cycle !== undefined) {
+    return getAll<ReviewFinding>('SELECT * FROM review_findings WHERE merge_gate_id = ? AND review_cycle = ? ORDER BY severity, file_path', [mergeGateId, cycle]);
+  }
+  return getAll<ReviewFinding>('SELECT * FROM review_findings WHERE merge_gate_id = ? ORDER BY review_cycle, severity, file_path', [mergeGateId]);
+}
+
+export function getUnresolvedFindings(mergeGateId: string): ReviewFinding[] {
+  return getAll<ReviewFinding>(
+    `SELECT * FROM review_findings WHERE merge_gate_id = ? AND resolved = 0 AND severity IN ('critical', 'warning') ORDER BY severity, file_path`,
+    [mergeGateId]
+  );
+}
+
+export function resolveReviewFinding(findingId: string, resolvedBy: string): void {
+  runQuery('UPDATE review_findings SET resolved = 1, resolved_by = ? WHERE id = ?', [resolvedBy, findingId]);
+}
+
+// ============================================================================
+// Review Guideline Helpers
+// ============================================================================
+
+export interface GuidelineCreateInput {
+  repoPath: string;
+  name: string;
+  description?: string;
+  type: ReviewGuideline['type'];
+  source: ReviewGuideline['source'];
+  sourcePath?: string;
+  content: string;
+  scope?: string;
+  status?: ReviewGuideline['status'];
+  priority?: number;
+}
+
+export function createGuideline(input: GuidelineCreateInput, broadcast: (g: ReviewGuideline) => void): ReviewGuideline | null {
+  const id = generateId();
+  const now = getNow();
+  return createAndFetch<ReviewGuideline>(
+    'review_guidelines', id,
+    `INSERT INTO review_guidelines (id, repo_path, name, description, type, source, source_path, content, scope, status, priority, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, input.repoPath, input.name, input.description || '', input.type, input.source, input.sourcePath || null, input.content, input.scope || '*', input.status || 'proposed', input.priority ?? 0, now, now],
+    broadcast
+  );
+}
+
+export function getGuideline(id: string): ReviewGuideline | null {
+  return getOne<ReviewGuideline>('SELECT * FROM review_guidelines WHERE id = ?', [id]);
+}
+
+export function listGuidelines(repoPath: string, status?: ReviewGuideline['status']): ReviewGuideline[] {
+  if (status) {
+    return getAll<ReviewGuideline>(
+      'SELECT * FROM review_guidelines WHERE repo_path = ? AND status = ? ORDER BY priority DESC, type, name',
+      [repoPath, status]
+    );
+  }
+  return getAll<ReviewGuideline>(
+    'SELECT * FROM review_guidelines WHERE repo_path = ? ORDER BY status, priority DESC, type, name',
+    [repoPath]
+  );
+}
+
+export function listApprovedGuidelines(repoPath: string): ReviewGuideline[] {
+  return getAll<ReviewGuideline>(
+    'SELECT * FROM review_guidelines WHERE repo_path = ? AND status = ? ORDER BY priority DESC, type, name',
+    [repoPath, 'approved']
+  );
+}
+
+export function updateGuidelineStatus(id: string, status: ReviewGuideline['status'], broadcast: (g: ReviewGuideline) => void): ReviewGuideline | null {
+  return updateAndFetch<ReviewGuideline>(
+    'review_guidelines', id,
+    ['status = ?'], [status],
+    broadcast
+  );
+}
+
+export function updateGuideline(id: string, fields: { name?: string; content?: string; scope?: string; priority?: number; type?: ReviewGuideline['type'] }, broadcast: (g: ReviewGuideline) => void): ReviewGuideline | null {
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  if (fields.name !== undefined) { updates.push('name = ?'); values.push(fields.name); }
+  if (fields.content !== undefined) { updates.push('content = ?'); values.push(fields.content); }
+  if (fields.scope !== undefined) { updates.push('scope = ?'); values.push(fields.scope); }
+  if (fields.priority !== undefined) { updates.push('priority = ?'); values.push(fields.priority); }
+  if (fields.type !== undefined) { updates.push('type = ?'); values.push(fields.type); }
+  return updateAndFetch<ReviewGuideline>('review_guidelines', id, updates, values, broadcast);
+}
+
+export function deleteGuideline(id: string, broadcast: (id: string) => void): void {
+  deleteAndBroadcast('review_guidelines', id, broadcast);
+}
+
+export function approveAllGuidelines(repoPath: string): ReviewGuideline[] {
+  const now = getNow();
+  runQuery(
+    `UPDATE review_guidelines SET status = 'approved', updated_at = ? WHERE repo_path = ? AND status = 'proposed'`,
+    [now, repoPath]
+  );
+  return listGuidelines(repoPath, 'approved');
+}
+
+/** Check if a guideline with this source_path already exists for this repo */
+export function guidelineExistsForPath(repoPath: string, sourcePath: string): boolean {
+  const existing = getOne<{ id: string }>(
+    'SELECT id FROM review_guidelines WHERE repo_path = ? AND source_path = ?',
+    [repoPath, sourcePath]
+  );
+  return existing !== null;
 }
