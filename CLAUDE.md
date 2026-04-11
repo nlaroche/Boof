@@ -47,6 +47,44 @@ See `ARCHITECTURE.md` for the full engine design. Key rules:
 - Focused systems in `src/server/systems/`
 - Run tests: `npm run test:unit` (includes engine tests)
 
+## Production Deployment (Mac Mini)
+
+Boof runs in production on the Mac Mini at `bcbuilmac@bcbuils-mac-mini-2` via a
+launchd service. To deploy local changes:
+
+```bash
+# From boof repo root on dev desktop:
+git push origin main              # the script refuses to deploy unpushed commits
+bash scripts/deploy-mac-mini.sh   # pulls, installs deps, reloads launchd, verifies
+```
+
+Infrastructure details:
+- Repo on Mac Mini: `~/projects/boof` (tracks `origin/main`)
+- Service: `com.nlaroche.boof` (launchd, `~/Library/LaunchAgents/com.nlaroche.boof.plist`)
+- Node: `/Users/bcbuilmac/.nvm/versions/node/v22.22.2/bin/node` (not Homebrew)
+- Logs: `~/projects/boof/logs/boof.log` (stdout + stderr combined)
+- Port: 3456 (bound to 0.0.0.0 for Tailscale access)
+- Web UI: `http://bcbuils-mac-mini-2:3456` (via Tailscale)
+
+Deploy gotchas (learned the hard way):
+- **npm install REQUIRES `--legacy-peer-deps`** on the Mac — boof has tsx/vite peer
+  conflicts that ERESOLVE without the flag. The deploy script handles this.
+- **`set -e` + pipes needs `pipefail`** — `npm install ... | tail -5` will mask npm
+  errors unless `set -o pipefail` is also set.
+- **launchctl `list` status column**: first col is PID (`-` = not running), second
+  col is last exit code. `PID = "-"` means the process crashed — check logs.
+- **Port bind takes ~5s after reload** — sql.js init + db load isn't instant. The
+  deploy script polls `lsof -iTCP:3456` for up to 10 seconds before giving up.
+- **Tail the logs during deploy** if something looks off:
+  `tailscale ssh bcbuilmac@bcbuils-mac-mini-2 'tail -f ~/projects/boof/logs/boof.log'`
+
+Manual service control on the Mac Mini:
+```bash
+launchctl unload ~/Library/LaunchAgents/com.nlaroche.boof.plist
+launchctl load ~/Library/LaunchAgents/com.nlaroche.boof.plist
+launchctl list | grep boof   # PID + exit code + label
+```
+
 ## Aider Orchestration
 - `aider-task.ps1` — Send tasks to Aider with conventions prepended
 - `aider-fix.ps1` — Emergency build fixer (max 3 attempts)
