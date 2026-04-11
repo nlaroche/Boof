@@ -9,7 +9,7 @@
  * 2. Time-based: after N hours of active work (configurable)
  * 3. Manual: user triggers from the UI
  */
-import { createStateMachine } from '../engine/state-machine.js';
+import { StateMachine } from '../engine/state-machine.js';
 import { createMergeGateMachineDef } from '../machines/merge-gate-machine.js';
 import type { MergeGateState, MergeGateEvent, MergeGateContext } from '../machines/merge-gate-machine.js';
 import {
@@ -29,7 +29,6 @@ import { appendAuditRecord, verifyAuditChain } from './audit-trail.js';
 import { healMergeConflict, buildTestFixPrompt, classifyFailure, shouldEscalate } from './self-heal.js';
 import { AuditActionType, AuditOutcome } from '../engine/constants.js';
 import type { Goal, Task, MergeGate } from '../../client/lib/types.js';
-import type { StateMachine } from '../engine/state-machine.js';
 
 // Active merge gate state machines
 const activeMergeGates = new Map<string, StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>>();
@@ -41,7 +40,7 @@ function getMergeGateMachine(mergeGateId: string, ctx?: Partial<MergeGateContext
   let machine = activeMergeGates.get(mergeGateId);
   if (!machine) {
     const def = createMergeGateMachineDef(ctx);
-    machine = createStateMachine(def);
+    machine = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
     activeMergeGates.set(mergeGateId, machine);
   }
   return machine;
@@ -239,7 +238,7 @@ export function processReviewResults(
     }, broadcast);
   } else if (parsed.verdict === 'changes_requested') {
     machine.send('changes_requested', { verdict: { score: parsed.score, verdict: parsed.verdict, summary: parsed.summary } });
-    const newStatus = machine.current === 'failed' ? 'failed' : 'revising';
+    const newStatus = machine.state === 'failed' ? 'failed' : 'revising';
     updateMergeGate(mergeGateId, {
       status: newStatus,
       review_verdict: verdictJson,
@@ -298,7 +297,7 @@ export function processTestResults(
     }, broadcast);
   } else {
     machine.send('tests_failed', { results });
-    const newStatus = machine.current === 'failed' ? 'failed' : 'healing';
+    const newStatus = machine.state === 'failed' ? 'failed' : 'healing';
     updateMergeGate(mergeGateId, {
       status: newStatus,
       test_results: JSON.stringify(results),
@@ -408,7 +407,7 @@ export async function executeFinalMerge(
     return true;
   } else {
     machine.send('merge_conflict', { error: result.output });
-    const newStatus = machine.current === 'failed' ? 'failed' : 'healing';
+    const newStatus = machine.state === 'failed' ? 'failed' : 'healing';
     updateMergeGate(mergeGateId, { status: newStatus }, broadcast);
 
     appendAuditRecord({

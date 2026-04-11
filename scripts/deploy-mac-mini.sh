@@ -17,6 +17,8 @@
 #   4. Unload + load the launchd service to pick up new code
 #   5. Tail a few log lines to verify it's alive
 set -euo pipefail
+# pipefail ensures that `cmd | tail` exits non-zero if cmd fails
+# (without it, the exit code of `tail` is what matters and npm errors get swallowed)
 
 MAC_HOST="bcbuilmac@bcbuils-mac-mini-2"
 REPO_PATH="/Users/bcbuilmac/projects/boof"
@@ -43,6 +45,8 @@ LOCAL_SHA=$(git rev-parse origin/main)
 echo "[deploy] Local origin/main: $LOCAL_SHA"
 
 # 2. Remote deploy — one SSH round-trip for everything
+# Note: `bash -s` passes heredoc as stdin; the remote script's exit code is
+# what ssh returns, so set -e failures propagate back to this script.
 tailscale ssh "$MAC_HOST" bash -s <<REMOTE
 set -euo pipefail
 cd "$REPO_PATH"
@@ -73,34 +77,53 @@ fi
 echo "[remote] Installing dependencies (ignore-scripts for sql.js compat)..."
 # Use nvm's npm since launchd uses v22.22.2
 export PATH="/Users/bcbuilmac/.nvm/versions/node/v22.22.2/bin:\$PATH"
-npm install --ignore-scripts --no-audit --no-fund 2>&1 | tail -5
+# --legacy-peer-deps: boof has peer-dep conflicts (tsx + vite) that break install without it
+# --ignore-scripts: sql.js doesn't need its postinstall (pure JS, no native build)
+if ! npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund 2>&1 | tail -15; then
+  echo "[remote] ✗ npm install failed"
+  exit 1
+fi
 
 echo "[remote] Restarting launchd service $LABEL..."
 launchctl unload "$PLIST" 2>/dev/null || true
 sleep 1
 launchctl load "$PLIST"
-sleep 2
+sleep 3
 
 echo "[remote] Checking service status..."
-if launchctl list | grep -q "$LABEL"; then
-  PID=\$(launchctl list | grep "$LABEL" | awk '{print \$1}')
-  echo "[remote] ✓ Service loaded (pid: \$PID)"
-else
-  echo "[remote] ✗ Service failed to load"
+STATUS_LINE=\$(launchctl list | grep "$LABEL" || true)
+if [ -z "\$STATUS_LINE" ]; then
+  echo "[remote] ✗ Service not registered"
   exit 1
 fi
-
-# Check port 3456 is bound
-sleep 2
-if lsof -iTCP:3456 -sTCP:LISTEN >/dev/null 2>&1; then
-  echo "[remote] ✓ Listening on port 3456"
-else
-  echo "[remote] ⚠ Port 3456 not bound yet — check logs"
+PID=\$(echo "\$STATUS_LINE" | awk '{print \$1}')
+EXIT_CODE=\$(echo "\$STATUS_LINE" | awk '{print \$2}')
+if [ "\$PID" = "-" ]; then
+  echo "[remote] ✗ Service registered but not running (last exit: \$EXIT_CODE)"
+  echo "[remote] Last 30 log lines:"
+  tail -30 "$LOG_PATH" 2>/dev/null || echo "(no log)"
+  exit 1
 fi
+echo "[remote] ✓ Service running (pid: \$PID, last exit: \$EXIT_CODE)"
+
+# Check port 3456 is bound — boof can take a few seconds to init sql.js + db
+for i in 1 2 3 4 5; do
+  if lsof -iTCP:3456 -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "[remote] ✓ Listening on port 3456"
+    break
+  fi
+  if [ "\$i" = "5" ]; then
+    echo "[remote] ✗ Port 3456 not bound after 10s"
+    echo "[remote] Last 30 log lines:"
+    tail -30 "$LOG_PATH" 2>/dev/null || echo "(no log)"
+    exit 1
+  fi
+  sleep 2
+done
 
 echo ""
-echo "[remote] Last 15 log lines:"
-tail -15 "$LOG_PATH" 2>/dev/null || echo "(no log yet)"
+echo "[remote] Last 10 log lines:"
+tail -10 "$LOG_PATH" 2>/dev/null || echo "(no log yet)"
 REMOTE
 
 echo ""
