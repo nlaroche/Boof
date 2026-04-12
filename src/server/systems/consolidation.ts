@@ -28,6 +28,8 @@ import {
 import { appendAuditRecord, verifyAuditChain } from './audit-trail.js';
 import { healMergeConflict, buildTestFixPrompt, classifyFailure, shouldEscalate } from './self-heal.js';
 import { AuditActionType, AuditOutcome } from '../engine/constants.js';
+import { createAgent, sendToAgent, hasAgent, killAgent } from '../pty-manager.js';
+import { getProvider } from '../agent-providers.js';
 import type { Goal, Task, MergeGate } from '../../client/lib/types.js';
 
 // Active merge gate state machines
@@ -164,6 +166,10 @@ export async function initiateConsolidation(
       outcome: AuditOutcome.SUCCESS,
       durationMs,
     });
+
+    // Kick off the review agent asynchronously
+    executeReviewAgent(gate.id, goalId, repoPath, goalBranch, targetBranch, diff, broadcast)
+      .catch(err => console.error(`[consolidation] Review execution error:`, err));
   } else {
     appendAuditRecord({
       agentId: 'system',
@@ -189,6 +195,104 @@ export async function initiateConsolidation(
  * Process review results for a merge gate.
  * Called after the review agent completes its analysis.
  */
+/**
+ * Spawn a review agent to analyze the consolidated diff.
+ * Uses a temporary agent (claude-sonnet) with the review prompt built from
+ * approved guidelines. Parses the output and calls processReviewResults.
+ */
+async function executeReviewAgent(
+  mergeGateId: string,
+  goalId: string,
+  repoPath: string,
+  goalBranch: string,
+  targetBranch: string,
+  diff: string,
+  broadcast: (gate: MergeGate) => void,
+): Promise<void> {
+  const gate = getMergeGate(mergeGateId);
+  if (!gate) return;
+
+  const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+  if (!goal) return;
+
+  const config = getOrDiscoverReviewConfig(repoPath);
+  if (!config) return;
+
+  // Get files changed and completed tasks for context
+  const filesChanged = await getGoalBranchFiles(repoPath, goalBranch, targetBranch);
+  const tasks = getAll<{ title: string; description: string }>(
+    "SELECT title, description FROM tasks WHERE goal_id = ? AND status = 'done'",
+    [goalId]
+  );
+
+  // Build the review prompt with approved guidelines
+  const reviewPrompt = buildReviewPrompt({
+    goalName: goal.name,
+    goalDescription: goal.description || '',
+    targetBranch,
+    filesChanged,
+    consolidatedDiff: diff.slice(0, 50_000), // cap diff size for context window
+    config,
+    tasks,
+    repoPath,
+  });
+
+  console.log(`[consolidation] Spawning review agent for gate ${mergeGateId} (${filesChanged.length} files, ${diff.length} chars diff)`);
+
+  // Use a temporary agent ID for the review
+  const reviewAgentId = `review-${mergeGateId.slice(0, 8)}`;
+
+  const reviewOutput = await new Promise<string>((resolve) => {
+    let output = '';
+
+    if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
+
+    const handleOutput = (_id: string, chunk: string) => { output += chunk; };
+    const handleExit = (_id: string, _code: number) => { resolve(output); };
+
+    createAgent(reviewAgentId, repoPath, 'QA Reviewer', handleOutput, handleExit, 'claude-sonnet');
+    sendToAgent(reviewAgentId, reviewPrompt, { skipWrap: true });
+  });
+
+  // Clean up the temporary agent
+  if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
+
+  // Update the merge gate with the review agent ID
+  updateMergeGate(mergeGateId, { review_agent_id: reviewAgentId }, broadcast);
+
+  // Process the review results
+  const result = processReviewResults(mergeGateId, reviewOutput, broadcast);
+  console.log(`[consolidation] Review verdict: ${result.verdict} (score: ${result.score}, findings: ${result.findingCount})`);
+
+  // If approved → run tests → auto-merge
+  if (result.verdict === 'approve') {
+    // Run tests on the goal branch
+    const { runTestCheck } = await import('./build-runner.js');
+    const testResult = await runTestCheck(repoPath);
+    processTestResults(mergeGateId, testResult.success, testResult.output, testResult.failures || [], broadcast);
+
+    // If tests passed, the gate should now be 'approved' — execute final merge
+    const updatedGate = getMergeGate(mergeGateId);
+    if (updatedGate?.status === 'approved') {
+      const merged = await executeFinalMerge(mergeGateId, broadcast);
+      if (merged) {
+        console.log(`[consolidation] Goal ${goalId} merged to ${targetBranch}`);
+        // Mark goal completed
+        const now = getNow();
+        getOne<any>('SELECT 1', []); // force db sync
+        appendAuditRecord({
+          agentId: 'system',
+          mergeGateId,
+          goalId,
+          actionType: AuditActionType.MERGE,
+          actionDetail: { goalBranch, targetBranch, verdict: result.verdict, score: result.score },
+          outcome: AuditOutcome.SUCCESS,
+        });
+      }
+    }
+  }
+}
+
 export function processReviewResults(
   mergeGateId: string,
   reviewOutput: string,
