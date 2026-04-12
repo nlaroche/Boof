@@ -3,6 +3,7 @@ import { useStore } from '../stores/store';
 import { CommandInput } from '../components/CommandInput';
 import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
+import { useIsDesktop } from '../hooks/useIsDesktop';
 import { ansiToHtml } from '../lib/ansi';
 import { timeAgo } from '../lib/format';
 import { cn } from '@/lib/utils';
@@ -12,6 +13,7 @@ import { Card } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { Separator } from '../components/ui/separator';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import type { WSClientMessage, Command, GoalLogEntry, Improvement, Assessment, XpEvent, DashboardData, Skill, Experiment, TimelineRun } from '../lib/types';
 import { getLevel, xpForLevel, XpBar, getPortrait, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from '../components/AgentWidget';
 import { CollapsibleSection } from '../components/CollapsibleSection';
@@ -68,6 +70,7 @@ export function AgentScreen({ onSend }: Props) {
   );
 
   const { transcript, isListening, startListening, stopListening, resetTranscript, supported } = useSpeech();
+  const isDesktop = useIsDesktop();
 
   const activity = selectedAgentId ? (agentActivity[selectedAgentId] || []) : [];
   const improvements = selectedAgentId ? (agentImprovements[selectedAgentId] || []) : [];
@@ -226,16 +229,36 @@ export function AgentScreen({ onSend }: Props) {
           )}
         </div>
         {/* XP bar + quick stats */}
-        {showHistory && (
-          <div className="px-3 pb-3">
-            <XpBar xp={agent.xp || 0} size="sm" />
-            {dashboard && (
-              <div className="flex items-center gap-4 mt-1.5 text-[10px] text-muted-foreground">
-                <span>{dashboard.success_rate_all}% success</span>
-                <span>{(dashboard.total_tokens / 1000).toFixed(0)}k tokens</span>
-                <span>{dashboard.skills_count} skills</span>
-              </div>
-            )}
+        <div className="px-3 pb-3">
+          <XpBar xp={agent.xp || 0} size="sm" />
+          {dashboard && (
+            <div className="flex items-center gap-4 mt-1.5 text-[10px] text-muted-foreground">
+              <span>{dashboard.success_rate_all}% success</span>
+              <span>{(dashboard.total_tokens / 1000).toFixed(0)}k tokens</span>
+              <span>{dashboard.skills_count} skills</span>
+              {agent.autopilot ? <Badge variant="default" className="text-[10px]">autopilot</Badge> : null}
+            </div>
+          )}
+        </div>
+
+        {/* Desktop tabs */}
+        {isDesktop && (
+          <div className="px-3 pb-2">
+            <Tabs defaultValue="output" className="w-full">
+              <TabsList className="w-full justify-start">
+                <TabsTrigger value="output" onClick={() => setViewing('live')}>Output</TabsTrigger>
+                <TabsTrigger value="history" onClick={() => { setViewing(null); setHistoryTab('messages'); }}>History</TabsTrigger>
+                <TabsTrigger value="skills" onClick={() => { setViewing(null); setHistoryTab('experience'); }}>
+                  Skills{skillsList.length > 0 ? ` (${skillsList.length})` : ''}
+                </TabsTrigger>
+                <TabsTrigger value="branches" onClick={() => {
+                  setViewing(null); setHistoryTab('branches');
+                  onSend({ type: 'agent:branches', agentId: agent.id });
+                }}>
+                  Branches{branches.length > 0 ? ` (${branches.length})` : ''}
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
           </div>
         )}
       </div>

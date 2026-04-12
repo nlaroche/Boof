@@ -5,6 +5,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { EmptyState } from '../components/EmptyState';
+import { GuidelinesManager } from '../components/GuidelinesManager';
 import { useEntityMap, lookupName } from '../lib/lookups';
 import type { WSClientMessage } from '../lib/types';
 
@@ -88,15 +89,9 @@ export function MemoryScreen({ onSend }: Props) {
         </TabsContent>
 
         <TabsContent value="guidelines">
-          {allGuidelines.length === 0 ? (
-            <EmptyState icon="§" title="No guidelines" description="Scan a repo to discover guidelines, or add custom ones." />
-          ) : (
-            <div className="space-y-2 mt-3">
-              {allGuidelines.map((guideline) => (
-                <GuidelineCard key={guideline.id} guideline={guideline} />
-              ))}
-            </div>
-          )}
+          <div className="mt-3">
+            <GuidelinesManager onSend={onSend} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>
@@ -153,20 +148,3 @@ function FixCard({ fix }: { fix: import('../lib/types').AgentFix }) {
   );
 }
 
-function GuidelineCard({ guideline }: { guideline: import('../lib/types').ReviewGuideline }) {
-  return (
-    <Card>
-      <CardContent className="p-3">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-sm font-medium text-foreground">{guideline.name}</span>
-          <Badge variant={guideline.status === 'approved' ? 'success' : guideline.status === 'rejected' ? 'destructive' : 'warning'} className="text-[10px]">
-            {guideline.status}
-          </Badge>
-          <Badge variant="secondary" className="text-[10px]">{guideline.type}</Badge>
-        </div>
-        <p className="text-xs text-muted-foreground">{guideline.description}</p>
-        <div className="text-[10px] text-muted-foreground mt-1 font-mono">{guideline.scope}</div>
-      </CardContent>
-    </Card>
-  );
-}
