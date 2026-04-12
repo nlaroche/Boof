@@ -260,6 +260,45 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
   addColumnIfMissing('tasks', 'done_when', "TEXT DEFAULT ''");
+  addColumnIfMissing('tasks', 'task_type', "TEXT DEFAULT 'feature'");
+
+  // Structured agent memory — replaces .boof/memory.json
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agent_patterns (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      name TEXT NOT NULL,
+      trigger_condition TEXT DEFAULT '',
+      code_example TEXT DEFAULT '',
+      anti_pattern TEXT DEFAULT '',
+      verified INTEGER DEFAULT 0,
+      use_count INTEGER DEFAULT 0,
+      success_count INTEGER DEFAULT 0,
+      domain_tags TEXT DEFAULT '[]',
+      goal_type TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS agent_fixes (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      error_signature TEXT NOT NULL,
+      root_cause TEXT DEFAULT '',
+      fix_action TEXT DEFAULT '',
+      fix_code TEXT DEFAULT '',
+      times_seen INTEGER DEFAULT 1,
+      times_fixed INTEGER DEFAULT 0,
+      last_seen TEXT NOT NULL
+    )
+  `);
+
+  // Cost tracking
+  addColumnIfMissing('run_metrics', 'cost_usd', 'REAL DEFAULT 0');
+  addColumnIfMissing('goals', 'budget_cap_usd', 'REAL DEFAULT NULL');
 
   // Run metrics — per-run performance data
   db.run(`

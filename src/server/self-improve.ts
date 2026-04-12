@@ -21,20 +21,47 @@ interface AssessContext {
   durationMs: number;
   completedFully: boolean;
   testFailures?: number;
+  /** Task type for context-aware scoring */
+  taskType?: 'feature' | 'fix' | 'refactor' | 'test' | 'docs' | 'chore';
+  /** Whether test coverage increased */
+  testCoverageUp?: boolean;
 }
+
+/** Expected file count ranges by task type */
+const EXPECTED_FILES: Record<string, number> = {
+  feature: 3,
+  fix: 2,
+  refactor: 8,
+  test: 4,
+  docs: 2,
+  chore: 3,
+};
 
 export function assessPerformance(
   agentId: string,
   commandId: string,
   context: AssessContext
 ): Assessment {
+  const taskType = context.taskType || 'feature';
+  const expectedFiles = EXPECTED_FILES[taskType] || 3;
+
+  // Base score with task-aware file penalty
+  const filePenalty = Math.max(0, context.filesTouched - expectedFiles) * 2;
+
+  // Positive signals
+  let bonus = 0;
+  if (context.completedFully && context.buildFailures === 0 && context.retries === 0) bonus += 5; // clean run
+  if (context.testCoverageUp) bonus += 5;
+  if (context.durationMs > 0 && context.durationMs < 60_000 && context.completedFully) bonus += 3; // fast completion
+
   const score = Math.max(0, Math.min(100,
     100
     - (context.retries * 15)
     - (context.buildFailures * 20)
     - (context.reviewIssues * 10)
-    - Math.max(0, context.filesTouched - 5) * 2
+    - filePenalty
     - (context.testFailures || 0) * 10
+    + bonus
   ));
 
   const id = generateId();
@@ -48,6 +75,33 @@ export function assessPerformance(
 
   const assessment = getOne<Assessment>('SELECT * FROM assessments WHERE id = ?', [id]);
   return assessment!;
+}
+
+/** Get agent's rolling average score (last N assessments) */
+export function getAgentAvgScore(agentId: string, last = 10): number {
+  const result = getOne<{ avg: number }>(
+    `SELECT AVG(score) as avg FROM (SELECT score FROM assessments WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?)`,
+    [agentId, last]
+  );
+  return Math.round(result?.avg ?? 0);
+}
+
+/** Get score trend: compare last 5 to previous 5 */
+export function getScoreTrend(agentId: string): { current: number; previous: number; direction: 'up' | 'down' | 'flat' } {
+  const recent = getOne<{ avg: number }>(
+    `SELECT AVG(score) as avg FROM (SELECT score FROM assessments WHERE agent_id = ? ORDER BY created_at DESC LIMIT 5)`,
+    [agentId]
+  )?.avg ?? 0;
+  const older = getOne<{ avg: number }>(
+    `SELECT AVG(score) as avg FROM (SELECT score FROM assessments WHERE agent_id = ? ORDER BY created_at DESC LIMIT 10 OFFSET 5)`,
+    [agentId]
+  )?.avg ?? recent;
+  const diff = recent - older;
+  return {
+    current: Math.round(recent),
+    previous: Math.round(older),
+    direction: diff > 3 ? 'up' : diff < -3 ? 'down' : 'flat',
+  };
 }
 
 // ── Run Metrics ──
@@ -67,19 +121,21 @@ interface RunMetricInput {
   errorType?: string;
   promptVersionId?: string;
   mergeSuccess?: boolean;
+  costUsd?: number;
 }
 
 export function persistRunMetrics(input: RunMetricInput): RunMetric {
   const id = generateId();
   const now = new Date().toISOString();
   runQuery(
-    `INSERT INTO run_metrics (id, agent_id, command_id, goal_id, task_id, duration_ms, retries, build_failures, files_touched, prompt_tokens, completion_tokens, success, error_type, prompt_version_id, merge_success, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO run_metrics (id, agent_id, command_id, goal_id, task_id, duration_ms, retries, build_failures, files_touched, prompt_tokens, completion_tokens, success, error_type, prompt_version_id, merge_success, cost_usd, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [id, input.agentId, input.commandId || null, input.goalId || null, input.taskId || null,
      input.durationMs, input.retries, input.buildFailures, input.filesTouched,
      input.promptTokens, input.completionTokens, input.success ? 1 : 0,
      input.errorType || null, input.promptVersionId || null,
-     input.mergeSuccess !== undefined ? (input.mergeSuccess ? 1 : 0) : null, now]
+     input.mergeSuccess !== undefined ? (input.mergeSuccess ? 1 : 0) : null,
+     input.costUsd ?? 0, now]
   );
   return getOne<RunMetric>('SELECT * FROM run_metrics WHERE id = ?', [id])!;
 }

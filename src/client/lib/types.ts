@@ -18,6 +18,7 @@ export interface Task {
   goal_id: string | null;
   agent_generated: number;
   done_when: string;
+  task_type: 'feature' | 'fix' | 'refactor' | 'test' | 'docs' | 'chore';
   created_at: string;
   updated_at: string;
 }
@@ -59,6 +60,7 @@ export interface Goal {
   proposed_by: string | null;
   proposal_status: 'approved' | 'pending' | 'rejected' | null;
   completed_at: string | null;
+  budget_cap_usd: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -379,6 +381,35 @@ export interface ReviewGuideline {
   priority: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentPattern {
+  id: string;
+  agent_id: string;
+  repo_path: string;
+  name: string;
+  trigger_condition: string;
+  code_example: string;
+  anti_pattern: string;
+  verified: number;
+  use_count: number;
+  success_count: number;
+  domain_tags: string;
+  goal_type: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentFix {
+  id: string;
+  agent_id: string;
+  error_signature: string;
+  root_cause: string;
+  fix_action: string;
+  fix_code: string;
+  times_seen: number;
+  times_fixed: number;
+  last_seen: string;
 }
 
 export type AgentStatus = Agent['status'];

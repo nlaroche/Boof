@@ -12,6 +12,16 @@ export interface AgentProvider {
   getArgs(prompt: string): string[];
   /** Environment variables for the subprocess */
   getEnv(): Record<string, string>;
+  /** Cost per 1M input tokens (USD) */
+  inputCostPer1M: number;
+  /** Cost per 1M output tokens (USD) */
+  outputCostPer1M: number;
+}
+
+/** Calculate cost in USD from token counts */
+export function calculateCost(provider: AgentProvider, promptTokens: number, completionTokens: number): number {
+  return (promptTokens / 1_000_000) * provider.inputCostPer1M
+       + (completionTokens / 1_000_000) * provider.outputCostPer1M;
 }
 
 const isWindows = process.platform === 'win32';
@@ -46,6 +56,8 @@ const minimaxProvider: AgentProvider = {
     || (isWindows
       ? join(home, '.cc-mirror', 'minimax', 'native', 'claude.exe')
       : 'minimax'),
+  inputCostPer1M: 0.15,
+  outputCostPer1M: 0.60,
   getArgs(prompt: string) {
     return [
       '-p', '--verbose', '--output-format', 'stream-json',
@@ -89,24 +101,86 @@ function claudeArgs(prompt: string, model: string): string[] {
 }
 
 const claudeSonnetProvider: AgentProvider = {
-  name: 'Claude Sonnet',
+  name: 'Claude Sonnet 4.6',
   command: claudeCommand,
+  inputCostPer1M: 3.00,
+  outputCostPer1M: 15.00,
   getArgs(prompt: string) { return claudeArgs(prompt, 'sonnet'); },
   getEnv() { return baseEnv(); },
 };
 
 const claudeOpusProvider: AgentProvider = {
-  name: 'Claude Opus',
+  name: 'Claude Opus 4.6',
   command: claudeCommand,
+  inputCostPer1M: 15.00,
+  outputCostPer1M: 75.00,
   getArgs(prompt: string) { return claudeArgs(prompt, 'opus'); },
   getEnv() { return baseEnv(); },
 };
 
 const claudeHaikuProvider: AgentProvider = {
-  name: 'Claude Haiku',
+  name: 'Claude Haiku 4.5',
   command: claudeCommand,
+  inputCostPer1M: 0.80,
+  outputCostPer1M: 4.00,
   getArgs(prompt: string) { return claudeArgs(prompt, 'haiku'); },
   getEnv() { return baseEnv(); },
+};
+
+// ── Aider provider ──────────────────────────────────────────────────────
+
+const aiderProvider: AgentProvider = {
+  name: 'Aider (Sonnet)',
+  command: isWindows ? 'aider' : 'aider',
+  inputCostPer1M: 3.00,   // depends on model — default sonnet pricing
+  outputCostPer1M: 15.00,
+  getArgs(prompt: string) {
+    return [
+      '--yes-always',       // auto-confirm
+      '--no-git',           // boof handles git
+      '--message', prompt,
+    ];
+  },
+  getEnv() {
+    return { ...process.env } as Record<string, string>;
+  },
+};
+
+// ── OpenAI Codex CLI provider ───────────────────────────────────────────
+
+const codexProvider: AgentProvider = {
+  name: 'Codex CLI',
+  command: 'codex',
+  inputCostPer1M: 2.50,
+  outputCostPer1M: 10.00,
+  getArgs(prompt: string) {
+    return [
+      '--quiet',
+      '--approval-mode', 'full-auto',
+      prompt,
+    ];
+  },
+  getEnv() {
+    return { ...process.env } as Record<string, string>;
+  },
+};
+
+// ── Custom command provider ─────────────────────────────────────────────
+// For any CLI tool that accepts a prompt. Set via env vars:
+// BOOF_CUSTOM_CMD, BOOF_CUSTOM_ARGS_TEMPLATE (use {prompt} placeholder)
+
+const customProvider: AgentProvider = {
+  name: 'Custom Command',
+  command: process.env.BOOF_CUSTOM_CMD || 'echo',
+  inputCostPer1M: 0,
+  outputCostPer1M: 0,
+  getArgs(prompt: string) {
+    const template = process.env.BOOF_CUSTOM_ARGS_TEMPLATE || '{prompt}';
+    return template.split(' ').map(arg => arg === '{prompt}' ? prompt : arg);
+  },
+  getEnv() {
+    return { ...process.env } as Record<string, string>;
+  },
 };
 
 // ── Registry ────────────────────────────────────────────────────────────
@@ -116,6 +190,9 @@ const providers: Record<string, AgentProvider> = {
   'claude-sonnet': claudeSonnetProvider,
   'claude-opus': claudeOpusProvider,
   'claude-haiku': claudeHaikuProvider,
+  'aider': aiderProvider,
+  'codex': codexProvider,
+  'custom': customProvider,
 };
 
 /** Get a provider by agent_type string. Falls back to claude-sonnet. */
@@ -123,7 +200,17 @@ export function getProvider(agentType: string): AgentProvider {
   return providers[agentType] || providers['claude-sonnet'];
 }
 
-/** List all available provider names */
-export function listProviders(): string[] {
+/** List all available provider names with their display names and pricing */
+export function listProviders(): Array<{ id: string; name: string; inputCost: number; outputCost: number }> {
+  return Object.entries(providers).map(([id, p]) => ({
+    id,
+    name: p.name,
+    inputCost: p.inputCostPer1M,
+    outputCost: p.outputCostPer1M,
+  }));
+}
+
+/** List just provider IDs */
+export function listProviderIds(): string[] {
   return Object.keys(providers);
 }

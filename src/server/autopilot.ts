@@ -5,7 +5,7 @@ import path from 'path';
 import { runQuery, getOne, getAll, generateId, getNow, estimateTokens } from './db-helpers.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
-import { initBoofDir, getMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
+import { initBoofDir, getMemoryContext, getStructuredMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
 // branch-guard is used by systems/git-ops.ts directly
 import { stripAnsi } from './git-utils.js';
 import {
@@ -21,6 +21,8 @@ import {
   classifyFailure as classifyTaskFailure, decideEscalation,
   recordSuccess, recordFailure, getConsecutiveFailures,
 } from './systems/failure-tracker.js';
+import { getProvider, calculateCost } from './agent-providers.js';
+import { checkGoalBudget } from './db-helpers.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -941,7 +943,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     }
 
     // Rebuild memory context filtered by current task relevance
-    const taskMemoryContext = getMemoryContext(agentCwd, currentTask.title + ' ' + (currentTask.description || ''));
+    const taskDesc2 = currentTask.title + ' ' + (currentTask.description || '');
+    const fileMemory = getMemoryContext(agentCwd, taskDesc2);
+    const dbMemory = getStructuredMemoryContext(agentId, agent.working_directory, taskDesc2);
+    const taskMemoryContext = dbMemory + fileMemory;
 
     // Check if agent has a workflow assigned
     let workflowObj: Workflow | null = null;
@@ -1031,6 +1036,17 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Simple mode: single prompt
       const implPhaseStart = Date.now();
       console.log(`[perf:implementation] Starting implementation phase for: ${currentTask.title}`);
+
+      // Budget check: stop if goal has exceeded its cost cap
+      const budgetCheck = checkGoalBudget(goalId);
+      if (budgetCheck?.exceeded) {
+        console.log(`[autopilot] Budget exceeded for goal ${goalId}: $${budgetCheck.spent.toFixed(2)} / $${budgetCheck.cap.toFixed(2)}`);
+        broadcast({ type: 'notify', agentId, title: 'Budget exceeded', body: `Goal "${goal.name}" spent $${budgetCheck.spent.toFixed(2)} (cap: $${budgetCheck.cap.toFixed(2)}). Pausing.` });
+        runQuery("UPDATE goals SET status = 'paused', updated_at = ? WHERE id = ?", [new Date().toISOString(), goalId]);
+        const pausedGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+        if (pausedGoal) broadcast({ type: 'goal:updated', goal: pausedGoal });
+        return;
+      }
 
       const dbQueryStart = Date.now();
       const recentLogs = getGoalLogCached(goalId, 5);
@@ -1238,6 +1254,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
       // Persist run metrics to DB
       const activeVersion = getActivePromptVersion(agentId);
+      // Calculate cost from token usage
+      const provider = getProvider(agent.agent_type || 'claude-sonnet');
+      const costUsd = calculateCost(provider, implPromptTokens, implCompletionTokens);
+
       persistRunMetrics({
         agentId,
         commandId: goalId,
@@ -1252,6 +1272,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         success,
         errorType: success ? undefined : 'build_failure',
         promptVersionId: activeVersion?.id,
+        costUsd,
       });
 
       // Update prompt version stats

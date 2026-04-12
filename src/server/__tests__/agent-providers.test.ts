@@ -1,21 +1,26 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { getProvider, listProviders } from '../agent-providers.js';
+import { getProvider, listProviders, listProviderIds, calculateCost } from '../agent-providers.js';
 
 describe('listProviders', () => {
-  it('returns all available provider names', () => {
+  it('returns all available providers with pricing', () => {
     const providers = listProviders();
     assert.ok(Array.isArray(providers));
-    assert.ok(providers.length > 0);
-    assert.ok(providers.includes('minimax'));
-    assert.ok(providers.includes('claude-sonnet'));
-    assert.ok(providers.includes('claude-opus'));
-    assert.ok(providers.includes('claude-haiku'));
-  });
-
-  it('returns exactly 4 providers', () => {
-    const providers = listProviders();
-    assert.equal(providers.length, 4);
+    assert.ok(providers.length >= 7);
+    const ids = providers.map(p => p.id);
+    assert.ok(ids.includes('minimax'));
+    assert.ok(ids.includes('claude-sonnet'));
+    assert.ok(ids.includes('claude-opus'));
+    assert.ok(ids.includes('claude-haiku'));
+    assert.ok(ids.includes('aider'));
+    assert.ok(ids.includes('codex'));
+    assert.ok(ids.includes('custom'));
+    // Each has pricing info
+    for (const p of providers) {
+      assert.ok(typeof p.inputCost === 'number');
+      assert.ok(typeof p.outputCost === 'number');
+      assert.ok(typeof p.name === 'string');
+    }
   });
 });
 
@@ -29,30 +34,44 @@ describe('getProvider', () => {
 
   it('returns claude-sonnet provider by key', () => {
     const provider = getProvider('claude-sonnet');
-    assert.equal(provider.name, 'Claude Sonnet');
+    assert.equal(provider.name, 'Claude Sonnet 4.6');
     assert.ok(typeof provider.command === 'string');
   });
 
   it('returns claude-opus provider by key', () => {
     const provider = getProvider('claude-opus');
-    assert.equal(provider.name, 'Claude Opus');
+    assert.equal(provider.name, 'Claude Opus 4.6');
     assert.ok(typeof provider.command === 'string');
   });
 
   it('returns claude-haiku provider by key', () => {
     const provider = getProvider('claude-haiku');
-    assert.equal(provider.name, 'Claude Haiku');
+    assert.equal(provider.name, 'Claude Haiku 4.5');
     assert.ok(typeof provider.command === 'string');
   });
 
   it('falls back to claude-sonnet for unknown key', () => {
     const provider = getProvider('nonexistent-provider');
-    assert.equal(provider.name, 'Claude Sonnet');
+    assert.equal(provider.name, 'Claude Sonnet 4.6');
   });
 
   it('falls back to claude-sonnet for empty string', () => {
     const provider = getProvider('');
-    assert.equal(provider.name, 'Claude Sonnet');
+    assert.equal(provider.name, 'Claude Sonnet 4.6');
+  });
+});
+
+describe('calculateCost', () => {
+  it('calculates cost from token counts', () => {
+    const provider = getProvider('claude-sonnet');
+    const cost = calculateCost(provider, 1_000_000, 100_000);
+    // Sonnet: $3/1M input + $15/1M output = $3 + $1.5 = $4.50
+    assert.ok(cost > 4 && cost < 5, `Expected ~$4.50, got $${cost}`);
+  });
+
+  it('returns 0 for zero tokens', () => {
+    const provider = getProvider('claude-sonnet');
+    assert.equal(calculateCost(provider, 0, 0), 0);
   });
 });
 
@@ -132,22 +151,22 @@ describe('AgentProvider interface', () => {
   });
 
   it('all providers have unique names', () => {
-    const names = listProviders().map(key => getProvider(key).name);
+    const names = listProviders().map(p => p.name);
     const uniqueNames = new Set(names);
     assert.equal(names.length, uniqueNames.size);
   });
 
   it('all providers return non-empty command', () => {
-    const providers = listProviders();
-    for (const key of providers) {
+    const ids = listProviderIds();
+    for (const key of ids) {
       const provider = getProvider(key);
       assert.ok(provider.command.length > 0, `${key} has empty command`);
     }
   });
 
   it('all providers getArgs returns non-empty array', () => {
-    const providers = listProviders();
-    for (const key of providers) {
+    const ids = listProviderIds();
+    for (const key of ids) {
       const provider = getProvider(key);
       const args = provider.getArgs('test');
       assert.ok(args.length > 0, `${key} returns empty args`);
@@ -155,11 +174,20 @@ describe('AgentProvider interface', () => {
   });
 
   it('all providers getEnv returns object', () => {
-    const providers = listProviders();
-    for (const key of providers) {
+    const ids = listProviderIds();
+    for (const key of ids) {
       const provider = getProvider(key);
       const env = provider.getEnv();
       assert.ok(typeof env === 'object', `${key} getEnv not object`);
+    }
+  });
+
+  it('all providers have cost information', () => {
+    const ids = listProviderIds();
+    for (const key of ids) {
+      const provider = getProvider(key);
+      assert.ok(typeof provider.inputCostPer1M === 'number', `${key} missing inputCostPer1M`);
+      assert.ok(typeof provider.outputCostPer1M === 'number', `${key} missing outputCostPer1M`);
     }
   });
 });

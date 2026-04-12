@@ -2,6 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { getAll, runQuery, getOne } from './db.js';
 import type { Goal } from '../client/lib/types.js';
+import { getRelevantPatterns, getMatchingFixes } from './db-helpers.js';
+import type { AgentPattern, AgentFix } from '../client/lib/types.js';
 
 export interface Guideline {
   error_pattern: string;
@@ -243,6 +245,54 @@ export function getMemoryContext(repoPath: string, taskDescription?: string): st
   }
 
   return parts.length > 0 ? parts.join('\n') + '\n\n' : '';
+}
+
+/**
+ * Build structured memory context from DB (agent_patterns + agent_fixes).
+ * This supplements the file-based memory with validated, tagged records.
+ */
+export function getStructuredMemoryContext(agentId: string, repoPath: string, taskDescription?: string): string {
+  const parts: string[] = [];
+
+  // Extract domain tags from task description for pattern matching
+  const domainTags = taskDescription
+    ? taskDescription.toLowerCase().split(/\W+/).filter(w => w.length > 3)
+    : [];
+
+  // Get relevant patterns from DB
+  const patterns = getRelevantPatterns(agentId, repoPath, domainTags, 5);
+  if (patterns.length > 0) {
+    parts.push('VERIFIED PATTERNS:');
+    for (const p of patterns) {
+      const verified = p.verified ? ' [verified]' : '';
+      const rate = p.use_count > 0 ? ` (${p.success_count}/${p.use_count} success)` : '';
+      parts.push(`- ${p.name}${verified}${rate}`);
+      if (p.trigger_condition) parts.push(`  When: ${p.trigger_condition}`);
+      if (p.code_example) parts.push(`  Code: ${p.code_example.slice(0, 300)}`);
+      if (p.anti_pattern) parts.push(`  DON'T: ${p.anti_pattern}`);
+    }
+    parts.push('');
+  }
+
+  // Get matching fixes for common errors
+  // We can't match on error output here (no errors yet), but we can show
+  // the most frequently seen fixes for this agent as preventive context
+  const topFixes = getAll<AgentFix>(
+    'SELECT * FROM agent_fixes WHERE agent_id = ? AND times_fixed > 0 ORDER BY times_fixed DESC LIMIT 3',
+    [agentId]
+  );
+  if (topFixes.length > 0) {
+    parts.push('KNOWN ERROR FIXES (apply these if you encounter these errors):');
+    for (const f of topFixes) {
+      parts.push(`- Error: ${f.error_signature}`);
+      parts.push(`  Cause: ${f.root_cause}`);
+      parts.push(`  Fix: ${f.fix_action}`);
+      if (f.fix_code) parts.push(`  Code: ${f.fix_code.slice(0, 200)}`);
+    }
+    parts.push('');
+  }
+
+  return parts.length > 0 ? parts.join('\n') + '\n' : '';
 }
 
 export function recordGuideline(repoPath: string, errorPattern: string, guideline: string, fileContext?: string): void {

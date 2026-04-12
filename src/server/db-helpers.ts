@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline, AgentPattern, AgentFix } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -846,4 +846,141 @@ export function guidelineExistsForPath(repoPath: string, sourcePath: string): bo
     [repoPath, sourcePath]
   );
   return existing !== null;
+}
+
+// ============================================================================
+// Agent Pattern Helpers (Structured Memory)
+// ============================================================================
+
+export function upsertAgentPattern(
+  agentId: string, repoPath: string, name: string,
+  fields: { trigger_condition?: string; code_example?: string; anti_pattern?: string; domain_tags?: string[]; goal_type?: string }
+): AgentPattern | null {
+  const now = getNow();
+  // Deduplicate by name + agent
+  const existing = getOne<AgentPattern>(
+    'SELECT * FROM agent_patterns WHERE agent_id = ? AND repo_path = ? AND name = ?',
+    [agentId, repoPath, name]
+  );
+  if (existing) {
+    const updates: string[] = ['use_count = use_count + 1', 'updated_at = ?'];
+    const values: unknown[] = [now];
+    if (fields.code_example) { updates.push('code_example = ?'); values.push(fields.code_example); }
+    if (fields.trigger_condition) { updates.push('trigger_condition = ?'); values.push(fields.trigger_condition); }
+    if (fields.anti_pattern) { updates.push('anti_pattern = ?'); values.push(fields.anti_pattern); }
+    if (fields.domain_tags) { updates.push('domain_tags = ?'); values.push(JSON.stringify(fields.domain_tags)); }
+    values.push(existing.id);
+    runQuery(`UPDATE agent_patterns SET ${updates.join(', ')} WHERE id = ?`, values);
+    return getOne<AgentPattern>('SELECT * FROM agent_patterns WHERE id = ?', [existing.id]);
+  }
+
+  const id = generateId();
+  runQuery(
+    `INSERT INTO agent_patterns (id, agent_id, repo_path, name, trigger_condition, code_example, anti_pattern, domain_tags, goal_type, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, agentId, repoPath, name, fields.trigger_condition || '', fields.code_example || '', fields.anti_pattern || '',
+     JSON.stringify(fields.domain_tags || []), fields.goal_type || null, now, now]
+  );
+  return getOne<AgentPattern>('SELECT * FROM agent_patterns WHERE id = ?', [id]);
+}
+
+export function markPatternVerified(patternId: string): void {
+  runQuery('UPDATE agent_patterns SET verified = 1, success_count = success_count + 1, updated_at = ? WHERE id = ?', [getNow(), patternId]);
+}
+
+export function markPatternFailed(patternId: string): void {
+  runQuery('UPDATE agent_patterns SET updated_at = ? WHERE id = ?', [getNow(), patternId]);
+}
+
+export function getRelevantPatterns(agentId: string, repoPath: string, domainTags: string[], limit = 5): AgentPattern[] {
+  // Get all patterns for this agent+repo, then filter by tag overlap
+  const all = getAll<AgentPattern>(
+    'SELECT * FROM agent_patterns WHERE agent_id = ? AND repo_path = ? ORDER BY verified DESC, success_count DESC, use_count DESC',
+    [agentId, repoPath]
+  );
+  if (domainTags.length === 0) return all.slice(0, limit);
+
+  // Score by tag overlap
+  const scored = all.map(p => {
+    const tags: string[] = JSON.parse(p.domain_tags || '[]');
+    const overlap = domainTags.filter(t => tags.some(pt => pt.toLowerCase().includes(t.toLowerCase()) || t.toLowerCase().includes(pt.toLowerCase()))).length;
+    return { pattern: p, score: overlap + (p.verified ? 2 : 0) + (p.success_count > 0 ? 1 : 0) };
+  });
+  return scored.sort((a, b) => b.score - a.score).slice(0, limit).map(s => s.pattern);
+}
+
+// ============================================================================
+// Agent Fix Helpers (Error → Fix Memory)
+// ============================================================================
+
+export function upsertAgentFix(
+  agentId: string, errorSignature: string,
+  fields: { root_cause?: string; fix_action?: string; fix_code?: string }
+): AgentFix | null {
+  const now = getNow();
+  const existing = getOne<AgentFix>(
+    'SELECT * FROM agent_fixes WHERE agent_id = ? AND error_signature = ?',
+    [agentId, errorSignature]
+  );
+  if (existing) {
+    const updates: string[] = ['times_seen = times_seen + 1', 'last_seen = ?'];
+    const values: unknown[] = [now];
+    if (fields.root_cause) { updates.push('root_cause = ?'); values.push(fields.root_cause); }
+    if (fields.fix_action) { updates.push('fix_action = ?'); values.push(fields.fix_action); }
+    if (fields.fix_code) { updates.push('fix_code = ?'); values.push(fields.fix_code); }
+    values.push(existing.id);
+    runQuery(`UPDATE agent_fixes SET ${updates.join(', ')} WHERE id = ?`, values);
+    return getOne<AgentFix>('SELECT * FROM agent_fixes WHERE id = ?', [existing.id]);
+  }
+
+  const id = generateId();
+  runQuery(
+    `INSERT INTO agent_fixes (id, agent_id, error_signature, root_cause, fix_action, fix_code, last_seen)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [id, agentId, errorSignature, fields.root_cause || '', fields.fix_action || '', fields.fix_code || '', now]
+  );
+  return getOne<AgentFix>('SELECT * FROM agent_fixes WHERE id = ?', [id]);
+}
+
+export function markFixSucceeded(fixId: string): void {
+  runQuery('UPDATE agent_fixes SET times_fixed = times_fixed + 1, last_seen = ? WHERE id = ?', [getNow(), fixId]);
+}
+
+export function getMatchingFixes(agentId: string, errorOutput: string, limit = 3): AgentFix[] {
+  const all = getAll<AgentFix>(
+    'SELECT * FROM agent_fixes WHERE agent_id = ? ORDER BY times_fixed DESC, times_seen DESC',
+    [agentId]
+  );
+  // Match by substring in error output
+  return all.filter(f => errorOutput.includes(f.error_signature)).slice(0, limit);
+}
+
+// ============================================================================
+// Cost Tracking Helpers
+// ============================================================================
+
+/** Get cumulative cost for a goal */
+export function getGoalCost(goalId: string): number {
+  const result = getOne<{ total: number }>(
+    'SELECT COALESCE(SUM(cost_usd), 0) as total FROM run_metrics WHERE goal_id = ?',
+    [goalId]
+  );
+  return result?.total ?? 0;
+}
+
+/** Get cumulative cost for an agent */
+export function getAgentCost(agentId: string): number {
+  const result = getOne<{ total: number }>(
+    'SELECT COALESCE(SUM(cost_usd), 0) as total FROM run_metrics WHERE agent_id = ?',
+    [agentId]
+  );
+  return result?.total ?? 0;
+}
+
+/** Check if goal has exceeded its budget cap. Returns null if no cap, else { exceeded, spent, cap } */
+export function checkGoalBudget(goalId: string): { exceeded: boolean; spent: number; cap: number } | null {
+  const goal = getOne<{ budget_cap_usd: number | null }>('SELECT budget_cap_usd FROM goals WHERE id = ?', [goalId]);
+  if (!goal?.budget_cap_usd) return null;
+  const spent = getGoalCost(goalId);
+  return { exceeded: spent >= goal.budget_cap_usd, spent, cap: goal.budget_cap_usd };
 }
