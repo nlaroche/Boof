@@ -16,14 +16,20 @@ import {
   getDefaultBranch,
 } from './systems/git-ops.js';
 import { isGoalReadyForConsolidation, initiateConsolidation } from './systems/consolidation.js';
-import { buildRepoMap, formatRepoMap, invalidateRepoMapCache } from './systems/repo-map.js';
+import { invalidateRepoMapCache } from './systems/repo-map.js';
 import {
   classifyFailure as classifyTaskFailure, decideEscalation,
   recordSuccess, recordFailure, getConsecutiveFailures,
 } from './systems/failure-tracker.js';
 import { getProvider, calculateCost } from './agent-providers.js';
-import { getAndApplyVariant, recordRunResult, onReflection as experimentOnReflection } from './systems/experiment-loop.js';
+import { recordRunResult, onReflection as experimentOnReflection } from './systems/experiment-loop.js';
 import { checkGoalBudget } from './db-helpers.js';
+import {
+  buildAutopilotPrompt, buildPlanningPrompt,
+  getLastMatchedSkills, clearLastMatchedSkills,
+  getCurrentExperimentPick, clearCurrentExperimentPick,
+} from './systems/prompt-builder.js';
+import { parseTasksFromOutput, createTaskForGoal, detectIndependentTasks } from './systems/goal-planner.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -122,423 +128,9 @@ export async function mergeAgentBranch(
   return mergeToMain(mainRepoDir, worktreePath, branchName);
 }
 
-// ── Prompts & Build ─────────────────────────────────────────────────────
 
-function buildAutopilotPrompt(
-  goal: Goal,
-  recentLogs: GoalLogEntry[],
-  pendingTasks: { title: string; description: string }[],
-  memoryContext: string,
-  agentId: string,
-  currentTaskDescription?: string
-): string {
-  // Check for active prompt version — if one exists, use its template as the base
-  const activeVersion = getActivePromptVersion(agentId);
-
-  // Closed-loop experiment system: check for active experiments and apply variant
-  currentExperimentPick = null;
-  const experimentResult = getAndApplyVariant(agentId, {
-    agentId,
-    goalId: goal.id,
-    taskId: currentTaskDescription ? undefined : undefined, // task ID not available here
-  });
-  if (experimentResult) {
-    currentExperimentPick = { experimentId: experimentResult.experimentId, variant: experimentResult.variant === 'control' ? 'a' : 'b' };
-    // Apply prompt modifications from the experiment
-    if (experimentResult.application.promptModification) {
-      prompt += experimentResult.application.promptModification + '\n';
-    }
-  } else {
-    // Fallback: check old-style experiments for backward compat
-    const activeExperiments = getActiveExperiments(agentId);
-    const promptExperiment = activeExperiments.find(e => e.metric === 'score' && e.variant_a && e.variant_b);
-    if (promptExperiment) {
-      const variant = pickExperimentVariant(promptExperiment);
-      currentExperimentPick = { experimentId: promptExperiment.id, variant };
-    }
-  }
-
-  let prompt = '';
-
-  // Memory context first
-  if (memoryContext) {
-    prompt += memoryContext;
-  }
-
-  // Pending improvements from self-improve system
-  const pendingImprovements = getAll<Improvement>(
-    "SELECT * FROM improvements WHERE agent_id = ? AND status = 'pending' LIMIT 3",
-    [agentId]
-  );
-  if (pendingImprovements.length > 0) {
-    prompt += 'AREAS TO IMPROVE:\n';
-    for (const imp of pendingImprovements) {
-      prompt += `- [${imp.category}] ${imp.description}\n`;
-    }
-    prompt += '\n';
-  }
-
-  // Reflections from recent runs
-  const reflections = getRecentReflections(agentId, 5);
-  if (reflections.length > 0) {
-    prompt += 'LESSONS FROM RECENT RUNS:\n';
-    for (const r of reflections) {
-      if (r.went_well) prompt += `- Worked well: ${r.went_well}\n`;
-      if (r.improve) prompt += `- To improve: ${r.improve}\n`;
-      if (r.pattern) prompt += `- Pattern: ${r.pattern}\n`;
-    }
-    prompt += '\n';
-  }
-
-  // Matching skills for this task
-  if (currentTaskDescription) {
-    const matchedSkills = getMatchingSkills(agentId, currentTaskDescription, 3);
-    if (matchedSkills.length > 0) {
-      prompt += 'AVAILABLE SKILLS:\n';
-      for (const skill of matchedSkills) {
-        prompt += `- ${skill.name}: ${skill.description}\n`;
-        if (skill.code_snippet) {
-          prompt += `  Snippet: ${skill.code_snippet.slice(0, 200)}\n`;
-        }
-      }
-      prompt += '\n';
-      // Store skill IDs so we can track usage after the run
-      (buildAutopilotPrompt as any)._lastMatchedSkills = matchedSkills;
-    }
-  }
-
-  prompt += `You are working autonomously on this goal: "${goal.name}"\n`;
-  prompt += `Description: ${goal.description || 'No description provided.'}\n`;
-  prompt += `IMPORTANT: Stay focused on this specific goal. Do not work on unrelated improvements.\n\n`;
-
-  if (recentLogs.length > 0) {
-    prompt += `Recent progress:\n`;
-    for (const log of recentLogs) {
-      const status = log.success ? 'OK' : 'FAILED';
-      prompt += `- [${status}] ${log.action}: ${log.summary}\n`;
-    }
-    prompt += '\n';
-  }
-
-  prompt += `RULES:\n`;
-  prompt += `1. Make SMALL, focused changes — edit 1-3 files max per run.\n`;
-  prompt += `2. After making changes, ALWAYS run the build.\n`;
-  prompt += `3. If the build fails, fix the errors before finishing.\n`;
-  prompt += `4. Run tests after changes.\n`;
-  prompt += `5. Keep your changes focused and testable.\n`;
-  prompt += `6. RESEARCH FIRST: For unfamiliar topics, use WebSearch/WebFetch to learn before coding.\n\n`;
-
-  if (pendingTasks.length === 0) {
-    prompt += `There are no pending tasks. Research the codebase and pick ONE small improvement related to the goal.\n`;
-    prompt += `Implement it, verify the build and tests pass, and you're done.\n`;
-  } else {
-    // Force the selected task — don't let the agent pick a different one
-    const assigned = pendingTasks[0]; // currentTask is always first in the list passed here
-    prompt += `YOUR TASK: ${assigned.title}\n`;
-    prompt += `DESCRIPTION: ${assigned.description || 'No description.'}\n`;
-    if ((assigned as any).done_when) {
-      prompt += `DONE WHEN: ${(assigned as any).done_when}\n`;
-    } else {
-      prompt += `DONE WHEN: Build passes, tests pass, changes match the task description.\n`;
-    }
-    prompt += `\nDo NOT work on anything else. Focus only on this task.\n`;
-  }
-
-  // Seed prompt version if this is the first run
-  if (!activeVersion) {
-    seedPromptVersion(agentId, prompt);
-  }
-
-  return prompt;
-}
-
-// Track matched skills for the current run (used after run for skill usage tracking)
-let lastMatchedSkillIds: string[] = [];
-// Track experiment variant pick for the current run
-let currentExperimentPick: { experimentId: string; variant: 'a' | 'b' } | null = null;
-
-function buildPlanningPrompt(goal: Goal, memoryContext: string, repoPath: string, existingTasks: { title: string }[]): string {
-  let prompt = '';
-  if (memoryContext) {
-    prompt += memoryContext;
-  }
-
-  // Inject repo map so the agent understands the codebase structure
-  try {
-    const repoMap = buildRepoMap(repoPath, 15);
-    const mapText = formatRepoMap(repoMap, 15);
-    if (mapText) {
-      prompt += `${mapText}\n`;
-    }
-  } catch { /* skip if repo map fails */ }
-
-  prompt += `Planning tasks for goal: "${goal.name}"\n${goal.description || 'No description.'}\n\n`;
-
-  // Show existing tasks to prevent duplicates
-  if (existingTasks.length > 0) {
-    prompt += `EXISTING TASKS (do NOT duplicate these):\n`;
-    for (const t of existingTasks) {
-      prompt += `- ${t.title}\n`;
-    }
-    prompt += '\n';
-  }
-
-  // Dynamic task count based on goal complexity
-  const descLength = (goal.description || '').length;
-  const estimatedComplexity = descLength < 50 ? 'simple' : descLength < 200 ? 'moderate' : 'complex';
-  const taskCountGuide = estimatedComplexity === 'simple' ? '1-3' : estimatedComplexity === 'moderate' ? '3-5' : '5-8';
-
-  prompt += `This goal is estimated as ${estimatedComplexity}. Propose ${taskCountGuide} tasks.\n`;
-  prompt += `Use the repo map above to understand existing patterns and module boundaries.\n`;
-  prompt += `Order tasks by dependency — earlier tasks should not depend on later ones.\n\n`;
-
-  prompt += `Before planning, consider:\n`;
-  prompt += `- What existing code/patterns can be reused? (check the repo map)\n`;
-  prompt += `- Will this introduce duplication? How to avoid it?\n`;
-  prompt += `- Are there tests that need updating?\n`;
-  prompt += `- What's the right module boundary for new code?\n\n`;
-
-  prompt += `FORMAT (one per line):\nTASK: <title> | <description with file names> | DONE_WHEN: <specific testable condition>\n\n`;
-  prompt += `Examples:\n`;
-  prompt += `TASK: Add rate limiter to API | Create src/server/rate-limiter.ts with sliding window counter | DONE_WHEN: build passes, rate limiter rejects requests over 100/min in test\n`;
-  prompt += `TASK: Extract git helpers | Move branch functions from autopilot.ts to src/server/systems/git-ops.ts | DONE_WHEN: build passes, all imports updated, no dead code in autopilot.ts\n\n`;
-  prompt += `Each task = 1 run (1-3 file edits). Name exact files. Plan only, don't implement.\n`;
-  return prompt;
-}
-
-// runBuildCheck, runTestCheck imported from systems/build-runner.ts
-// autoCommit, hasUncommittedChanges, etc. imported from systems/git-ops.ts
-
-function logToGoal(
-  goalId: string,
-  agentId: string,
-  action: string,
-  summary: string,
-  diffStats: string,
-  durationMs: number,
-  success: boolean,
-  tokens?: { prompt: number; completion: number; total: number }
-): void {
-  const broadcast = getBroadcast();
-  const logId = generateId();
-  const now = new Date().toISOString();
-  const promptTokens = tokens?.prompt || 0;
-  const completionTokens = tokens?.completion || 0;
-  const totalTokens = tokens?.total || 0;
-
-  runQuery(
-    `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, diff_stats, cost_usd, duration_ms, success, prompt_tokens, completion_tokens, total_tokens, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, promptTokens, completionTokens, totalTokens, now]
-  );
-
-  // Invalidate cache for this goal since we just added a new entry
-  invalidateGoalLogCache(goalId);
-
-  const entry = getOne<GoalLogEntry>('SELECT * FROM goal_log WHERE id = ?', [logId]);
-  if (entry) {
-    broadcast({ type: 'goal:log:entry', entry });
-  }
-}
-
-// ── Parallel Task Execution ────────────────────────────────────────────
-
-/**
- * Run multiple agent steps in parallel.
- * Returns when all agents complete.
- */
-async function runParallelAgentSteps(
-  tasks: Array<{
-    agentId: string;
-    agent: Agent;
-    prompt: string;
-    broadcast: (msg: WSServerMessage) => void;
-    options?: { skipWrap?: boolean };
-  }>
-): Promise<Array<{ code: number; output: string }>> {
-  return Promise.all(
-    tasks.map(({ agentId, agent, prompt, broadcast, options }) =>
-      runAgentStep(agentId, agent, prompt, broadcast, options)
-    )
-  );
-}
-
-// ── Agent Step ──────────────────────────────────────────────────────────
-
-function runAgentStep(
-  agentId: string,
-  agent: Agent,
-  prompt: string,
-  broadcast: (msg: WSServerMessage) => void,
-  options?: { skipWrap?: boolean }
-): Promise<{ code: number; output: string }> {
-  return new Promise((resolve) => {
-    if (hasAgent(agentId)) {
-      killAgent(agentId);
-    }
-
-    let output = '';
-    const handleOutput = (id: string, chunk: string) => {
-      output += chunk;
-      broadcast({ type: 'agent:output', agentId: id, chunk });
-    };
-
-    const handleExit = (id: string, code: number) => {
-      resolve({ code, output });
-    };
-
-    createAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
-    sendToAgent(agentId, prompt, { skipWrap: options?.skipWrap });
-  });
-}
-
-// ── Workflow Execution ──────────────────────────────────────────────────
-
-async function executeWorkflow(
-  agentId: string,
-  agent: Agent,
-  workflow: Workflow,
-  goal: Goal,
-  broadcast: (msg: WSServerMessage) => void,
-  branchName: string
-): Promise<{ success: boolean; summary: string }> {
-  const steps = workflow.steps;
-  const results: string[] = [];
-
-  broadcast({ type: 'agent:output', agentId, chunk: `\n=== Workflow: ${workflow.name} (${steps.length} steps) ===\n` });
-
-  for (let i = 0; i < steps.length; i++) {
-    const step = steps[i];
-    broadcast({ type: 'agent:output', agentId, chunk: `\n--- Step ${i + 1}/${steps.length}: ${step.name} ---\n` });
-
-    let stepSuccess = false;
-    let attempts = 0;
-    const maxAttempts = step.on_fail === 'retry' ? (step.max_retries || 1) + 1 : 1;
-
-    while (attempts < maxAttempts) {
-      attempts++;
-      // Step prompt already has context from workflow definition
-      const stepResult = await runAgentStep(agentId, agent, step.prompt, broadcast);
-      stepSuccess = stepResult.code === 0;
-
-      if (stepSuccess) break;
-      if (step.on_fail === 'retry' && attempts < maxAttempts) {
-        broadcast({ type: 'agent:output', agentId, chunk: `\nRetrying step "${step.name}" (attempt ${attempts + 1})...\n` });
-      }
-    }
-
-    if (stepSuccess) {
-      results.push(`${step.name}: OK`);
-      logToGoal(goal.id, agentId, `workflow:${step.name}`, `Step completed`, '', 0, true);
-    } else {
-      results.push(`${step.name}: FAILED`);
-      logToGoal(goal.id, agentId, `workflow:${step.name}`, `Step failed after ${attempts} attempt(s)`, '', 0, false);
-
-      if (step.on_fail === 'stop') {
-        return { success: false, summary: `Workflow stopped at step "${step.name}"` };
-      }
-      if (step.on_fail === 'revert') {
-        // With branch isolation, "revert" just means abandon the branch
-        abandonBranch(branchName, `workflow step "${step.name}" failed`);
-        return { success: false, summary: `Step "${step.name}" failed — branch abandoned` };
-      }
-      // 'skip' — continue to next step
-    }
-  }
-
-  return { success: true, summary: `Workflow "${workflow.name}" completed: ${results.join(', ')}` };
-}
-
-// ── Task Management ─────────────────────────────────────────────────────
-
-/**
- * Detect independent tasks by checking if they mention different files.
- * Tasks are considered independent if their descriptions reference non-overlapping file sets.
- */
-function detectIndependentTasks(tasks: { id: string; title: string; description: string }[]): typeof tasks {
-  if (tasks.length <= 1) return tasks;
-
-  // Extract file mentions from task descriptions
-  const filePattern = /\b(?:src\/[a-z0-9_/-]+\.(?:ts|tsx|js|jsx|json))\b/gi;
-  const taskFiles = tasks.map(task => {
-    const matches = (task.description || '').match(filePattern) || [];
-    return { task, files: new Set(matches.map(f => f.toLowerCase())) };
-  });
-
-  // Find tasks that don't share files
-  const independent: typeof tasks = [];
-  const usedFiles = new Set<string>();
-
-  for (const { task, files } of taskFiles) {
-    // Check if this task overlaps with already selected tasks
-    const hasOverlap = Array.from(files).some(f => usedFiles.has(f));
-    if (!hasOverlap || files.size === 0) {
-      independent.push(task);
-      files.forEach(f => usedFiles.add(f));
-    }
-  }
-
-  return independent.length > 0 ? independent : [tasks[0]];
-}
-
-function getOrCreateGoalTasksFolder(): string {
-  const broadcast = getBroadcast();
-  const existing = getOne<any>("SELECT * FROM folders WHERE name = 'Goal Tasks'", []);
-  if (existing) return existing.id;
-
-  const id = generateId();
-  const now = new Date().toISOString();
-  runQuery(
-    `INSERT INTO folders (id, name, icon, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-    [id, 'Goal Tasks', '\uD83C\uDFAF', now, now]
-  );
-  const folder = getOne<any>('SELECT * FROM folders WHERE id = ?', [id]);
-  if (folder) {
-    broadcast({ type: 'folder:updated', folder });
-  }
-  return id;
-}
-
-function createTaskForGoal(goalId: string, agentId: string, title: string, description: string, doneWhen = ''): void {
-  const broadcast = getBroadcast();
-  const folderId = getOrCreateGoalTasksFolder();
-  const id = generateId();
-  const now = new Date().toISOString();
-
-  runQuery(
-    `INSERT INTO tasks (id, folder_id, title, description, status, goal_id, agent_generated, done_when, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'todo', ?, 1, ?, ?, ?)`,
-    [id, folderId, title, description, goalId, doneWhen, now, now]
-  );
-
-  const task = getOne<any>('SELECT * FROM tasks WHERE id = ?', [id]);
-  if (task) {
-    broadcast({ type: 'task:updated', task });
-  }
-
-  logToGoal(goalId, agentId, 'task_created', `Created task: ${title}`, '', 0, true);
-}
-
-function parseTasksFromOutput(output: string, goalId: string, agentId: string): number {
-  const clean = stripAnsi(output);
-  const lines = clean.split('\n');
-  let count = 0;
-  for (const line of lines) {
-    // Parse: TASK: title | description | DONE_WHEN: condition
-    // Also supports old format: TASK: title | description
-    const match = line.match(/TASK:\s*([^|]+)\|([^|]+)(?:\|\s*DONE_WHEN:\s*(.+))?/);
-    if (match) {
-      const title = match[1].trim();
-      const description = match[2].trim();
-      const doneWhen = match[3]?.trim() || '';
-      if (title) {
-        createTaskForGoal(goalId, agentId, title, description, doneWhen);
-        count++;
-      }
-    }
-  }
-  return count;
-}
+// ── Prompts: systems/prompt-builder.ts ──
+// ── Goal planning: systems/goal-planner.ts ──
 
 // ── Goal Cycling ────────────────────────────────────────────────────────
 
@@ -1075,8 +667,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const taskWithDoneWhen = { ...currentTask, done_when: (currentTask as any).done_when || '' };
       const tasksForPrompt = [taskWithDoneWhen, ...pendingTasks.filter(t => (t as any).id !== currentTask.id)];
       let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, taskMemoryContext, agentId, taskDesc);
-      // Track which skills were matched for this run
-      lastMatchedSkillIds = ((buildAutopilotPrompt as any)._lastMatchedSkills || []).map((s: Skill) => s.id);
+      // Track which skills were matched for this run (from prompt-builder)
+      const lastMatchedSkillIds = getLastMatchedSkills().map((s: Skill) => s.id);
       prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
@@ -1299,21 +891,21 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       for (const skillId of lastMatchedSkillIds) {
         updateSkillUsage(skillId, success, assessment.score);
       }
-      lastMatchedSkillIds = [];
+      clearLastMatchedSkills();
 
       // Record experiment results — multi-metric for closed-loop system
-      if (currentExperimentPick) {
-        // New closed-loop system uses ExperimentRecord (variant = 'control'/'treatment')
-        const expVariant = currentExperimentPick.variant === 'a' ? 'control' : 'treatment';
+      const expPick = getCurrentExperimentPick();
+      if (expPick) {
+        const expVariant = expPick.variant === 'a' ? 'control' : 'treatment';
         recordRunResult(
-          currentExperimentPick.experimentId,
+          expPick.experimentId,
           expVariant as 'control' | 'treatment',
           { score: assessment.score, costUsd, durationMs, mergeSuccess: null, buildFailures: success ? 0 : 1, testFailures: testFailureCount, filesChanged: filesTouched },
           { goalId, taskId: currentTask?.id }
         );
         // Also record in old experiment system for backward compat
-        recordExperimentResult(currentExperimentPick.experimentId, currentExperimentPick.variant, assessment.score);
-        currentExperimentPick = null;
+        recordExperimentResult(expPick.experimentId, expPick.variant, assessment.score);
+        clearCurrentExperimentPick();
       }
 
       if (success) {

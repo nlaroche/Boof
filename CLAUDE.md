@@ -1,93 +1,46 @@
 # Boof — Project Instructions
 
-This is a personal PWA + Node server for controlling Claude Code from a phone.
+Personal PWA + Node server for controlling Claude Code from a phone.
 
 ## Stack
 - Server: Node.js, Express 5, ws, node-pty, sql.js, tsx
 - Client: React 19, TypeScript, Vite, Tailwind CSS, Zustand, vite-plugin-pwa
 
 ## Key Rules
-- This is a single-user personal tool. No auth, no multi-tenancy.
-- Dark theme only. Colors defined in tailwind.config.ts.
-- Mobile-first. Everything must be thumb-friendly.
-- Bottom navigation, not top.
+- Single-user personal tool. No auth, no multi-tenancy.
+- Dark theme only. Mobile-first. Bottom navigation.
 - All state flows through Zustand store, hydrated via WebSocket.
-- Terminal output must preserve ANSI colors.
 - Keep it simple. No over-engineering.
 
 ## Running
-- `npm run dev` starts both server and client
-- Server on :3456, Vite dev on :5173 (proxied)
-- `npm run build && npm start` for production
+- `npm run dev` — starts server (:3456) + Vite dev (:5173)
+- `npm run build && npm start` — production
+- Tests: `node --import tsx --test src/server/engine/__tests__/*.test.ts src/server/__tests__/*.test.ts`
 
-## Database
-- SQLite at ./boof.db
-- Schema in src/server/db.ts
-- Migrations are just CREATE IF NOT EXISTS (it's personal, keep it simple)
+## Architecture & Standards
+- **Read first:** `docs/ARCHITECTURE.md` — full system design, all modules, data flow
+- **Code rules:** `docs/CODE-STANDARDS.md` — file size limits, where code goes, error handling
+- State machines for all lifecycles (`machines/`)
+- Focused systems in `systems/` — one concern each
+- All CRUD through `db-helpers.ts` patterns
+- No magic strings — import from `engine/constants.ts`
+- Prompts in `systems/prompt-builder.ts` — not inline in autopilot
 
 ## Windows Environment Notes
-- This runs on Windows (MSYS/Git Bash). Use Unix shell syntax in bash.
-- `node` is NOT in the system PATH for `cmd.exe` subprocesses.
-- npm postinstall scripts often fail — use `npm install --ignore-scripts` as fallback.
-- Use `node node_modules/tsx/dist/cli.mjs` to run tsx (not `npx tsx`).
-- Use `node node_modules/.bin/<tool>` if a locally installed npm binary isn't found.
-- Express 5 uses `/{*path}` for wildcard routes (NOT `*`).
-- sql.js is used instead of better-sqlite3 to avoid native compilation issues.
-- Static files are served from `dist/client`, resolved via `process.cwd()` (not `__dirname`).
-- Use `powershell -ExecutionPolicy Bypass -Command` for PowerShell commands from bash.
-
-## Architecture (REQUIRED READING)
-See `ARCHITECTURE.md` for the full engine design. Key rules:
-- **State machines** for all entity lifecycles (agent, goal, task, command, autopilot)
-- **Utility scoring** for task/goal selection (not dumb rotation)
-- **No magic strings** — import from `src/server/engine/constants.ts`
-- **No inline SQL in handlers** — use `src/server/db-helpers.ts` CRUD functions
-- **Test every machine** with `validateMachineDefinition()` + transition tests
-- Machine definitions in `src/server/machines/`
-- Focused systems in `src/server/systems/`
-- Run tests: `npm run test:unit` (includes engine tests)
+- `node` is NOT in system PATH for `cmd.exe` subprocesses
+- `npm install --ignore-scripts` (then `node node_modules/esbuild/install.js`)
+- Use `node node_modules/tsx/dist/cli.mjs` to run tsx (not `npx tsx`)
+- Express 5: `/{*path}` for wildcard routes (NOT `*`)
+- sql.js (not better-sqlite3) — avoids native compilation
+- `powershell -ExecutionPolicy Bypass -Command` for PS from bash
 
 ## Production Deployment (Mac Mini)
-
-Boof runs in production on the Mac Mini at `bcbuilmac@bcbuils-mac-mini-2` via a
-launchd service. To deploy local changes:
-
 ```bash
-# From boof repo root on dev desktop:
-git push origin main              # the script refuses to deploy unpushed commits
-bash scripts/deploy-mac-mini.sh   # pulls, installs deps, reloads launchd, verifies
+git push origin main
+bash scripts/deploy-mac-mini.sh
 ```
-
-Infrastructure details:
-- Repo on Mac Mini: `~/projects/boof` (tracks `origin/main`)
-- Service: `com.nlaroche.boof` (launchd, `~/Library/LaunchAgents/com.nlaroche.boof.plist`)
-- Node: `/Users/bcbuilmac/.nvm/versions/node/v22.22.2/bin/node` (not Homebrew)
-- Logs: `~/projects/boof/logs/boof.log` (stdout + stderr combined)
-- Port: 3456 (bound to 0.0.0.0 for Tailscale access)
-- Web UI: `http://bcbuils-mac-mini-2:3456` (via Tailscale)
-
-Deploy gotchas (learned the hard way):
-- **npm install REQUIRES `--legacy-peer-deps`** on the Mac — boof has tsx/vite peer
-  conflicts that ERESOLVE without the flag. The deploy script handles this.
-- **`set -e` + pipes needs `pipefail`** — `npm install ... | tail -5` will mask npm
-  errors unless `set -o pipefail` is also set.
-- **launchctl `list` status column**: first col is PID (`-` = not running), second
-  col is last exit code. `PID = "-"` means the process crashed — check logs.
-- **Port bind takes ~5s after reload** — sql.js init + db load isn't instant. The
-  deploy script polls `lsof -iTCP:3456` for up to 10 seconds before giving up.
-- **Tail the logs during deploy** if something looks off:
-  `tailscale ssh bcbuilmac@bcbuils-mac-mini-2 'tail -f ~/projects/boof/logs/boof.log'`
-
-Manual service control on the Mac Mini:
-```bash
-launchctl unload ~/Library/LaunchAgents/com.nlaroche.boof.plist
-launchctl load ~/Library/LaunchAgents/com.nlaroche.boof.plist
-launchctl list | grep boof   # PID + exit code + label
-```
-
-## Aider Orchestration
-- `aider-task.ps1` — Send tasks to Aider with conventions prepended
-- `aider-fix.ps1` — Emergency build fixer (max 3 attempts)
-- `aider-iterate.ps1` — Autonomous build-fix loop (max 5 attempts)
-- `test.ps1` — Build validation (use -Quick for build-only)
-- `aider-conventions.md` — Rules Aider must follow
+- Service: `com.nlaroche.boof` (launchd), port 3456
+- Repo: `~/projects/boof`, Node: `~/.nvm/versions/node/v22.22.2/bin/node`
+- Logs: `~/projects/boof/logs/boof.log`
+- `npm install` needs `--legacy-peer-deps` (tsx/vite peer conflicts)
+- See `scripts/deploy-mac-mini.sh` for full deploy flow
