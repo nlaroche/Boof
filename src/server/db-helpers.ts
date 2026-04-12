@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline, AgentPattern, AgentFix, ExperimentRecord, ExperimentRun } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline, AgentPattern, AgentFix, ExperimentRecord, ExperimentRun, TaskResearch } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -1087,4 +1087,42 @@ export function getExperimentRunCounts(experimentId: string): { control: number;
   const control = getOne<{ c: number }>('SELECT COUNT(*) as c FROM experiment_runs WHERE experiment_id = ? AND variant = ?', [experimentId, 'control']);
   const treatment = getOne<{ c: number }>('SELECT COUNT(*) as c FROM experiment_runs WHERE experiment_id = ? AND variant = ?', [experimentId, 'treatment']);
   return { control: control?.c ?? 0, treatment: treatment?.c ?? 0 };
+}
+
+// ============================================================================
+// UI Query Helpers (for WS handlers)
+// ============================================================================
+
+/** List all patterns for an agent (no filtering) */
+export function listAgentPatterns(agentId: string): AgentPattern[] {
+  return getAll<AgentPattern>(
+    'SELECT * FROM agent_patterns WHERE agent_id = ? ORDER BY verified DESC, success_count DESC',
+    [agentId]
+  );
+}
+
+/** List all fixes for an agent (no filtering) */
+export function listAgentFixes(agentId: string): AgentFix[] {
+  return getAll<AgentFix>(
+    'SELECT * FROM agent_fixes WHERE agent_id = ? ORDER BY times_fixed DESC, times_seen DESC',
+    [agentId]
+  );
+}
+
+/** List all task research records */
+export function listAllTaskResearch(limit = 50): TaskResearch[] {
+  return getAll<TaskResearch>(
+    'SELECT * FROM task_research ORDER BY created_at DESC LIMIT ?',
+    [limit]
+  );
+}
+
+/** List all audit records (optionally by gate or goal) */
+export function listAuditRecords(opts: { mergeGateId?: string; goalId?: string; limit?: number } = {}): AuditRecord[] {
+  if (opts.mergeGateId) return getAuditRecords(opts.mergeGateId);
+  if (opts.goalId) return getAuditRecordsByGoal(opts.goalId);
+  return getAll<AuditRecord>(
+    'SELECT * FROM audit_records ORDER BY created_at DESC LIMIT ?',
+    [opts.limit || 100]
+  );
 }

@@ -24,8 +24,11 @@ import {
   listGoalLog, listAgentCommands, listAgentActivity,
   listGuidelines as dbListGuidelines, updateGuidelineStatus, updateGuideline,
   createGuideline, deleteGuideline as dbDeleteGuideline, approveAllGuidelines,
+  listMergeGates, getMergeGate, getReviewFindings, resolveReviewFinding,
+  listAuditRecords, listAgentPatterns, listAgentFixes,
+  listAllTaskResearch, listExperimentRecords, getExperimentRuns,
 } from './db-helpers.js';
-import type { Agent, Command, GoalLogEntry, GoalStats, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun, ReviewGuideline } from '../client/lib/types.js';
+import type { Agent, Command, GoalLogEntry, GoalStats, WSClientMessage, WSServerMessage, RepoInfo, TimelineRun, ReviewGuideline, MergeGate } from '../client/lib/types.js';
 import {
   getAgentXpEvents,
   skipImprovement, markImprovementRunning,
@@ -37,6 +40,9 @@ import { createAgent as ptyCreateAgent, sendToAgent, interruptAgent, killAgent, 
 import { triggerAutopilotRun, listAgentBranches, mergeAgentBranch, getAgentCwd, resetAgentSessionCounters } from './autopilot.js';
 import { createWorktree, removeWorktree } from './systems/git-ops.js';
 import { scanRepoForGuidelines, scanFolderForGuidelines, buildDeepScanPrompt, parseDeepScanOutput, storeDeepScanGuidelines } from './systems/review-agent.js';
+import { getAuditTrail, getAuditSummary, verifyAuditChain } from './systems/audit-trail.js';
+import { initiateConsolidation, executeFinalMerge, abortMergeGate } from './systems/consolidation.js';
+import { getTaskResearch } from './systems/research.js';
 import {
   parseCommand, parseCommands,
   appendAgentOutput, clearAgentOutput, getAgentOutputBuffer,
@@ -107,7 +113,7 @@ export function handleWsMessage(ws: WebSocket, data: string): void {
 
 // ── Message Router ──
 
-function handleMessage(ws: WebSocket, message: WSClientMessage): void {
+async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<void> {
   switch (message.type) {
     // ── CRUD: Tasks ──
     case 'task:create':
@@ -640,6 +646,129 @@ function handleMessage(ws: WebSocket, message: WSClientMessage): void {
         prompt,
         guidelines: [],
       } as any);
+      break;
+    }
+
+    // ── Merge Gates ──
+
+    case 'mergeGate:list': {
+      const gates = listMergeGates((message as any).status);
+      send(ws, { type: 'mergeGate:list', gates } as any);
+      break;
+    }
+
+    case 'mergeGate:get': {
+      const gate = getMergeGate((message as any).mergeGateId);
+      if (gate) send(ws, { type: 'mergeGate:get', gate } as any);
+      break;
+    }
+
+    case 'mergeGate:consolidate': {
+      const { goalId } = message as any;
+      const agent = listAgents().find(a => a.autopilot_goal_id === goalId);
+      const repoPath = agent?.working_directory || '';
+      const gate = await initiateConsolidation(goalId, repoPath, (g: MergeGate) => broadcast({ type: 'mergeGate:updated', gate: g } as any));
+      if (gate) send(ws, { type: 'mergeGate:updated', gate } as any);
+      break;
+    }
+
+    case 'mergeGate:merge': {
+      const { mergeGateId } = message as any;
+      await executeFinalMerge(mergeGateId, (g: MergeGate) => broadcast({ type: 'mergeGate:updated', gate: g } as any));
+      break;
+    }
+
+    case 'mergeGate:abort': {
+      const { mergeGateId } = message as any;
+      abortMergeGate(mergeGateId, 'User aborted from UI', (g: MergeGate) => broadcast({ type: 'mergeGate:updated', gate: g } as any));
+      break;
+    }
+
+    // ── Review Findings ──
+
+    case 'reviewFindings:list': {
+      const { mergeGateId, cycle } = message as any;
+      const findings = getReviewFindings(mergeGateId, cycle);
+      send(ws, { type: 'reviewFindings:list', mergeGateId, findings } as any);
+      break;
+    }
+
+    case 'reviewFindings:resolve': {
+      const { findingId, resolvedBy } = message as any;
+      resolveReviewFinding(findingId, resolvedBy);
+      // Re-fetch to get the updated finding
+      break;
+    }
+
+    // ── Audit Trail ──
+
+    case 'audit:list': {
+      const { mergeGateId, goalId, limit } = message as any;
+      const records = listAuditRecords({ mergeGateId, goalId, limit });
+      const key = mergeGateId || goalId || 'global';
+      send(ws, { type: 'audit:list', records, key } as any);
+      break;
+    }
+
+    case 'audit:summary': {
+      const { mergeGateId } = message as any;
+      const summary = getAuditSummary(mergeGateId);
+      send(ws, { type: 'audit:summary', mergeGateId, summary } as any);
+      break;
+    }
+
+    case 'audit:verify': {
+      const { mergeGateId } = message as any;
+      const result = verifyAuditChain(mergeGateId);
+      send(ws, { type: 'audit:verification', mergeGateId, ...result } as any);
+      break;
+    }
+
+    // ── Task Research ──
+
+    case 'research:list': {
+      const { limit } = message as any;
+      const research = listAllTaskResearch(limit);
+      send(ws, { type: 'research:list', research } as any);
+      break;
+    }
+
+    case 'research:get': {
+      const { taskId } = message as any;
+      const research = getTaskResearch(taskId);
+      if (research) send(ws, { type: 'research:result', taskId, research } as any);
+      break;
+    }
+
+    // ── Agent Memory ──
+
+    case 'agentMemory:patterns': {
+      const { agentId } = message as any;
+      const patterns = listAgentPatterns(agentId);
+      send(ws, { type: 'agentMemory:patterns', agentId, patterns } as any);
+      break;
+    }
+
+    case 'agentMemory:fixes': {
+      const { agentId } = message as any;
+      const fixes = listAgentFixes(agentId);
+      send(ws, { type: 'agentMemory:fixes', agentId, fixes } as any);
+      break;
+    }
+
+    // ── Experiment Records ──
+
+    case 'experimentRecords:list': {
+      const { agentId, status } = message as any;
+      const experiments = agentId ? listExperimentRecords(agentId, status) : [];
+      send(ws, { type: 'experimentRecords:list', experiments } as any);
+      break;
+    }
+
+    case 'experimentRecords:runs': {
+      const { experimentId } = message as any;
+      const runs = getExperimentRuns(experimentId);
+      send(ws, { type: 'experimentRecords:runs', experimentId, runs } as any);
       break;
     }
 
