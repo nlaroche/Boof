@@ -81,12 +81,13 @@ export function slugify(text: string): string {
 export async function createAgentBranch(
   worktreePath: string,
   agentName: string,
-  goalSlug: string
+  goalSlug: string,
+  baseBranch?: string,
 ): Promise<string> {
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  const base = getDefaultBranch(worktreePath);
-  await execAsync(`git checkout -b "${branchName}" origin/${base}`, {
+  const base = baseBranch || `origin/${getDefaultBranch(worktreePath)}`;
+  await execAsync(`git checkout -b "${branchName}" "${base}"`, {
     cwd: worktreePath,
     timeout: Timeouts.GIT_CHECKOUT,
   });
@@ -206,6 +207,18 @@ export async function mergeToGoalBranch(
       originalBranch = stdout.trim();
     } catch {
       originalBranch = getDefaultBranch(mainRepoDir);
+    }
+
+    // Rebase the task branch onto the goal branch first to avoid conflicts.
+    // This brings the agent branch up-to-date with any work merged since it branched.
+    try {
+      await execAsync(
+        `git checkout "${taskBranch}" && git rebase "${goalBranch}"`,
+        { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
+      );
+    } catch {
+      // Rebase failed — abort and fall through to normal merge
+      await execAsync('git rebase --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
     }
 
     const { stdout, stderr } = await execAsync(

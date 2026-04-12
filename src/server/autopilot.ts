@@ -542,10 +542,21 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   let agentBranch = '';
 
   try {
-    // ── Always create a feature branch from main ──
-    // The autopilot NEVER works directly on main. Every run gets its own branch.
-    // With worktrees, this happens in the agent's isolated directory.
-    agentBranch = await createAgentBranch(agentCwd, agent.name, goalSlug);
+    // ── Create feature branch from goal branch (if it exists) or default ──
+    // Branching from the goal branch ensures each agent starts with all
+    // previously merged work, preventing conflicts on merge-back.
+    const goalBranchName = `goal/${goalSlug}`;
+    let baseBranch: string | undefined;
+    try {
+      await execAsync(`git rev-parse --verify "${goalBranchName}"`, {
+        cwd: agentCwd,
+        timeout: 5_000,
+      });
+      baseBranch = goalBranchName;
+    } catch {
+      // No goal branch yet — will branch from origin/develop (default)
+    }
+    agentBranch = await createAgentBranch(agentCwd, agent.name, goalSlug, baseBranch);
     broadcast({
       type: 'agent:output',
       agentId,
