@@ -484,6 +484,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   const broadcast = getBroadcast();
   const startTime = Date.now();
   const goalSlug = slugify(goal.name);
+  let lastMatchedSkillIds: string[] = [];
 
   // Performance tracking
   const perf = {
@@ -784,7 +785,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const tasksForPrompt = [taskWithDoneWhen, ...pendingTasks.filter(t => (t as any).id !== currentTask.id)];
       let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, taskMemoryContext, agentId, taskDesc);
       // Track which skills were matched for this run (from prompt-builder)
-      const lastMatchedSkillIds = getLastMatchedSkills().map((s: Skill) => s.id);
+      lastMatchedSkillIds = getLastMatchedSkills().map((s: Skill) => s.id);
       prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
