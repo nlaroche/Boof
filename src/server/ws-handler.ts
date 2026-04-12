@@ -770,6 +770,8 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       const { experimentId } = message as any;
       const runs = getExperimentRuns(experimentId);
       send(ws, { type: 'experimentRecords:runs', experimentId, runs } as any);
+      break;
+    }
 
     // ── Maintenance ──
     case 'maintenance:get-config': {

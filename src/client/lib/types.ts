@@ -580,7 +580,7 @@ export type WSClientMessage =
   | { type: 'experimentRecords:runs'; experimentId: string }
   // Analytics
   | { type: 'analytics:cost'; agentId?: string; days?: number }
-  | { type: 'analytics:performance'; agentId?: string; days?: number };
+  | { type: 'analytics:performance'; agentId?: string; days?: number }
   | { type: 'maintenance:get-config' }
   | { type: 'maintenance:update-config'; config: Record<string, unknown> }
   | { type: 'maintenance:get-log'; limit?: number }
@@ -664,7 +664,7 @@ export type WSServerMessage =
   | { type: 'experimentRecord:updated'; experiment: ExperimentRecord }
   // Analytics
   | { type: 'analytics:cost'; data: CostAnalytics }
-  | { type: 'analytics:performance'; data: PerformanceAnalytics };
+  | { type: 'analytics:performance'; data: PerformanceAnalytics }
   | { type: 'maintenance:config'; config: Record<string, unknown> }
   | { type: 'maintenance:log'; entries: unknown[] }
   | { type: 'maintenance:triggered' };

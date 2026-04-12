@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import type { Goal, GoalLogEntry, WSClientMessage } from '../lib/types';
 import { useStore } from '../stores/store';
 import { cn } from '@/lib/utils';
+import { formatCost } from '../lib/format';
 import { Card, CardContent } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -181,6 +182,12 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
                 <span className="text-success">{goalStats.tasks_completed} done</span>
                 {goalStats.tasks_failed > 0 && <span className="text-destructive">{goalStats.tasks_failed} failed</span>}
                 {goalStats.avg_duration_ms > 0 && <span>{Math.round(goalStats.avg_duration_ms / 60000)}m avg</span>}
+                {goalLogs.length > 0 && (() => {
+                  const totalCost = goalLogs.reduce((sum, l) => sum + (l.cost_usd || 0), 0);
+                  return totalCost > 0 ? (
+                    <span className="font-mono">{formatCost(totalCost)}{goal.budget_cap_usd ? ` / ${formatCost(goal.budget_cap_usd)}` : ''}</span>
+                  ) : null;
+                })()}
               </div>
             )}
           </div>

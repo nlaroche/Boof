@@ -8,6 +8,7 @@ import { StatusBar } from './components/StatusBar';
 import { ContextPanel } from './components/ContextPanel';
 import { Toaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
+import { CommandPalette } from './components/CommandPalette';
 import { HomeScreen } from './screens/HomeScreen';
 import { TasksScreen } from './screens/TasksScreen';
 import { AgentScreen } from './screens/AgentScreen';
@@ -144,6 +145,7 @@ export function App() {
         )}
 
         <Toaster />
+        {isDesktop && <CommandPalette />}
       </div>
     </TooltipProvider>
   );

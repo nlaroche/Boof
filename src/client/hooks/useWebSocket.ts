@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { toast } from 'sonner';
 import { useStore } from '../stores/store';
 import type { WSClientMessage, WSServerMessage } from '../lib/types';
 
@@ -163,6 +164,7 @@ export function useWebSocket() {
             break;
           case 'goal:completed':
             s.updateGoal(msg.goal);
+            toast.success(`Goal completed: ${msg.goal.name}`);
             break;
           case 'goal:switched':
             s.updateGoal(msg.goal);
@@ -206,6 +208,9 @@ export function useWebSocket() {
             break;
           case 'mergeGate:updated':
             s.updateMergeGate(msg.gate);
+            toast.info(`Pipeline: ${msg.gate.status}`, {
+              description: `Gate for goal branch ${msg.gate.goal_branch}`,
+            });
             break;
           // Review Findings
           case 'reviewFindings:list':
