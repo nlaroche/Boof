@@ -6,12 +6,15 @@ describe('listProviders', () => {
   it('returns all available providers with pricing', () => {
     const providers = listProviders();
     assert.ok(Array.isArray(providers));
-    assert.ok(providers.length >= 7);
+    assert.ok(providers.length >= 10);
     const ids = providers.map(p => p.id);
     assert.ok(ids.includes('minimax'));
     assert.ok(ids.includes('claude-sonnet'));
     assert.ok(ids.includes('claude-opus'));
     assert.ok(ids.includes('claude-haiku'));
+    assert.ok(ids.includes('qwen3-coder'));
+    assert.ok(ids.includes('qwen3-max'));
+    assert.ok(ids.includes('qwen3-flash'));
     assert.ok(ids.includes('aider'));
     assert.ok(ids.includes('codex'));
     assert.ok(ids.includes('custom'));

@@ -127,36 +127,49 @@ const claudeHaikuProvider: AgentProvider = {
   getEnv() { return baseEnv(); },
 };
 
-// ── Qwen providers via Dashscope (OpenAI-compatible) ────────────────────
-// Uses Aider as the CLI tool since it handles OpenAI-compatible APIs natively.
+// ── Qwen providers via Dashscope (Anthropic-compatible endpoint) ────────
+// Dashscope exposes a native Anthropic Messages API endpoint.
+// Uses the same Claude Code binary as other providers, just different env vars.
 // Requires DASHSCOPE_API_KEY environment variable.
+// Endpoint: https://dashscope-intl.aliyuncs.com/apps/anthropic
 
-const dashscopeEnv = (): Record<string, string> => ({
-  ...process.env as Record<string, string>,
-  OPENAI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-  OPENAI_API_KEY: process.env.DASHSCOPE_API_KEY || '',
-});
+function dashscopeEnv(model: string): Record<string, string> {
+  const env = baseEnv();
+  env['ANTHROPIC_BASE_URL'] = 'https://dashscope-intl.aliyuncs.com/apps/anthropic';
+  env['ANTHROPIC_API_KEY'] = process.env.DASHSCOPE_API_KEY || '';
+  env['ANTHROPIC_MODEL'] = model;
+  env['ANTHROPIC_SMALL_FAST_MODEL'] = model;
+  env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = model;
+  env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = model;
+  env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = model;
+  return env;
+}
 
-const qwen3ThinkingProvider: AgentProvider = {
-  name: 'Qwen3 235B (Thinking)',
-  command: 'aider',
+const qwen3CoderProvider: AgentProvider = {
+  name: 'Qwen3 Coder Plus',
+  command: claudeCommand,
   inputCostPer1M: 0.50,
   outputCostPer1M: 2.00,
-  getArgs(prompt: string) {
-    return ['--yes-always', '--no-git', '--model', 'openai/qwen3-235b-a22b', '--message', prompt];
-  },
-  getEnv() { return dashscopeEnv(); },
+  getArgs(prompt: string) { return claudeArgs(prompt, 'qwen3-coder-plus'); },
+  getEnv() { return dashscopeEnv('qwen3-coder-plus'); },
 };
 
-const qwqProvider: AgentProvider = {
-  name: 'QwQ 32B (Reasoning)',
-  command: 'aider',
-  inputCostPer1M: 0.30,
+const qwen3MaxProvider: AgentProvider = {
+  name: 'Qwen3 Max (Thinking)',
+  command: claudeCommand,
+  inputCostPer1M: 0.80,
+  outputCostPer1M: 3.00,
+  getArgs(prompt: string) { return claudeArgs(prompt, 'qwen3-max'); },
+  getEnv() { return dashscopeEnv('qwen3-max'); },
+};
+
+const qwen3FlashProvider: AgentProvider = {
+  name: 'Qwen3 Coder Flash',
+  command: claudeCommand,
+  inputCostPer1M: 0.15,
   outputCostPer1M: 0.60,
-  getArgs(prompt: string) {
-    return ['--yes-always', '--no-git', '--model', 'openai/qwq-32b', '--message', prompt];
-  },
-  getEnv() { return dashscopeEnv(); },
+  getArgs(prompt: string) { return claudeArgs(prompt, 'qwen3-coder-flash'); },
+  getEnv() { return dashscopeEnv('qwen3-coder-flash'); },
 };
 
 // ── Aider provider ──────────────────────────────────────────────────────
@@ -222,8 +235,9 @@ const providers: Record<string, AgentProvider> = {
   'claude-sonnet': claudeSonnetProvider,
   'claude-opus': claudeOpusProvider,
   'claude-haiku': claudeHaikuProvider,
-  'qwen3-thinking': qwen3ThinkingProvider,
-  'qwq': qwqProvider,
+  'qwen3-coder': qwen3CoderProvider,
+  'qwen3-max': qwen3MaxProvider,
+  'qwen3-flash': qwen3FlashProvider,
   'aider': aiderProvider,
   'codex': codexProvider,
   'custom': customProvider,
