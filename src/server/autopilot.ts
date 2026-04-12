@@ -132,6 +132,122 @@ export async function mergeAgentBranch(
 // ── Prompts: systems/prompt-builder.ts ──
 // ── Goal planning: systems/goal-planner.ts ──
 
+// ── Goal Logging ────────────────────────────────────────────────────────
+
+function logToGoal(
+  goalId: string,
+  agentId: string,
+  action: string,
+  summary: string,
+  diffStats: string,
+  durationMs: number,
+  success: boolean,
+  tokens?: { prompt: number; completion: number; total: number }
+): void {
+  const broadcast = getBroadcast();
+  const logId = generateId();
+  const now = new Date().toISOString();
+  const promptTokens = tokens?.prompt || 0;
+  const completionTokens = tokens?.completion || 0;
+  const totalTokens = tokens?.total || 0;
+
+  runQuery(
+    `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, diff_stats, cost_usd, duration_ms, success, prompt_tokens, completion_tokens, total_tokens, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, promptTokens, completionTokens, totalTokens, now]
+  );
+
+  invalidateGoalLogCache(goalId);
+
+  const entry = getOne<GoalLogEntry>('SELECT * FROM goal_log WHERE id = ?', [logId]);
+  if (entry) {
+    broadcast({ type: 'goal:log:entry', entry });
+  }
+}
+
+// ── Agent Step Execution ────────────────────────────────────────────────
+
+function runAgentStep(
+  agentId: string,
+  agent: Agent,
+  prompt: string,
+  broadcast: (msg: WSServerMessage) => void,
+  options?: { skipWrap?: boolean }
+): Promise<{ code: number; output: string }> {
+  return new Promise((resolve) => {
+    if (hasAgent(agentId)) {
+      killAgent(agentId);
+    }
+
+    let output = '';
+    const handleOutput = (id: string, chunk: string) => {
+      output += chunk;
+      broadcast({ type: 'agent:output', agentId: id, chunk });
+    };
+
+    const handleExit = (id: string, code: number) => {
+      resolve({ code, output });
+    };
+
+    createAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
+    sendToAgent(agentId, prompt, { skipWrap: options?.skipWrap });
+  });
+}
+
+// ── Workflow Execution ──────────────────────────────────────────────────
+
+async function executeWorkflow(
+  agentId: string,
+  agent: Agent,
+  workflow: Workflow,
+  goal: Goal,
+  broadcast: (msg: WSServerMessage) => void,
+  branchName: string
+): Promise<{ success: boolean; summary: string }> {
+  const steps = workflow.steps;
+  const results: string[] = [];
+
+  broadcast({ type: 'agent:output', agentId, chunk: `\n=== Workflow: ${workflow.name} (${steps.length} steps) ===\n` });
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    broadcast({ type: 'agent:output', agentId, chunk: `\n--- Step ${i + 1}/${steps.length}: ${step.name} ---\n` });
+
+    let stepSuccess = false;
+    let attempts = 0;
+    const maxAttempts = step.on_fail === 'retry' ? (step.max_retries || 1) + 1 : 1;
+
+    while (attempts < maxAttempts) {
+      attempts++;
+      const stepResult = await runAgentStep(agentId, agent, step.prompt, broadcast);
+      stepSuccess = stepResult.code === 0;
+
+      if (stepSuccess) break;
+      if (step.on_fail === 'retry' && attempts < maxAttempts) {
+        broadcast({ type: 'agent:output', agentId, chunk: `\nRetrying step "${step.name}" (attempt ${attempts + 1})...\n` });
+      }
+    }
+
+    if (stepSuccess) {
+      results.push(`${step.name}: OK`);
+      logToGoal(goal.id, agentId, `workflow:${step.name}`, `Step completed`, '', 0, true);
+    } else {
+      results.push(`${step.name}: FAILED`);
+      logToGoal(goal.id, agentId, `workflow:${step.name}`, `Step failed after ${attempts} attempt(s)`, '', 0, false);
+
+      if (step.on_fail === 'stop') {
+        return { success: false, summary: `Workflow stopped at step "${step.name}"` };
+      }
+      if (step.on_fail === 'revert') {
+        abandonBranch(branchName, `workflow step "${step.name}" failed`);
+        return { success: false, summary: `Step "${step.name}" failed — branch abandoned` };
+      }
+    }
+  }
+
+  return { success: true, summary: `Workflow "${workflow.name}" completed: ${results.join(', ')}` };
+}
+
 // ── Goal Cycling ────────────────────────────────────────────────────────
 
 /** Update goal_stats after each run */
