@@ -17,6 +17,10 @@ import {
 } from './systems/git-ops.js';
 import { isGoalReadyForConsolidation, initiateConsolidation } from './systems/consolidation.js';
 import { buildRepoMap, formatRepoMap, invalidateRepoMapCache } from './systems/repo-map.js';
+import {
+  classifyFailure as classifyTaskFailure, decideEscalation,
+  recordSuccess, recordFailure, getConsecutiveFailures,
+} from './systems/failure-tracker.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -48,8 +52,8 @@ export const MAX_CYCLES_PER_HOUR = 6;
 /** How long (ms) to back off between loop checks when no goals remain. */
 export const IDLE_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes
 
-/** Max tasks to run on one goal before rotating to the next. */
-export const TASKS_BEFORE_ROTATION = 2;
+/** Base tasks before rotation — dynamically adjusted by momentum. */
+export const BASE_TASKS_BEFORE_ROTATION = 3;
 
 /** Tracks how many goals each agent has cycled through this session. */
 const goalsCycledThisSession = new Map<string, number>();
@@ -586,12 +590,57 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
     sendGoalCompletedNotification(completedGoal?.name ?? goalId).catch(() => {});
   }
 
-  // ── Smart rotation: even if goal isn't complete, rotate after N tasks ──
+  // ── Momentum-based rotation ──
+  // Instead of hardcoded rotation, adapt based on success rate and goal progress.
   const tasksDone = tasksOnCurrentGoal.get(agentId) ?? 0;
-  const shouldRotate = !goalCompleted && tasksDone >= TASKS_BEFORE_ROTATION;
+  let shouldRotate = false;
+
+  if (!goalCompleted && tasksDone > 0) {
+    // Get goal stats to calculate success rate
+    const stats = getOne<{ total_runs: number; tasks_completed: number; tasks_failed: number }>(
+      'SELECT total_runs, tasks_completed, tasks_failed FROM goal_stats WHERE goal_id = ?',
+      [goalId]
+    );
+
+    const totalTasks = getOne<{ c: number }>(
+      "SELECT COUNT(*) as c FROM tasks WHERE goal_id = ?", [goalId]
+    )?.c ?? 1;
+    const doneTasks = getOne<{ c: number }>(
+      "SELECT COUNT(*) as c FROM tasks WHERE goal_id = ? AND status = 'done'", [goalId]
+    )?.c ?? 0;
+    const completionRatio = doneTasks / Math.max(totalTasks, 1);
+
+    const successRate = stats && stats.total_runs > 0
+      ? stats.tasks_completed / stats.total_runs
+      : 0.5; // assume 50% if no history
+
+    // Determine dynamic rotation threshold
+    let rotationThreshold = BASE_TASKS_BEFORE_ROTATION;
+
+    if (completionRatio >= 0.8) {
+      // Goal is 80%+ done — push to finish, don't rotate
+      rotationThreshold = Math.max(totalTasks - doneTasks + 1, BASE_TASKS_BEFORE_ROTATION + 2);
+    } else if (successRate >= 0.7) {
+      // Agent is succeeding — build momentum, stay longer
+      rotationThreshold = BASE_TASKS_BEFORE_ROTATION + 2;
+    } else if (successRate < 0.3 && tasksDone >= 2) {
+      // Agent is failing badly — rotate immediately
+      rotationThreshold = 2;
+    }
+    // Simple goals (1-3 tasks): finish before rotating
+    if (totalTasks <= 3) {
+      rotationThreshold = totalTasks + 1; // effectively "never rotate"
+    }
+
+    shouldRotate = tasksDone >= rotationThreshold;
+
+    if (shouldRotate) {
+      console.log(`[autopilot] Rotating goal: ${tasksDone} tasks done, threshold was ${rotationThreshold} (success rate ${Math.round(successRate * 100)}%, completion ${Math.round(completionRatio * 100)}%)`);
+    }
+  }
 
   if (!goalCompleted && !shouldRotate) {
-    return false; // Stay on this goal — still have tasks and haven't hit rotation threshold
+    return false; // Stay on this goal
   }
 
   // Reset the counter since we're rotating away
@@ -1096,15 +1145,67 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
     }
 
-    // Update task status (skip for test-fix overrides which aren't real DB tasks)
+    // Update task status with failure classification
     if (!isTestFixOverride) {
-      const taskStatus = success ? 'done' : 'todo';
-      runQuery("UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?", [taskStatus, new Date().toISOString(), currentTask.id]);
+      const now = new Date().toISOString();
 
-      // Increment task counter for goal rotation
       if (success) {
+        runQuery("UPDATE tasks SET status = 'done', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+        recordSuccess(agentId, goalId);
         const count = (tasksOnCurrentGoal.get(agentId) ?? 0) + 1;
         tasksOnCurrentGoal.set(agentId, count);
+      } else {
+        // Classify the failure and decide what to do
+        const classification = classifyTaskFailure(
+          summary || '', currentTask.title, currentTask.description || '', 1
+        );
+        const consecutiveFails = recordFailure(agentId, goalId);
+        const taskFailCount = getOne<{ c: number }>(
+          "SELECT COUNT(*) as c FROM goal_log WHERE goal_id = ? AND success = 0 AND summary LIKE ?",
+          [goalId, `%${currentTask.title.slice(0, 30)}%`]
+        )?.c ?? 0;
+
+        const decision = decideEscalation(classification, taskFailCount, consecutiveFails);
+        console.log(`[autopilot] Failure classification: ${classification.category} (${classification.confidence}) → ${decision.action}: ${decision.reason}`);
+
+        switch (decision.action) {
+          case 'retry':
+            // Set back to todo — will be picked up next cycle
+            runQuery("UPDATE tasks SET status = 'todo', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+            break;
+
+          case 'skip':
+            // Environment error — mark archived, don't block the goal
+            runQuery("UPDATE tasks SET status = 'archived', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+            logToGoal(goalId, agentId, 'task_skipped', `Skipped: ${decision.reason}`, '', 0, false);
+            broadcast({ type: 'notify', agentId, title: 'Task skipped', body: `${currentTask.title}: ${decision.reason}` });
+            break;
+
+          case 'pause_task':
+            // Ambiguous requirement — mark archived, notify human
+            runQuery("UPDATE tasks SET status = 'archived', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+            logToGoal(goalId, agentId, 'task_paused', `Needs clarification: ${decision.reason}`, '', 0, false);
+            broadcast({ type: 'notify', agentId, title: 'Task needs review', body: `${currentTask.title}: ${decision.reason}` });
+            break;
+
+          case 'pause_goal':
+            // Too many consecutive failures — pause the entire goal
+            runQuery("UPDATE tasks SET status = 'todo', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+            runQuery("UPDATE goals SET status = 'paused', updated_at = ? WHERE id = ?", [now, goalId]);
+            const pausedGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+            if (pausedGoal) broadcast({ type: 'goal:updated', goal: pausedGoal });
+            logToGoal(goalId, agentId, 'goal_paused', `${consecutiveFails} consecutive failures — paused for human review`, '', 0, false);
+            broadcast({ type: 'notify', agentId, title: 'Goal paused', body: `${pausedGoal?.name}: ${consecutiveFails} consecutive failures. Review needed.` });
+            console.log(`[autopilot] Goal ${goalId} paused after ${consecutiveFails} consecutive failures`);
+            break;
+
+          case 'split_task':
+            // Too many retries — mark this task archived, log suggestion
+            runQuery("UPDATE tasks SET status = 'archived', updated_at = ? WHERE id = ?", [now, currentTask.id]);
+            logToGoal(goalId, agentId, 'task_split', `Task too complex after ${taskFailCount} attempts: ${decision.reason}`, '', 0, false);
+            broadcast({ type: 'notify', agentId, title: 'Task needs splitting', body: `${currentTask.title}: failed ${taskFailCount} times. Consider breaking into smaller tasks.` });
+            break;
+        }
       }
     }
 
