@@ -29,7 +29,8 @@ import { appendAuditRecord, verifyAuditChain } from './audit-trail.js';
 import { healMergeConflict, buildTestFixPrompt, classifyFailure, shouldEscalate } from './self-heal.js';
 import { AuditActionType, AuditOutcome } from '../engine/constants.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from '../pty-manager.js';
-import { getProvider } from '../agent-providers.js';
+import { getProvider, getModelForRole } from '../agent-providers.js';
+import { AgentRole } from '../engine/constants.js';
 import type { Goal, Task, MergeGate } from '../../client/lib/types.js';
 
 // Active merge gate state machines
@@ -197,7 +198,7 @@ export async function initiateConsolidation(
  */
 /**
  * Spawn a review agent to analyze the consolidated diff.
- * Uses a temporary agent (claude-sonnet) with the review prompt built from
+ * Uses a temporary agent with the review prompt built from
  * approved guidelines. Parses the output and calls processReviewResults.
  */
 async function executeReviewAgent(
@@ -250,7 +251,10 @@ async function executeReviewAgent(
     const handleOutput = (_id: string, chunk: string) => { output += chunk; };
     const handleExit = (_id: string, _code: number) => { resolve(output); };
 
-    createAgent(reviewAgentId, repoPath, 'QA Reviewer', handleOutput, handleExit, 'claude-sonnet');
+    // Use the review model from the agent's model_config, or fall back to claude-sonnet
+    const agentRecord = getOne<{ model_config: string | null; agent_type: string }>('SELECT model_config, agent_type FROM agents WHERE autopilot_goal_id = ? OR id IN (SELECT agent_id FROM goal_log WHERE goal_id = ? LIMIT 1)', [goalId, goalId]);
+    const reviewModel = getModelForRole(agentRecord || { agent_type: 'claude-sonnet' }, AgentRole.REVIEW);
+    createAgent(reviewAgentId, repoPath, 'QA Reviewer', handleOutput, handleExit, reviewModel);
     sendToAgent(reviewAgentId, reviewPrompt, { skipWrap: true });
   });
 

@@ -127,6 +127,38 @@ const claudeHaikuProvider: AgentProvider = {
   getEnv() { return baseEnv(); },
 };
 
+// ── Qwen providers via Dashscope (OpenAI-compatible) ────────────────────
+// Uses Aider as the CLI tool since it handles OpenAI-compatible APIs natively.
+// Requires DASHSCOPE_API_KEY environment variable.
+
+const dashscopeEnv = (): Record<string, string> => ({
+  ...process.env as Record<string, string>,
+  OPENAI_API_BASE: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  OPENAI_API_KEY: process.env.DASHSCOPE_API_KEY || '',
+});
+
+const qwen3ThinkingProvider: AgentProvider = {
+  name: 'Qwen3 235B (Thinking)',
+  command: 'aider',
+  inputCostPer1M: 0.50,
+  outputCostPer1M: 2.00,
+  getArgs(prompt: string) {
+    return ['--yes-always', '--no-git', '--model', 'openai/qwen3-235b-a22b', '--message', prompt];
+  },
+  getEnv() { return dashscopeEnv(); },
+};
+
+const qwqProvider: AgentProvider = {
+  name: 'QwQ 32B (Reasoning)',
+  command: 'aider',
+  inputCostPer1M: 0.30,
+  outputCostPer1M: 0.60,
+  getArgs(prompt: string) {
+    return ['--yes-always', '--no-git', '--model', 'openai/qwq-32b', '--message', prompt];
+  },
+  getEnv() { return dashscopeEnv(); },
+};
+
 // ── Aider provider ──────────────────────────────────────────────────────
 
 const aiderProvider: AgentProvider = {
@@ -190,6 +222,8 @@ const providers: Record<string, AgentProvider> = {
   'claude-sonnet': claudeSonnetProvider,
   'claude-opus': claudeOpusProvider,
   'claude-haiku': claudeHaikuProvider,
+  'qwen3-thinking': qwen3ThinkingProvider,
+  'qwq': qwqProvider,
   'aider': aiderProvider,
   'codex': codexProvider,
   'custom': customProvider,
@@ -198,6 +232,20 @@ const providers: Record<string, AgentProvider> = {
 /** Get a provider by agent_type string. Falls back to claude-sonnet. */
 export function getProvider(agentType: string): AgentProvider {
   return providers[agentType] || providers['claude-sonnet'];
+}
+
+/**
+ * Get the model ID for a specific role, reading from agent's model_config.
+ * Falls back to agent.agent_type if no role-specific config, then to 'claude-sonnet'.
+ */
+export function getModelForRole(agent: { agent_type?: string; model_config?: string | null }, role: string): string {
+  if (agent.model_config) {
+    try {
+      const config = JSON.parse(agent.model_config);
+      if (config[role]) return config[role];
+    } catch { /* invalid JSON, fall through */ }
+  }
+  return agent.agent_type || 'claude-sonnet';
 }
 
 /** List all available provider names with their display names and pricing */

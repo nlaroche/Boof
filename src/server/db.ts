@@ -85,6 +85,7 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'xp', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'self_improve', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'worktree_path', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('agents', 'model_config', 'TEXT DEFAULT NULL');
 
   db.run(`
     CREATE TABLE IF NOT EXISTS assessments (
@@ -348,6 +349,23 @@ export async function initDb(): Promise<Database> {
       task_id TEXT DEFAULT NULL,
       goal_type TEXT DEFAULT NULL,
       task_type TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Task research results
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_research (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      query TEXT NOT NULL,
+      findings TEXT DEFAULT '',
+      sources TEXT DEFAULT '[]',
+      recommendations TEXT DEFAULT '[]',
+      duration_ms INTEGER DEFAULT 0,
+      tokens_used INTEGER DEFAULT 0,
+      model_used TEXT DEFAULT '',
       created_at TEXT NOT NULL
     )
   `);

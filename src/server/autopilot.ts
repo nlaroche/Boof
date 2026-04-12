@@ -21,7 +21,8 @@ import {
   classifyFailure as classifyTaskFailure, decideEscalation,
   recordSuccess, recordFailure, getConsecutiveFailures,
 } from './systems/failure-tracker.js';
-import { getProvider, calculateCost } from './agent-providers.js';
+import { getProvider, calculateCost, getModelForRole } from './agent-providers.js';
+import { AgentRole } from './engine/constants.js';
 import { recordRunResult, onReflection as experimentOnReflection } from './systems/experiment-loop.js';
 import { checkGoalBudget } from './db-helpers.js';
 import {
@@ -30,6 +31,7 @@ import {
   getCurrentExperimentPick, clearCurrentExperimentPick,
 } from './systems/prompt-builder.js';
 import { parseTasksFromOutput, createTaskForGoal, detectIndependentTasks } from './systems/goal-planner.js';
+import { researchForTask as researchForTaskFn, shouldResearch as shouldResearchFn, formatResearchForPrompt as formatResearchForPromptFn } from './systems/research.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -172,7 +174,7 @@ function runAgentStep(
   agent: Agent,
   prompt: string,
   broadcast: (msg: WSServerMessage) => void,
-  options?: { skipWrap?: boolean }
+  options?: { skipWrap?: boolean; modelOverride?: string }
 ): Promise<{ code: number; output: string }> {
   return new Promise((resolve) => {
     if (hasAgent(agentId)) {
@@ -189,7 +191,8 @@ function runAgentStep(
       resolve({ code, output });
     };
 
-    createAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, agent.agent_type);
+    const model = options?.modelOverride || agent.agent_type;
+    createAgent(agentId, getAgentCwd(agent), agent.name, handleOutput, handleExit, model);
     sendToAgent(agentId, prompt, { skipWrap: options?.skipWrap });
   });
 }
@@ -589,7 +592,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.log(`[perf:planning] Prompt build: ${promptBuildMs}ms`);
 
       const agentStepStart = Date.now();
-      const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast, { skipWrap: true });
+      const planResult = await runAgentStep(agentId, agent, planPrompt, broadcast, { skipWrap: true, modelOverride: getModelForRole(agent, AgentRole.PLANNING) });
       const agentStepMs = Date.now() - agentStepStart;
       console.log(`[perf:planning] Agent execution: ${agentStepMs}ms`);
 
@@ -777,13 +780,23 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const dbQueryMs = Date.now() - dbQueryStart;
       console.log(`[perf:implementation] DB query (cached): ${dbQueryMs}ms`);
 
+      // Research phase: if task warrants it, run research agent first
+      let researchContext = '';
+      const priorFailCount = (getOne<{ c: number }>("SELECT COUNT(*) as c FROM goal_log WHERE goal_id = ? AND success = 0 AND summary LIKE ?", [goalId, `%${currentTask.title.slice(0, 30)}%`])?.c) ?? 0;
+      if (shouldResearchFn(currentTask.title, currentTask.description || '', priorFailCount)) {
+        const research = await researchForTaskFn(currentTask.id, currentTask.title, currentTask.description || '', taskMemoryContext.slice(0, 1000), agent, broadcast);
+        if (research) {
+          researchContext = formatResearchForPromptFn(research);
+        }
+      }
+
       // Build prompt with the forced task first in the list
       const promptBuildStart = Date.now();
       const taskDesc = `${currentTask.title} ${currentTask.description || ''}`;
       // Put the current task first so buildAutopilotPrompt forces it
       const taskWithDoneWhen = { ...currentTask, done_when: (currentTask as any).done_when || '' };
       const tasksForPrompt = [taskWithDoneWhen, ...pendingTasks.filter(t => (t as any).id !== currentTask.id)];
-      let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, taskMemoryContext, agentId, taskDesc);
+      let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, researchContext + taskMemoryContext, agentId, taskDesc);
       // Track which skills were matched for this run (from prompt-builder)
       lastMatchedSkillIds = getLastMatchedSkills().map((s: Skill) => s.id);
       prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
@@ -791,7 +804,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
 
       const agentStepStart = Date.now();
-      const runResult = await runAgentStep(agentId, agent, prompt, broadcast);
+      const runResult = await runAgentStep(agentId, agent, prompt, broadcast, { modelOverride: getModelForRole(agent, AgentRole.IMPLEMENTATION) });
       const agentStepMs = Date.now() - agentStepStart;
       console.log(`[perf:implementation] Agent execution: ${agentStepMs}ms (exit code: ${runResult.code})`);
 
@@ -979,7 +992,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       // Persist run metrics to DB
       const activeVersion = getActivePromptVersion(agentId);
       // Calculate cost from token usage
-      const provider = getProvider(agent.agent_type || 'claude-sonnet');
+      const provider = getProvider(getModelForRole(agent, AgentRole.IMPLEMENTATION));
       const costUsd = calculateCost(provider, implPromptTokens, implCompletionTokens);
 
       persistRunMetrics({
@@ -1046,7 +1059,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           buildOutput: buildCheckOutput.slice(-500),
           diffStats,
           errors: extractedErrors,
-        }), broadcast, { skipWrap: true });
+        }), broadcast, { skipWrap: true, modelOverride: getModelForRole(agent, AgentRole.REFLECTION) });
         const parsed = parseReflectionResponse(reflectionResult.output);
         if (parsed) {
           storeReflection(agentId, goalId, parsed.went_well, parsed.improve, parsed.pattern);
@@ -1062,7 +1075,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       if (success && assessment.score >= 70) {
         try {
           broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Extracting skills...\n' });
-          const skillResult = await runAgentStep(agentId, agent, buildSkillExtractionPrompt(), broadcast, { skipWrap: true });
+          const skillResult = await runAgentStep(agentId, agent, buildSkillExtractionPrompt(), broadcast, { skipWrap: true, modelOverride: getModelForRole(agent, AgentRole.REFLECTION) });
           const skills = extractSkillsFromOutput(skillResult.output);
           for (const skill of skills) {
             saveSkill(agentId, skill.name, skill.description, skill.code_snippet, skill.tags);
@@ -1081,7 +1094,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
           if (currentVersion && reflections.length >= 5) {
             broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Optimizing prompt template...\n' });
             const metaPrompt = buildPromptOptimizationMeta(reflections, currentVersion.template);
-            const optResult = await runAgentStep(agentId, agent, metaPrompt, broadcast, { skipWrap: true });
+            const optResult = await runAgentStep(agentId, agent, metaPrompt, broadcast, { skipWrap: true, modelOverride: getModelForRole(agent, AgentRole.REFLECTION) });
             if (optResult.code === 0 && optResult.output.length > 100) {
               // Strip ANSI from output for clean template
               const cleanTemplate = optResult.output

@@ -121,6 +121,14 @@ export const ExperimentTypeEnum = {
   FIX: 'fix',
 } as const;
 
+export const AgentRole = {
+  IMPLEMENTATION: 'implementation',
+  REVIEW: 'review',
+  PLANNING: 'planning',
+  RESEARCH: 'research',
+  REFLECTION: 'reflection',
+} as const;
+
 export const ProposalStatus = {
   PENDING: 'pending',
   APPROVED: 'approved',
@@ -150,6 +158,7 @@ export type ReviewSeverityType = typeof ReviewSeverity[keyof typeof ReviewSeveri
 export type ReviewCategoryType = typeof ReviewCategory[keyof typeof ReviewCategory];
 export type AuditActionTypeType = typeof AuditActionType[keyof typeof AuditActionType];
 export type AuditOutcomeType = typeof AuditOutcome[keyof typeof AuditOutcome];
+export type AgentRoleType = typeof AgentRole[keyof typeof AgentRole];
 export type ExperimentRecordStatusType = typeof ExperimentRecordStatus[keyof typeof ExperimentRecordStatus];
 export type ExperimentTypeEnumType = typeof ExperimentTypeEnum[keyof typeof ExperimentTypeEnum];
 export type ProposalStatusType = typeof ProposalStatus[keyof typeof ProposalStatus];

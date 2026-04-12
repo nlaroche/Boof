@@ -45,6 +45,7 @@ export interface Agent {
   autopilot_last_run: string | null;
   workflow_id: string | null;
   worktree_path: string | null;
+  model_config: string | null;
   created_at: string;
   last_activity: string;
 }
@@ -456,6 +457,28 @@ export interface ExperimentRun {
   task_id: string | null;
   goal_type: string | null;
   task_type: string | null;
+  created_at: string;
+}
+
+export interface ModelConfig {
+  implementation?: string;
+  review?: string;
+  planning?: string;
+  research?: string;
+  reflection?: string;
+}
+
+export interface TaskResearch {
+  id: string;
+  task_id: string;
+  agent_id: string;
+  query: string;
+  findings: string;
+  sources: string;
+  recommendations: string;
+  duration_ms: number;
+  tokens_used: number;
+  model_used: string;
   created_at: string;
 }
 
