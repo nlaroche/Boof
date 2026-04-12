@@ -581,6 +581,10 @@ export type WSClientMessage =
   // Analytics
   | { type: 'analytics:cost'; agentId?: string; days?: number }
   | { type: 'analytics:performance'; agentId?: string; days?: number };
+  | { type: 'maintenance:get-config' }
+  | { type: 'maintenance:update-config'; config: Record<string, unknown> }
+  | { type: 'maintenance:get-log'; limit?: number }
+  | { type: 'maintenance:trigger'; dryRun?: boolean };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[] }
@@ -661,6 +665,9 @@ export type WSServerMessage =
   // Analytics
   | { type: 'analytics:cost'; data: CostAnalytics }
   | { type: 'analytics:performance'; data: PerformanceAnalytics };
+  | { type: 'maintenance:config'; config: Record<string, unknown> }
+  | { type: 'maintenance:log'; entries: unknown[] }
+  | { type: 'maintenance:triggered' };
 
 export interface RepoInfo {
   name: string;

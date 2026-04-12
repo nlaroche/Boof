@@ -52,6 +52,7 @@ import {
 } from './systems/command-lifecycle.js';
 import { Paths, Timeouts, AgentStatus } from './engine/constants.js';
 import { bus } from './engine/event-bus.js';
+import { getMaintenanceConfig, updateMaintenanceConfig, getMaintenanceLog, runMaintenance } from './systems/maintenance.js';
 
 // ── WebSocket Infrastructure ──
 
@@ -769,6 +770,32 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       const { experimentId } = message as any;
       const runs = getExperimentRuns(experimentId);
       send(ws, { type: 'experimentRecords:runs', experimentId, runs } as any);
+
+    // ── Maintenance ──
+    case 'maintenance:get-config': {
+      const config = getMaintenanceConfig();
+      send(ws, { type: 'maintenance:config', config } as any);
+      break;
+    }
+
+    case 'maintenance:update-config': {
+      const { config: partial } = message as any;
+      const updated = updateMaintenanceConfig(partial);
+      broadcast({ type: 'maintenance:config', config: updated } as any);
+      break;
+    }
+
+    case 'maintenance:get-log': {
+      const { limit } = message as any;
+      const entries = getMaintenanceLog(limit || 50);
+      send(ws, { type: 'maintenance:log', entries } as any);
+      break;
+    }
+
+    case 'maintenance:trigger': {
+      const { dryRun } = message as any;
+      runMaintenance(dryRun ? { dry_run: true } : undefined);
+      send(ws, { type: 'maintenance:triggered' } as any);
       break;
     }
 
@@ -832,6 +859,7 @@ function buildTimelineRuns(entries: GoalLogEntry[]): TimelineRun[] {
       currentRun!.totalTokens += entry.total_tokens || 0;
       if (entry.success !== 1) currentRun!.success = false;
     }
+
   }
 
   return runs.reverse().slice(0, 20);

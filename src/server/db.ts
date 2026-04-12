@@ -565,6 +565,27 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
+    // -- Maintenance System --
+  db.run(`
+    CREATE TABLE IF NOT EXISTS maintenance_config (
+      id TEXT PRIMARY KEY,
+      config TEXT NOT NULL DEFAULT '{}',
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS maintenance_log (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      repo_path TEXT NOT NULL,
+      action TEXT NOT NULL,
+      detail TEXT NOT NULL DEFAULT '',
+      success INTEGER DEFAULT 1,
+      created_at TEXT NOT NULL
+    )
+  `);
+
   // Reset any agents stuck in 'running' from a previous server crash
   db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
 

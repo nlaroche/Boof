@@ -5,6 +5,7 @@ import { initDb } from './db.js';
 import { getOne, getAll } from './db.js';
 import { setupWebSocket } from './ws-handler.js';
 import { startAutopilotLoop, stopAutopilotLoop, getAgentCwd } from './autopilot.js';
+import { startMaintenanceLoop, stopMaintenanceLoop } from './systems/maintenance.js';
 import { killAllAgents } from './pty-manager.js';
 import { proposeGoals, initBoofDir } from './agent-memory.js';
 import type { Agent } from '../client/lib/types.js';
@@ -65,6 +66,7 @@ async function start() {
     await initDb();
     console.log('Database initialized');
     startAutopilotLoop();
+    startMaintenanceLoop();
   } catch (error) {
     console.error('Failed to initialize database:', error);
   }
@@ -85,6 +87,7 @@ start();
 function cleanup() {
   console.log('[server] Shutting down — killing agent processes...');
   stopAutopilotLoop();
+  stopMaintenanceLoop();
   killAllAgents();
   process.exit(0);
 }
