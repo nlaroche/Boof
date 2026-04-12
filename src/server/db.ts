@@ -259,6 +259,7 @@ export async function initDb(): Promise<Database> {
   // Goal linkage on tasks
   addColumnIfMissing('tasks', 'goal_id', 'TEXT DEFAULT NULL');
   addColumnIfMissing('tasks', 'agent_generated', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('tasks', 'done_when', "TEXT DEFAULT ''");
 
   // Run metrics — per-run performance data
   db.run(`

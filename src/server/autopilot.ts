@@ -16,6 +16,7 @@ import {
   getDefaultBranch,
 } from './systems/git-ops.js';
 import { isGoalReadyForConsolidation, initiateConsolidation } from './systems/consolidation.js';
+import { buildRepoMap, formatRepoMap, invalidateRepoMapCache } from './systems/repo-map.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
   assessPerformance, identifyImprovements, awardXp,
@@ -198,32 +199,28 @@ function buildAutopilotPrompt(
     prompt += '\n';
   }
 
-  if (pendingTasks.length > 0) {
-    prompt += `Pending tasks:\n`;
-    for (const task of pendingTasks) {
-      prompt += `- ${task.title}${task.description ? `: ${task.description}` : ''}\n`;
-    }
-    prompt += '\n';
-  }
-
   prompt += `RULES:\n`;
-  prompt += `1. Make SMALL, focused changes — edit 1-2 files max per run.\n`;
-  prompt += `2. After making changes, ALWAYS run the build: node node_modules/vite/bin/vite.js build\n`;
-  prompt += `   Do NOT use "npm run build" — vite is not in cmd.exe PATH on this Windows system.\n`;
+  prompt += `1. Make SMALL, focused changes — edit 1-3 files max per run.\n`;
+  prompt += `2. After making changes, ALWAYS run the build.\n`;
   prompt += `3. If the build fails, fix the errors before finishing.\n`;
-  prompt += `4. Run tests after changes: node --import tsx --test src/server/__tests__/*.test.ts\n`;
+  prompt += `4. Run tests after changes.\n`;
   prompt += `5. Keep your changes focused and testable.\n`;
-  prompt += `6. ARCHITECTURE: Watch for code health issues — duplicated logic, oversized files (>300 lines),\n`;
-  prompt += `   poor module boundaries. If you notice these while working, note them for future tasks.\n`;
-  prompt += `7. RESEARCH FIRST: For unfamiliar topics, use WebSearch/WebFetch to learn before coding.\n`;
-  prompt += `   Look up best practices, read docs, understand APIs. Store useful knowledge as skills.\n`;
-  prompt += `8. Think like a senior engineer: consider testability, reusability, and maintainability.\n\n`;
+  prompt += `6. RESEARCH FIRST: For unfamiliar topics, use WebSearch/WebFetch to learn before coding.\n\n`;
 
   if (pendingTasks.length === 0) {
     prompt += `There are no pending tasks. Research the codebase and pick ONE small improvement related to the goal.\n`;
     prompt += `Implement it, verify the build and tests pass, and you're done.\n`;
   } else {
-    prompt += `Pick the most impactful pending task, implement it, and verify the build and tests pass.\n`;
+    // Force the selected task — don't let the agent pick a different one
+    const assigned = pendingTasks[0]; // currentTask is always first in the list passed here
+    prompt += `YOUR TASK: ${assigned.title}\n`;
+    prompt += `DESCRIPTION: ${assigned.description || 'No description.'}\n`;
+    if ((assigned as any).done_when) {
+      prompt += `DONE WHEN: ${(assigned as any).done_when}\n`;
+    } else {
+      prompt += `DONE WHEN: Build passes, tests pass, changes match the task description.\n`;
+    }
+    prompt += `\nDo NOT work on anything else. Focus only on this task.\n`;
   }
 
   // Seed prompt version if this is the first run
@@ -239,25 +236,52 @@ let lastMatchedSkillIds: string[] = [];
 // Track experiment variant pick for the current run
 let currentExperimentPick: { experimentId: string; variant: 'a' | 'b' } | null = null;
 
-function buildPlanningPrompt(goal: Goal, memoryContext: string): string {
+function buildPlanningPrompt(goal: Goal, memoryContext: string, repoPath: string, existingTasks: { title: string }[]): string {
   let prompt = '';
   if (memoryContext) {
     prompt += memoryContext;
   }
+
+  // Inject repo map so the agent understands the codebase structure
+  try {
+    const repoMap = buildRepoMap(repoPath, 15);
+    const mapText = formatRepoMap(repoMap, 15);
+    if (mapText) {
+      prompt += `${mapText}\n`;
+    }
+  } catch { /* skip if repo map fails */ }
+
   prompt += `Planning tasks for goal: "${goal.name}"\n${goal.description || 'No description.'}\n\n`;
-  prompt += `Explore the codebase structure with Glob, then output 3-5 well-thought-out tasks.\n`;
-  prompt += `Think like a senior engineer: consider dependencies between tasks, order them logically,\n`;
-  prompt += `and make sure each task is small enough for one run but meaningful.\n\n`;
+
+  // Show existing tasks to prevent duplicates
+  if (existingTasks.length > 0) {
+    prompt += `EXISTING TASKS (do NOT duplicate these):\n`;
+    for (const t of existingTasks) {
+      prompt += `- ${t.title}\n`;
+    }
+    prompt += '\n';
+  }
+
+  // Dynamic task count based on goal complexity
+  const descLength = (goal.description || '').length;
+  const estimatedComplexity = descLength < 50 ? 'simple' : descLength < 200 ? 'moderate' : 'complex';
+  const taskCountGuide = estimatedComplexity === 'simple' ? '1-3' : estimatedComplexity === 'moderate' ? '3-5' : '5-8';
+
+  prompt += `This goal is estimated as ${estimatedComplexity}. Propose ${taskCountGuide} tasks.\n`;
+  prompt += `Use the repo map above to understand existing patterns and module boundaries.\n`;
+  prompt += `Order tasks by dependency — earlier tasks should not depend on later ones.\n\n`;
+
   prompt += `Before planning, consider:\n`;
-  prompt += `- What existing code/patterns can be reused?\n`;
+  prompt += `- What existing code/patterns can be reused? (check the repo map)\n`;
   prompt += `- Will this introduce duplication? How to avoid it?\n`;
   prompt += `- Are there tests that need updating?\n`;
   prompt += `- What's the right module boundary for new code?\n\n`;
-  prompt += `FORMAT (one per line):\nTASK: <title> | <description with file names>\n\n`;
+
+  prompt += `FORMAT (one per line):\nTASK: <title> | <description with file names> | DONE_WHEN: <specific testable condition>\n\n`;
   prompt += `Examples:\n`;
-  prompt += `TASK: Extract branch helpers from autopilot | Move createAgentBranch, mergeToMain, abandonBranch to src/server/git-helpers.ts\n`;
-  prompt += `TASK: Add web research skill | Create src/server/web-research.ts with WebSearch integration for learning new topics\n\n`;
-  prompt += `Each task = 1 run (1-2 file edits). Name exact files. Plan only, don't implement.\n`;
+  prompt += `TASK: Add rate limiter to API | Create src/server/rate-limiter.ts with sliding window counter | DONE_WHEN: build passes, rate limiter rejects requests over 100/min in test\n`;
+  prompt += `TASK: Extract git helpers | Move branch functions from autopilot.ts to src/server/systems/git-ops.ts | DONE_WHEN: build passes, all imports updated, no dead code in autopilot.ts\n\n`;
+  prompt += `Each task = 1 run (1-3 file edits). Name exact files. Plan only, don't implement.\n`;
   return prompt;
 }
 
@@ -454,16 +478,16 @@ function getOrCreateGoalTasksFolder(): string {
   return id;
 }
 
-function createTaskForGoal(goalId: string, agentId: string, title: string, description: string): void {
+function createTaskForGoal(goalId: string, agentId: string, title: string, description: string, doneWhen = ''): void {
   const broadcast = getBroadcast();
   const folderId = getOrCreateGoalTasksFolder();
   const id = generateId();
   const now = new Date().toISOString();
 
   runQuery(
-    `INSERT INTO tasks (id, folder_id, title, description, status, goal_id, agent_generated, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'todo', ?, 1, ?, ?)`,
-    [id, folderId, title, description, goalId, now, now]
+    `INSERT INTO tasks (id, folder_id, title, description, status, goal_id, agent_generated, done_when, created_at, updated_at)
+     VALUES (?, ?, ?, ?, 'todo', ?, 1, ?, ?, ?)`,
+    [id, folderId, title, description, goalId, doneWhen, now, now]
   );
 
   const task = getOne<any>('SELECT * FROM tasks WHERE id = ?', [id]);
@@ -479,12 +503,15 @@ function parseTasksFromOutput(output: string, goalId: string, agentId: string): 
   const lines = clean.split('\n');
   let count = 0;
   for (const line of lines) {
-    const match = line.match(/TASK:\s*([^|]+)\|(.+)/);
+    // Parse: TASK: title | description | DONE_WHEN: condition
+    // Also supports old format: TASK: title | description
+    const match = line.match(/TASK:\s*([^|]+)\|([^|]+)(?:\|\s*DONE_WHEN:\s*(.+))?/);
     if (match) {
       const title = match[1].trim();
       const description = match[2].trim();
+      const doneWhen = match[3]?.trim() || '';
       if (title) {
-        createTaskForGoal(goalId, agentId, title, description);
+        createTaskForGoal(goalId, agentId, title, description, doneWhen);
         count++;
       }
     }
@@ -781,7 +808,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       broadcast({ type: 'agent:output', agentId, chunk: '\n[autopilot] Planning phase — decomposing goal into tasks...\n' });
 
       const promptBuildStart = Date.now();
-      const planPrompt = buildPlanningPrompt(goal, memoryContext);
+      const existingTasks = getAll<{ title: string }>('SELECT title FROM tasks WHERE goal_id = ?', [goalId]);
+      const planPrompt = buildPlanningPrompt(goal, memoryContext, agent.working_directory, existingTasks);
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:planning] Prompt build: ${promptBuildMs}ms`);
 
@@ -960,13 +988,15 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const dbQueryMs = Date.now() - dbQueryStart;
       console.log(`[perf:implementation] DB query (cached): ${dbQueryMs}ms`);
 
-      // Build a task-focused prompt (task details included in pendingTasks list, no duplication needed)
+      // Build prompt with the forced task first in the list
       const promptBuildStart = Date.now();
       const taskDesc = `${currentTask.title} ${currentTask.description || ''}`;
-      let prompt = buildAutopilotPrompt(goal, recentLogs, pendingTasks, taskMemoryContext, agentId, taskDesc);
+      // Put the current task first so buildAutopilotPrompt forces it
+      const taskWithDoneWhen = { ...currentTask, done_when: (currentTask as any).done_when || '' };
+      const tasksForPrompt = [taskWithDoneWhen, ...pendingTasks.filter(t => (t as any).id !== currentTask.id)];
+      let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, taskMemoryContext, agentId, taskDesc);
       // Track which skills were matched for this run
       lastMatchedSkillIds = ((buildAutopilotPrompt as any)._lastMatchedSkills || []).map((s: Skill) => s.id);
-      // Task already listed in pendingTasks — direct agent to pick it
       prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);

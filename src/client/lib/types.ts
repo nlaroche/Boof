@@ -17,6 +17,7 @@ export interface Task {
   sort_order: number;
   goal_id: string | null;
   agent_generated: number;
+  done_when: string;
   created_at: string;
   updated_at: string;
 }
