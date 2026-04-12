@@ -114,12 +114,14 @@ src/client/
     AnalyticsScreen.tsx            # Cost, performance, experiments
 
   components/                      # Reusable UI pieces
-    ui/                            # shadcn/ui primitives (badge, button, card, dialog, etc.)
+    ui/                            # shadcn/ui primitives (badge, button, card, command, dialog, dropdown-menu, etc.)
     StatusBar.tsx                  # Desktop header: connection, agents, cost
     SideNav.tsx                    # Desktop nav: Workspace + Systems groups
     BottomNav.tsx                  # Mobile nav
     ContextPanel.tsx               # Desktop right panel (360px, collapsible)
     PipelineVisualization.tsx      # Merge gate FSM node chain
+    CommandPalette.tsx             # Ctrl+K quick navigation (cmdk)
+    GuidelinesManager.tsx          # Repo guideline scan/approve/reject
     DrawerModal.tsx                # Mobile drawer / desktop dialog
 
   hooks/
