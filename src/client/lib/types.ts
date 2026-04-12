@@ -412,6 +412,53 @@ export interface AgentFix {
   last_seen: string;
 }
 
+export interface ExperimentRecord {
+  id: string;
+  agent_id: string;
+  experiment_type: 'prompt' | 'model' | 'pattern' | 'workflow' | 'fix';
+  name: string;
+  hypothesis: string;
+  source: 'reflection' | 'failure_cluster' | 'improvement' | 'cost_analysis' | 'manual';
+  source_id: string | null;
+  control_config: string;
+  treatment_config: string;
+  environment: string;
+  metric_weights: string;
+  status: 'proposed' | 'queued' | 'running' | 'analyzing' | 'promoted' | 'rolled_back' | 'inconclusive' | 'archived';
+  priority: number;
+  p_value: number | null;
+  effect_size: number | null;
+  control_mean: number | null;
+  treatment_mean: number | null;
+  decision_reason: string | null;
+  cost_spent_usd: number;
+  budget_cap_usd: number | null;
+  created_at: string;
+  queued_at: string | null;
+  started_at: string | null;
+  concluded_at: string | null;
+}
+
+export interface ExperimentRun {
+  id: string;
+  experiment_id: string;
+  variant: 'control' | 'treatment';
+  run_metric_id: string | null;
+  score: number;
+  cost_usd: number;
+  duration_ms: number;
+  merge_success: number | null;
+  build_failures: number;
+  test_failures: number;
+  files_changed: number;
+  composite_score: number;
+  goal_id: string | null;
+  task_id: string | null;
+  goal_type: string | null;
+  task_type: string | null;
+  created_at: string;
+}
+
 export type AgentStatus = Agent['status'];
 
 // WebSocket message types

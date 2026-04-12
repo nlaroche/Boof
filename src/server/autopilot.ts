@@ -22,6 +22,7 @@ import {
   recordSuccess, recordFailure, getConsecutiveFailures,
 } from './systems/failure-tracker.js';
 import { getProvider, calculateCost } from './agent-providers.js';
+import { getAndApplyVariant, recordRunResult, onReflection as experimentOnReflection } from './systems/experiment-loop.js';
 import { checkGoalBudget } from './db-helpers.js';
 import { runBuildCheck, runTestCheck } from './systems/build-runner.js';
 import {
@@ -134,13 +135,27 @@ function buildAutopilotPrompt(
   // Check for active prompt version — if one exists, use its template as the base
   const activeVersion = getActivePromptVersion(agentId);
 
-  // If there's an active prompt experiment, pick a variant
+  // Closed-loop experiment system: check for active experiments and apply variant
   currentExperimentPick = null;
-  const activeExperiments = getActiveExperiments(agentId);
-  const promptExperiment = activeExperiments.find(e => e.metric === 'score' && e.variant_a && e.variant_b);
-  if (promptExperiment) {
-    const variant = pickExperimentVariant(promptExperiment);
-    currentExperimentPick = { experimentId: promptExperiment.id, variant };
+  const experimentResult = getAndApplyVariant(agentId, {
+    agentId,
+    goalId: goal.id,
+    taskId: currentTaskDescription ? undefined : undefined, // task ID not available here
+  });
+  if (experimentResult) {
+    currentExperimentPick = { experimentId: experimentResult.experimentId, variant: experimentResult.variant === 'control' ? 'a' : 'b' };
+    // Apply prompt modifications from the experiment
+    if (experimentResult.application.promptModification) {
+      prompt += experimentResult.application.promptModification + '\n';
+    }
+  } else {
+    // Fallback: check old-style experiments for backward compat
+    const activeExperiments = getActiveExperiments(agentId);
+    const promptExperiment = activeExperiments.find(e => e.metric === 'score' && e.variant_a && e.variant_b);
+    if (promptExperiment) {
+      const variant = pickExperimentVariant(promptExperiment);
+      currentExperimentPick = { experimentId: promptExperiment.id, variant };
+    }
   }
 
   let prompt = '';
@@ -1286,8 +1301,17 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       }
       lastMatchedSkillIds = [];
 
-      // Record experiment results using the stored variant pick
+      // Record experiment results — multi-metric for closed-loop system
       if (currentExperimentPick) {
+        // New closed-loop system uses ExperimentRecord (variant = 'control'/'treatment')
+        const expVariant = currentExperimentPick.variant === 'a' ? 'control' : 'treatment';
+        recordRunResult(
+          currentExperimentPick.experimentId,
+          expVariant as 'control' | 'treatment',
+          { score: assessment.score, costUsd, durationMs, mergeSuccess: null, buildFailures: success ? 0 : 1, testFailures: testFailureCount, filesChanged: filesTouched },
+          { goalId, taskId: currentTask?.id }
+        );
+        // Also record in old experiment system for backward compat
         recordExperimentResult(currentExperimentPick.experimentId, currentExperimentPick.variant, assessment.score);
         currentExperimentPick = null;
       }
@@ -1318,6 +1342,8 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         if (parsed) {
           storeReflection(agentId, goalId, parsed.went_well, parsed.improve, parsed.pattern);
           console.log(`[autopilot] Reflection stored: ${JSON.stringify(parsed)}`);
+          // Hook 3: Feed reflection into experiment hypothesis generator
+          experimentOnReflection(agentId, { reflection: parsed, score: assessmentScore, success });
         }
       } catch (reflErr) {
         console.error('[autopilot] Reflection error:', reflErr);

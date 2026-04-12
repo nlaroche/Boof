@@ -89,6 +89,10 @@ export const AuditActionType = {
   MERGE: 'merge',
   DECISION: 'decision',
   ERROR: 'error',
+  EXPERIMENT_STARTED: 'experiment_started',
+  EXPERIMENT_PROMOTED: 'experiment_promoted',
+  EXPERIMENT_ROLLED_BACK: 'experiment_rolled_back',
+  EXPERIMENT_INCONCLUSIVE: 'experiment_inconclusive',
 } as const;
 
 export const AuditOutcome = {
@@ -96,6 +100,25 @@ export const AuditOutcome = {
   FAILURE: 'failure',
   TIMEOUT: 'timeout',
   ESCALATED: 'escalated',
+} as const;
+
+export const ExperimentRecordStatus = {
+  PROPOSED: 'proposed',
+  QUEUED: 'queued',
+  RUNNING: 'running',
+  ANALYZING: 'analyzing',
+  PROMOTED: 'promoted',
+  ROLLED_BACK: 'rolled_back',
+  INCONCLUSIVE: 'inconclusive',
+  ARCHIVED: 'archived',
+} as const;
+
+export const ExperimentTypeEnum = {
+  PROMPT: 'prompt',
+  MODEL: 'model',
+  PATTERN: 'pattern',
+  WORKFLOW: 'workflow',
+  FIX: 'fix',
 } as const;
 
 export const ProposalStatus = {
@@ -127,6 +150,8 @@ export type ReviewSeverityType = typeof ReviewSeverity[keyof typeof ReviewSeveri
 export type ReviewCategoryType = typeof ReviewCategory[keyof typeof ReviewCategory];
 export type AuditActionTypeType = typeof AuditActionType[keyof typeof AuditActionType];
 export type AuditOutcomeType = typeof AuditOutcome[keyof typeof AuditOutcome];
+export type ExperimentRecordStatusType = typeof ExperimentRecordStatus[keyof typeof ExperimentRecordStatus];
+export type ExperimentTypeEnumType = typeof ExperimentTypeEnum[keyof typeof ExperimentTypeEnum];
 export type ProposalStatusType = typeof ProposalStatus[keyof typeof ProposalStatus];
 export type WorkflowOnFailType = typeof WorkflowOnFail[keyof typeof WorkflowOnFail];
 
@@ -208,6 +233,16 @@ export const Limits = {
   MIN_REVIEW_SCORE: 70,
   /** Consolidation cooldown before auto-trigger (ms) */
   CONSOLIDATION_COOLDOWN_MS: 300_000,
+  /** Min runs per experiment variant before analysis */
+  EXPERIMENT_MIN_RUNS_PER_VARIANT: 8,
+  /** Max runs per experiment variant (stop even if inconclusive) */
+  EXPERIMENT_MAX_RUNS_PER_VARIANT: 20,
+  /** Significance threshold for experiment decisions */
+  EXPERIMENT_P_THRESHOLD: 0.05,
+  /** Minimum effect size (Cohen's d) to promote */
+  EXPERIMENT_MIN_EFFECT_SIZE: 0.3,
+  /** Runs between hypothesis generation checks */
+  HYPOTHESIS_CHECK_INTERVAL: 5,
   /** Max matching skills to include in prompt */
   MAX_SKILLS_IN_PROMPT: 3,
   /** Agent name slug max length */

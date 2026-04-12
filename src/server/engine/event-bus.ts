@@ -27,6 +27,10 @@ export interface BusEvents {
   'autopilot:run-started': { agentId: string; goalId: string };
   'autopilot:run-finished': { agentId: string; goalId: string; success: boolean };
 
+  // Experiments
+  'experiment:concluded': { experimentId: string; agentId: string; status: string; winner?: string };
+  'experiment:hypothesis-generated': { agentId: string; hypothesisCount: number };
+
   // State machine transitions
   'machine:transition': { machineId: string; entityId: string; from: string; to: string; event: string; timestamp: string };
 

@@ -3,7 +3,7 @@
  * Extracts reusable patterns from ws-handler.ts to reduce duplication.
  */
 import { runQuery, getOne, getAll } from './db.js';
-import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline, AgentPattern, AgentFix } from '../client/lib/types.js';
+import type { Folder, Task, Agent, Goal, Workflow, Command, GoalLogEntry, GoalStats, Project, MergeGate, AuditRecord, ReviewFinding, ReviewConfig, ReviewGuideline, AgentPattern, AgentFix, ExperimentRecord, ExperimentRun } from '../client/lib/types.js';
 
 export { runQuery, getOne, getAll };
 
@@ -983,4 +983,108 @@ export function checkGoalBudget(goalId: string): { exceeded: boolean; spent: num
   if (!goal?.budget_cap_usd) return null;
   const spent = getGoalCost(goalId);
   return { exceeded: spent >= goal.budget_cap_usd, spent, cap: goal.budget_cap_usd };
+}
+
+// ============================================================================
+// Experiment Record Helpers (Closed-Loop System)
+// ============================================================================
+
+export function createExperimentRecord(fields: Omit<ExperimentRecord, 'created_at' | 'queued_at' | 'started_at' | 'concluded_at'>): ExperimentRecord | null {
+  const now = getNow();
+  runQuery(
+    `INSERT INTO experiment_records (id, agent_id, experiment_type, name, hypothesis, source, source_id, control_config, treatment_config, environment, metric_weights, status, priority, budget_cap_usd, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [fields.id, fields.agent_id, fields.experiment_type, fields.name, fields.hypothesis, fields.source, fields.source_id,
+     fields.control_config, fields.treatment_config, fields.environment, fields.metric_weights, fields.status, fields.priority,
+     fields.budget_cap_usd, now]
+  );
+  return getOne<ExperimentRecord>('SELECT * FROM experiment_records WHERE id = ?', [fields.id]);
+}
+
+export function getExperimentRecord(id: string): ExperimentRecord | null {
+  return getOne<ExperimentRecord>('SELECT * FROM experiment_records WHERE id = ?', [id]);
+}
+
+export function getActiveExperimentByType(agentId: string, experimentType: string): ExperimentRecord | null {
+  return getOne<ExperimentRecord>(
+    `SELECT * FROM experiment_records WHERE agent_id = ? AND experiment_type = ? AND status = 'running' LIMIT 1`,
+    [agentId, experimentType]
+  );
+}
+
+export function getRunningExperiments(agentId: string): ExperimentRecord[] {
+  return getAll<ExperimentRecord>(
+    `SELECT * FROM experiment_records WHERE agent_id = ? AND status = 'running' ORDER BY priority DESC`,
+    [agentId]
+  );
+}
+
+export function getQueuedExperiments(agentId: string): ExperimentRecord[] {
+  return getAll<ExperimentRecord>(
+    `SELECT * FROM experiment_records WHERE agent_id = ? AND status = 'queued' ORDER BY priority DESC, created_at ASC`,
+    [agentId]
+  );
+}
+
+export function updateExperimentRecord(id: string, fields: Partial<ExperimentRecord>): ExperimentRecord | null {
+  const updates: string[] = [];
+  const values: unknown[] = [];
+  const stringFields: Array<keyof ExperimentRecord> = ['status', 'decision_reason', 'queued_at', 'started_at', 'concluded_at', 'control_config', 'treatment_config'];
+  const numericFields: Array<keyof ExperimentRecord> = ['p_value', 'effect_size', 'control_mean', 'treatment_mean', 'cost_spent_usd', 'priority'];
+
+  for (const key of stringFields) {
+    if (fields[key] !== undefined) { updates.push(`${key} = ?`); values.push(fields[key]); }
+  }
+  for (const key of numericFields) {
+    if (fields[key] !== undefined) { updates.push(`${key} = ?`); values.push(fields[key]); }
+  }
+  if (updates.length === 0) return getExperimentRecord(id);
+  values.push(id);
+  runQuery(`UPDATE experiment_records SET ${updates.join(', ')} WHERE id = ?`, values);
+  return getExperimentRecord(id);
+}
+
+export function listExperimentRecords(agentId: string, status?: string): ExperimentRecord[] {
+  if (status) {
+    return getAll<ExperimentRecord>(
+      'SELECT * FROM experiment_records WHERE agent_id = ? AND status = ? ORDER BY created_at DESC',
+      [agentId, status]
+    );
+  }
+  return getAll<ExperimentRecord>(
+    'SELECT * FROM experiment_records WHERE agent_id = ? ORDER BY created_at DESC LIMIT 50',
+    [agentId]
+  );
+}
+
+// ── Experiment Runs ──
+
+export function insertExperimentRun(fields: Omit<ExperimentRun, 'created_at'>): void {
+  const now = getNow();
+  runQuery(
+    `INSERT INTO experiment_runs (id, experiment_id, variant, run_metric_id, score, cost_usd, duration_ms, merge_success, build_failures, test_failures, files_changed, composite_score, goal_id, task_id, goal_type, task_type, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [fields.id, fields.experiment_id, fields.variant, fields.run_metric_id, fields.score, fields.cost_usd, fields.duration_ms,
+     fields.merge_success, fields.build_failures, fields.test_failures, fields.files_changed, fields.composite_score,
+     fields.goal_id, fields.task_id, fields.goal_type, fields.task_type, now]
+  );
+}
+
+export function getExperimentRuns(experimentId: string, variant?: string): ExperimentRun[] {
+  if (variant) {
+    return getAll<ExperimentRun>(
+      'SELECT * FROM experiment_runs WHERE experiment_id = ? AND variant = ? ORDER BY created_at',
+      [experimentId, variant]
+    );
+  }
+  return getAll<ExperimentRun>(
+    'SELECT * FROM experiment_runs WHERE experiment_id = ? ORDER BY created_at',
+    [experimentId]
+  );
+}
+
+export function getExperimentRunCounts(experimentId: string): { control: number; treatment: number } {
+  const control = getOne<{ c: number }>('SELECT COUNT(*) as c FROM experiment_runs WHERE experiment_id = ? AND variant = ?', [experimentId, 'control']);
+  const treatment = getOne<{ c: number }>('SELECT COUNT(*) as c FROM experiment_runs WHERE experiment_id = ? AND variant = ?', [experimentId, 'treatment']);
+  return { control: control?.c ?? 0, treatment: treatment?.c ?? 0 };
 }

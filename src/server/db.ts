@@ -300,6 +300,62 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('run_metrics', 'cost_usd', 'REAL DEFAULT 0');
   addColumnIfMissing('goals', 'budget_cap_usd', 'REAL DEFAULT NULL');
 
+  // Closed-loop experiment system
+  db.run(`
+    CREATE TABLE IF NOT EXISTS experiment_records (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      experiment_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      hypothesis TEXT DEFAULT '',
+      source TEXT DEFAULT 'manual',
+      source_id TEXT DEFAULT NULL,
+      control_config TEXT NOT NULL DEFAULT '{}',
+      treatment_config TEXT NOT NULL DEFAULT '{}',
+      environment TEXT DEFAULT '{}',
+      metric_weights TEXT DEFAULT '{}',
+      status TEXT DEFAULT 'proposed',
+      priority INTEGER DEFAULT 0,
+      p_value REAL DEFAULT NULL,
+      effect_size REAL DEFAULT NULL,
+      control_mean REAL DEFAULT NULL,
+      treatment_mean REAL DEFAULT NULL,
+      decision_reason TEXT DEFAULT NULL,
+      cost_spent_usd REAL DEFAULT 0,
+      budget_cap_usd REAL DEFAULT NULL,
+      created_at TEXT NOT NULL,
+      queued_at TEXT DEFAULT NULL,
+      started_at TEXT DEFAULT NULL,
+      concluded_at TEXT DEFAULT NULL
+    )
+  `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS experiment_runs (
+      id TEXT PRIMARY KEY,
+      experiment_id TEXT NOT NULL,
+      variant TEXT NOT NULL,
+      run_metric_id TEXT DEFAULT NULL,
+      score REAL NOT NULL,
+      cost_usd REAL DEFAULT 0,
+      duration_ms INTEGER DEFAULT 0,
+      merge_success INTEGER DEFAULT NULL,
+      build_failures INTEGER DEFAULT 0,
+      test_failures INTEGER DEFAULT 0,
+      files_changed INTEGER DEFAULT 0,
+      composite_score REAL DEFAULT 0,
+      goal_id TEXT DEFAULT NULL,
+      task_id TEXT DEFAULT NULL,
+      goal_type TEXT DEFAULT NULL,
+      task_type TEXT DEFAULT NULL,
+      created_at TEXT NOT NULL
+    )
+  `);
+
+  // Link improvements to experiments that validated them
+  addColumnIfMissing('improvements', 'experiment_id', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('improvements', 'validated', 'INTEGER DEFAULT 0');
+
   // Run metrics — per-run performance data
   db.run(`
     CREATE TABLE IF NOT EXISTS run_metrics (
