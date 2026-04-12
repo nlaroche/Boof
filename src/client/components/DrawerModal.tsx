@@ -1,5 +1,7 @@
 import { Drawer } from 'vaul';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
+import { useIsDesktop } from '../hooks/useIsDesktop';
 
 interface Props {
   open: boolean;
@@ -10,6 +12,21 @@ interface Props {
 }
 
 export function DrawerModal({ open, onClose, title, children, snapPoints }: Props) {
+  const isDesktop = useIsDesktop();
+
+  if (isDesktop) {
+    return (
+      <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>{title}</DialogTitle>
+          </DialogHeader>
+          {children}
+        </DialogContent>
+      </Dialog>
+    );
+  }
+
   return (
     <Drawer.Root open={open} onOpenChange={(o) => !o && onClose()} snapPoints={snapPoints}>
       <Drawer.Portal>

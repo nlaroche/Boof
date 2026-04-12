@@ -197,6 +197,78 @@ export function useWebSocket() {
           case 'project:skills:result':
             s.setProjectSkills(msg.projectId, msg.skills);
             break;
+          // Merge Gates
+          case 'mergeGate:list':
+            s.setMergeGates(msg.gates);
+            break;
+          case 'mergeGate:get':
+            s.updateMergeGate(msg.gate);
+            break;
+          case 'mergeGate:updated':
+            s.updateMergeGate(msg.gate);
+            break;
+          // Review Findings
+          case 'reviewFindings:list':
+            s.setReviewFindings(msg.mergeGateId, msg.findings);
+            break;
+          case 'reviewFinding:updated': {
+            const gateFindings = s.reviewFindings[msg.finding.merge_gate_id] || [];
+            const idx = gateFindings.findIndex(f => f.id === msg.finding.id);
+            if (idx >= 0) {
+              const updated = [...gateFindings];
+              updated[idx] = msg.finding;
+              s.setReviewFindings(msg.finding.merge_gate_id, updated);
+            } else {
+              s.setReviewFindings(msg.finding.merge_gate_id, [...gateFindings, msg.finding]);
+            }
+            break;
+          }
+          // Audit Trail
+          case 'audit:list':
+            s.setAuditRecords(msg.key, msg.records);
+            break;
+          // Research
+          case 'research:list':
+            for (const r of msg.research) {
+              s.setTaskResearch(r.task_id, r);
+            }
+            break;
+          case 'research:result':
+            s.setTaskResearch(msg.taskId, msg.research);
+            break;
+          // Agent Memory
+          case 'agentMemory:patterns':
+            s.setAgentPatterns(msg.agentId, msg.patterns);
+            break;
+          case 'agentMemory:fixes':
+            s.setAgentFixes(msg.agentId, msg.fixes);
+            break;
+          // Experiment Records
+          case 'experimentRecords:list':
+            s.setExperimentRecords(msg.experiments);
+            break;
+          case 'experimentRecords:runs':
+            s.setExperimentRuns(msg.experimentId, msg.runs);
+            break;
+          case 'experimentRecord:updated':
+            s.updateExperimentRecord(msg.experiment);
+            break;
+          // Guidelines — store integration for existing server messages
+          case 'guidelines:list':
+            s.setGuidelines(msg.repoPath, msg.guidelines);
+            break;
+          case 'guidelines:updated':
+            s.updateGuideline(msg.guideline);
+            break;
+          case 'guidelines:deleted':
+            s.removeGuideline(msg.guidelineId);
+            break;
+          case 'guidelines:scanned':
+            s.setGuidelines(msg.repoPath, msg.proposed);
+            break;
+          case 'guidelines:deep-scan:result':
+            s.setGuidelines(msg.repoPath, msg.guidelines);
+            break;
         }
       } catch {
         // ignore parse errors

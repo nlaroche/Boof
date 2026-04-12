@@ -23,3 +23,29 @@ export function formatDuration(ms: number): string {
   const secs = Math.round((ms % 60000) / 1000);
   return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
 }
+
+export function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M tok`;
+  return `${(tokens / 1000).toFixed(0)}k tok`;
+}
+
+export function formatCost(usd: number): string {
+  return `$${usd.toFixed(usd >= 1 ? 2 : 3)}`;
+}
+
+export function safeJsonParse<T>(json: string | null | undefined, fallback: T): T {
+  if (!json) return fallback;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+export function safeHostname(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
+}

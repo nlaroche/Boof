@@ -1,11 +1,18 @@
 import { create } from 'zustand';
-import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun, Project, AggregatedSkill, GlobalStats, RecentLearning } from '../lib/types';
+import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun, Project, AggregatedSkill, GlobalStats, RecentLearning, MergeGate, ReviewFinding, AuditRecord, TaskResearch, AgentPattern, AgentFix, ExperimentRecord, ExperimentRun, ReviewGuideline } from '../lib/types';
 
-interface UIState {
-  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals' | 'projects' | 'dashboard';
+interface ContextPanelState {
+  open: boolean;
+  content: { type: string; id: string } | null;
+}
+
+export interface UIState {
+  activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals' | 'projects' | 'dashboard'
+    | 'pipeline' | 'reviews' | 'audit' | 'research' | 'memory' | 'analytics';
   selectedAgentId: string | null;
   selectedFolderId: string | null;
   selectedProjectId: string | null;
+  contextPanel: ContextPanelState;
 }
 
 interface StoreState {
@@ -34,7 +41,34 @@ interface StoreState {
   recentLearnings: RecentLearning[];
   workflows: Workflow[];
   activeOutputs: Record<string, string[]>;
+  // New Phase 1 slices
+  mergeGates: MergeGate[];
+  reviewFindings: Record<string, ReviewFinding[]>;
+  auditRecords: Record<string, AuditRecord[]>;
+  taskResearch: Record<string, TaskResearch>;
+  agentPatterns: Record<string, AgentPattern[]>;
+  agentFixes: Record<string, AgentFix[]>;
+  experimentRecords: ExperimentRecord[];
+  experimentRuns: Record<string, ExperimentRun[]>;
+  guidelines: Record<string, ReviewGuideline[]>;
   ui: UIState;
+
+  // New setters
+  setMergeGates: (gates: MergeGate[]) => void;
+  updateMergeGate: (gate: MergeGate) => void;
+  setReviewFindings: (mergeGateId: string, findings: ReviewFinding[]) => void;
+  setAuditRecords: (key: string, records: AuditRecord[]) => void;
+  setTaskResearch: (taskId: string, research: TaskResearch) => void;
+  setAgentPatterns: (agentId: string, patterns: AgentPattern[]) => void;
+  setAgentFixes: (agentId: string, fixes: AgentFix[]) => void;
+  setExperimentRecords: (records: ExperimentRecord[]) => void;
+  updateExperimentRecord: (record: ExperimentRecord) => void;
+  setExperimentRuns: (experimentId: string, runs: ExperimentRun[]) => void;
+  setGuidelines: (repoPath: string, guidelines: ReviewGuideline[]) => void;
+  updateGuideline: (guideline: ReviewGuideline) => void;
+  removeGuideline: (guidelineId: string) => void;
+  setContextPanel: (content: ContextPanelState['content']) => void;
+  closeContextPanel: () => void;
 
   setProjects: (projects: Project[]) => void;
   updateProject: (project: Project) => void;
@@ -116,12 +150,114 @@ export const useStore = create<StoreState>((set) => ({
   recentLearnings: [],
   workflows: [],
   activeOutputs: {},
+  mergeGates: [],
+  reviewFindings: {},
+  auditRecords: {},
+  taskResearch: {},
+  agentPatterns: {},
+  agentFixes: {},
+  experimentRecords: [],
+  experimentRuns: {},
+  guidelines: {},
   ui: {
     activeScreen: 'home',
     selectedAgentId: null,
     selectedFolderId: null,
     selectedProjectId: null,
+    contextPanel: { open: false, content: null },
   },
+
+  setMergeGates: (gates) => set({ mergeGates: gates }),
+
+  updateMergeGate: (gate) =>
+    set((state) => {
+      const index = state.mergeGates.findIndex((g) => g.id === gate.id);
+      if (index >= 0) {
+        const updated = [...state.mergeGates];
+        updated[index] = gate;
+        return { mergeGates: updated };
+      }
+      return { mergeGates: [...state.mergeGates, gate] };
+    }),
+
+  setReviewFindings: (mergeGateId, findings) =>
+    set((state) => ({
+      reviewFindings: { ...state.reviewFindings, [mergeGateId]: findings },
+    })),
+
+  setAuditRecords: (key, records) =>
+    set((state) => ({
+      auditRecords: { ...state.auditRecords, [key]: records },
+    })),
+
+  setTaskResearch: (taskId, research) =>
+    set((state) => ({
+      taskResearch: { ...state.taskResearch, [taskId]: research },
+    })),
+
+  setAgentPatterns: (agentId, patterns) =>
+    set((state) => ({
+      agentPatterns: { ...state.agentPatterns, [agentId]: patterns },
+    })),
+
+  setAgentFixes: (agentId, fixes) =>
+    set((state) => ({
+      agentFixes: { ...state.agentFixes, [agentId]: fixes },
+    })),
+
+  setExperimentRecords: (records) => set({ experimentRecords: records }),
+
+  updateExperimentRecord: (record) =>
+    set((state) => {
+      const index = state.experimentRecords.findIndex((r) => r.id === record.id);
+      if (index >= 0) {
+        const updated = [...state.experimentRecords];
+        updated[index] = record;
+        return { experimentRecords: updated };
+      }
+      return { experimentRecords: [...state.experimentRecords, record] };
+    }),
+
+  setExperimentRuns: (experimentId, runs) =>
+    set((state) => ({
+      experimentRuns: { ...state.experimentRuns, [experimentId]: runs },
+    })),
+
+  setGuidelines: (repoPath, guidelines) =>
+    set((state) => ({
+      guidelines: { ...state.guidelines, [repoPath]: guidelines },
+    })),
+
+  updateGuideline: (guideline) =>
+    set((state) => {
+      const repoGuidelines = state.guidelines[guideline.repo_path] || [];
+      const index = repoGuidelines.findIndex((g) => g.id === guideline.id);
+      if (index >= 0) {
+        const updated = [...repoGuidelines];
+        updated[index] = guideline;
+        return { guidelines: { ...state.guidelines, [guideline.repo_path]: updated } };
+      }
+      return { guidelines: { ...state.guidelines, [guideline.repo_path]: [...repoGuidelines, guideline] } };
+    }),
+
+  removeGuideline: (guidelineId) =>
+    set((state) => {
+      const newGuidelines = { ...state.guidelines };
+      for (const repoPath of Object.keys(newGuidelines)) {
+        newGuidelines[repoPath] = newGuidelines[repoPath].filter((g) => g.id !== guidelineId);
+      }
+      return { guidelines: newGuidelines };
+    }),
+
+  setContextPanel: (content) =>
+    set((state) => ({
+      ui: { ...state.ui, contextPanel: { open: content !== null, content } },
+    })),
+
+  closeContextPanel: () =>
+    set((state) => ({
+      ui: { ...state.ui, contextPanel: { open: false, content: null } },
+    })),
 
   setProjects: (projects) => set({ projects }),
 

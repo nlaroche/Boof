@@ -1,9 +1,13 @@
 import { useEffect, Component, type ReactNode } from 'react';
 import { useStore } from './stores/store';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useIsDesktop } from './hooks/useIsDesktop';
+import { useIsDesktop, useIsWideDesktop } from './hooks/useIsDesktop';
 import { BottomNav } from './components/BottomNav';
 import { SideNav } from './components/SideNav';
+import { StatusBar } from './components/StatusBar';
+import { ContextPanel } from './components/ContextPanel';
+import { Toaster } from './components/ui/sonner';
+import { TooltipProvider } from './components/ui/tooltip';
 import { HomeScreen } from './screens/HomeScreen';
 import { TasksScreen } from './screens/TasksScreen';
 import { AgentScreen } from './screens/AgentScreen';
@@ -12,6 +16,12 @@ import { HistoryScreen } from './screens/HistoryScreen';
 import { GoalsScreen } from './screens/GoalsScreen';
 import { ProjectsScreen } from './screens/ProjectsScreen';
 import { DashboardScreen } from './screens/DashboardScreen';
+import { PipelineScreen } from './screens/PipelineScreen';
+import { ReviewsScreen } from './screens/ReviewsScreen';
+import { AuditScreen } from './screens/AuditScreen';
+import { ResearchScreen } from './screens/ResearchScreen';
+import { MemoryScreen } from './screens/MemoryScreen';
+import { AnalyticsScreen } from './screens/AnalyticsScreen';
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
@@ -53,6 +63,19 @@ function ScreenRouter({ send, onSendToAgent, isDesktop }: { send: (msg: any) => 
       return <HistoryScreen />;
     case 'projects':
       return <ProjectsScreen onSend={send} />;
+    // New system screens
+    case 'pipeline':
+      return <PipelineScreen onSend={send} />;
+    case 'reviews':
+      return <ReviewsScreen onSend={send} />;
+    case 'audit':
+      return <AuditScreen onSend={send} />;
+    case 'research':
+      return <ResearchScreen onSend={send} />;
+    case 'memory':
+      return <MemoryScreen onSend={send} />;
+    case 'analytics':
+      return <AnalyticsScreen onSend={send} />;
     default:
       return <HomeScreen onSendToAgent={onSendToAgent} />;
   }
@@ -60,8 +83,10 @@ function ScreenRouter({ send, onSendToAgent, isDesktop }: { send: (msg: any) => 
 
 export function App() {
   const activeScreen = useStore((s) => s.ui.activeScreen);
+  const contextPanel = useStore((s) => s.ui.contextPanel);
   const { send, connected } = useWebSocket();
   const isDesktop = useIsDesktop();
+  const isWideDesktop = useIsWideDesktop();
 
   const handleSendToAgent = (agentId: string, prompt: string) => {
     send({ type: 'agent:send', agentId, prompt });
@@ -80,35 +105,46 @@ export function App() {
   }, []);
 
   return (
-    <div className="h-[100dvh] flex flex-col bg-background text-foreground font-sans">
-      {/* Connection banner */}
-      {!connected && (
-        <div className="bg-warning/20 text-warning text-center text-sm py-2 shrink-0">
-          Reconnecting...
-        </div>
-      )}
+    <TooltipProvider>
+      <div className="h-[100dvh] flex flex-col bg-background text-foreground font-sans">
+        {isDesktop ? (
+          /* Desktop layout */
+          <>
+            {/* Status bar — desktop only */}
+            <StatusBar connected={connected} />
 
-      {isDesktop ? (
-        /* Desktop: SideNav + content */
-        <div className="flex-1 flex overflow-hidden">
-          <SideNav />
-          <div className={`flex-1 ${activeScreen === 'agent' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-            <ErrorBoundary>
-              <ScreenRouter send={send} onSendToAgent={handleSendToAgent} isDesktop={isDesktop} />
-            </ErrorBoundary>
-          </div>
-        </div>
-      ) : (
-        /* Mobile: content + BottomNav */
-        <>
-          <div className={`flex-1 ${activeScreen === 'agent' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
-            <ErrorBoundary>
-              <ScreenRouter send={send} onSendToAgent={handleSendToAgent} isDesktop={isDesktop} />
-            </ErrorBoundary>
-          </div>
-          {activeScreen !== 'agent' && <BottomNav />}
-        </>
-      )}
-    </div>
+            {/* Main area: SideNav + Content + optional ContextPanel */}
+            <div className="flex-1 flex overflow-hidden">
+              <SideNav />
+              <div className={`flex-1 ${activeScreen === 'agent' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+                <ErrorBoundary>
+                  <ScreenRouter send={send} onSendToAgent={handleSendToAgent} isDesktop={isDesktop} />
+                </ErrorBoundary>
+              </div>
+              {/* Context panel on wide desktop */}
+              {isWideDesktop && contextPanel.open && <ContextPanel />}
+            </div>
+          </>
+        ) : (
+          /* Mobile layout — unchanged */
+          <>
+            {/* Connection banner — mobile only */}
+            {!connected && (
+              <div className="bg-warning/20 text-warning text-center text-sm py-2 shrink-0">
+                Reconnecting...
+              </div>
+            )}
+            <div className={`flex-1 ${activeScreen === 'agent' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
+              <ErrorBoundary>
+                <ScreenRouter send={send} onSendToAgent={handleSendToAgent} isDesktop={isDesktop} />
+              </ErrorBoundary>
+            </div>
+            {activeScreen !== 'agent' && <BottomNav />}
+          </>
+        )}
+
+        <Toaster />
+      </div>
+    </TooltipProvider>
   );
 }

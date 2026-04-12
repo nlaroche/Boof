@@ -552,10 +552,35 @@ export type WSClientMessage =
   | { type: 'guidelines:reject'; guidelineId: string }
   | { type: 'guidelines:approve-all'; repoPath: string }
   | { type: 'guidelines:update'; guidelineId: string; fields: { name?: string; content?: string; scope?: string; priority?: number; type?: ReviewGuideline['type'] } }
-  | { type: 'guidelines:add'; repoPath: string; name: string; content: string; type?: ReviewGuideline['type']; scope?: string }
-  | { type: 'guidelines:add-folder'; repoPath: string; folderPath: string; type?: ReviewGuideline['type'] }
+  | { type: 'guidelines:add'; repoPath: string; name: string; content: string; guidelineType?: ReviewGuideline['type']; scope?: string }
+  | { type: 'guidelines:add-folder'; repoPath: string; folderPath: string; guidelineType?: ReviewGuideline['type'] }
   | { type: 'guidelines:delete'; guidelineId: string }
-  | { type: 'guidelines:deep-scan'; repoPath: string };
+  | { type: 'guidelines:deep-scan'; repoPath: string }
+  // Merge Gates
+  | { type: 'mergeGate:list'; status?: string }
+  | { type: 'mergeGate:get'; mergeGateId: string }
+  | { type: 'mergeGate:consolidate'; goalId: string }
+  | { type: 'mergeGate:merge'; mergeGateId: string }
+  | { type: 'mergeGate:abort'; mergeGateId: string }
+  // Review Findings
+  | { type: 'reviewFindings:list'; mergeGateId: string; cycle?: number }
+  | { type: 'reviewFindings:resolve'; findingId: string; resolvedBy: string }
+  // Audit Trail
+  | { type: 'audit:list'; mergeGateId?: string; goalId?: string; limit?: number }
+  | { type: 'audit:summary'; mergeGateId: string }
+  | { type: 'audit:verify'; mergeGateId: string }
+  // Task Research
+  | { type: 'research:list'; agentId?: string; limit?: number }
+  | { type: 'research:get'; taskId: string }
+  // Agent Memory
+  | { type: 'agentMemory:patterns'; agentId: string }
+  | { type: 'agentMemory:fixes'; agentId: string }
+  // Experiment Records
+  | { type: 'experimentRecords:list'; agentId?: string; status?: string }
+  | { type: 'experimentRecords:runs'; experimentId: string }
+  // Analytics
+  | { type: 'analytics:cost'; agentId?: string; days?: number }
+  | { type: 'analytics:performance'; agentId?: string; days?: number };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[] }
@@ -611,10 +636,59 @@ export type WSServerMessage =
   | { type: 'guidelines:scanned'; repoPath: string; proposed: ReviewGuideline[]; existingCount: number }
   | { type: 'guidelines:updated'; guideline: ReviewGuideline }
   | { type: 'guidelines:deleted'; guidelineId: string }
-  | { type: 'guidelines:deep-scan:result'; repoPath: string; sourceMapSize: number; prompt: string; guidelines: ReviewGuideline[] };
+  | { type: 'guidelines:deep-scan:result'; repoPath: string; sourceMapSize: number; prompt: string; guidelines: ReviewGuideline[] }
+  // Merge Gates
+  | { type: 'mergeGate:list'; gates: MergeGate[] }
+  | { type: 'mergeGate:get'; gate: MergeGate }
+  | { type: 'mergeGate:updated'; gate: MergeGate }
+  // Review Findings
+  | { type: 'reviewFindings:list'; mergeGateId: string; findings: ReviewFinding[] }
+  | { type: 'reviewFinding:updated'; finding: ReviewFinding }
+  // Audit Trail
+  | { type: 'audit:list'; records: AuditRecord[]; key: string }
+  | { type: 'audit:summary'; mergeGateId: string; summary: AuditSummary }
+  | { type: 'audit:verification'; mergeGateId: string; valid: boolean; brokenAt?: string; recordCount: number }
+  // Task Research
+  | { type: 'research:list'; research: TaskResearch[] }
+  | { type: 'research:result'; taskId: string; research: TaskResearch }
+  // Agent Memory
+  | { type: 'agentMemory:patterns'; agentId: string; patterns: AgentPattern[] }
+  | { type: 'agentMemory:fixes'; agentId: string; fixes: AgentFix[] }
+  // Experiment Records
+  | { type: 'experimentRecords:list'; experiments: ExperimentRecord[] }
+  | { type: 'experimentRecords:runs'; experimentId: string; runs: ExperimentRun[] }
+  | { type: 'experimentRecord:updated'; experiment: ExperimentRecord }
+  // Analytics
+  | { type: 'analytics:cost'; data: CostAnalytics }
+  | { type: 'analytics:performance'; data: PerformanceAnalytics };
 
 export interface RepoInfo {
   name: string;
   path: string;
   hasGit: boolean;
+}
+
+// ── Analytics types ──
+
+export interface AuditSummary {
+  totalRecords: number;
+  actionCounts: Record<string, number>;
+  outcomeCounts: Record<string, number>;
+  totalCostUsd: number;
+  totalTokens: number;
+}
+
+export interface CostAnalytics {
+  totalCostUsd: number;
+  byAgent: { agentId: string; agentName: string; costUsd: number }[];
+  byGoal: { goalId: string; goalName: string; costUsd: number }[];
+  daily: { date: string; costUsd: number }[];
+}
+
+export interface PerformanceAnalytics {
+  successRate: number;
+  avgDurationMs: number;
+  daily: { date: string; successRate: number; avgDurationMs: number; runs: number }[];
+  failureCategories: { category: string; count: number }[];
+  topErrors: { type: string; count: number }[];
 }

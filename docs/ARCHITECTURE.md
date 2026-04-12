@@ -93,6 +93,62 @@ Dual-layer: file-based (`.boof/memory.json` — patterns, mistakes, guidelines) 
 ### Cost Tracking
 Per-provider pricing in `agent-providers.ts`. Cost calculated from tokens on every run, stored in `run_metrics.cost_usd`. Budget caps on goals — autopilot pauses goal if budget exceeded.
 
+## Client Architecture
+
+```
+src/client/
+  screens/                         # One per nav route
+    DashboardScreen.tsx            # Desktop overview (stats, agents, skills)
+    HomeScreen.tsx                 # Mobile agent list
+    ProjectsScreen.tsx             # Project CRUD + master-detail
+    GoalsScreen.tsx                # Goal management + approval workflow
+    TasksScreen.tsx                # Folder-organized task management
+    AgentsScreen.tsx               # Agent CRUD + settings
+    AgentScreen.tsx                # Agent detail (output, history, XP)
+    HistoryScreen.tsx              # Command history feed
+    PipelineScreen.tsx             # Merge gate FSM lifecycle
+    ReviewsScreen.tsx              # Review findings across gates
+    AuditScreen.tsx                # Hash-chained audit timeline
+    ResearchScreen.tsx             # Task research library
+    MemoryScreen.tsx               # Agent patterns, fixes, guidelines
+    AnalyticsScreen.tsx            # Cost, performance, experiments
+
+  components/                      # Reusable UI pieces
+    ui/                            # shadcn/ui primitives (badge, button, card, dialog, etc.)
+    StatusBar.tsx                  # Desktop header: connection, agents, cost
+    SideNav.tsx                    # Desktop nav: Workspace + Systems groups
+    BottomNav.tsx                  # Mobile nav
+    ContextPanel.tsx               # Desktop right panel (360px, collapsible)
+    PipelineVisualization.tsx      # Merge gate FSM node chain
+    DrawerModal.tsx                # Mobile drawer / desktop dialog
+
+  hooks/
+    useIsDesktop.ts                # 768px + 1280px breakpoint hooks
+    useWebSocket.ts                # WS connection, message dispatch to store
+
+  lib/
+    types.ts                       # All entity + WS message types
+    format.ts                      # timeAgo, formatTokens, formatCost, safeJsonParse
+    ui-constants.ts                # Badge variant maps, pipeline states
+    lookups.ts                     # useEntityMap hook + lookupName helper
+    utils.ts                       # cn() class merge utility
+
+  stores/
+    store.ts                       # Zustand: all entity slices + UI state
+```
+
+### Desktop Layout (>=1280px)
+```
++----------+-------------------------+------------------+
+| SideNav  |    Main Content         | Context Panel    |
+| 224px    |    flex-1               | 360px, optional  |
++----------+-------------------------+------------------+
+Status Bar (top, 32px): connection dot, agent count, cost
+```
+
+### Mobile Layout (<768px)
+Content + BottomNav (unchanged). System screens (Pipeline, Reviews, etc.) are desktop-only.
+
 ## Data Flow
 
 ```
