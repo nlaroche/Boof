@@ -1,4 +1,4 @@
-import type { Agent, Command } from '../lib/types';
+import type { Agent, Command, Goal } from '../lib/types';
 import { timeAgo } from '../lib/format';
 import { useStore } from '../stores/store';
 import { AGENT_STATUS_COLORS, AGENT_STATUS_LABELS, getPortrait, XpBar } from './AgentWidget';
@@ -8,13 +8,19 @@ import { Badge } from './ui/badge';
 export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: Command }) {
   const setActiveScreen = useStore((s) => s.setActiveScreen);
   const setSelectedAgentId = useStore((s) => s.setSelectedAgentId);
+  const goals = useStore((s) => s.goals);
 
   const handleClick = () => {
     setSelectedAgentId(agent.id);
     setActiveScreen('agent');
   };
 
+  const currentGoal = agent.autopilot_goal_id
+    ? goals.find((g) => g.id === agent.autopilot_goal_id)
+    : null;
+
   const summaryLine = lastCommand?.summary?.split('\n')[0] || '';
+  const isRunning = agent.status === 'running';
 
   return (
     <Card
@@ -31,24 +37,31 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
           {/* Name + status */}
           <div className="flex items-center gap-2 mb-0.5">
             <span className="font-medium text-sm text-foreground truncate">{agent.name}</span>
-          </div>
-
-          {/* Status line */}
-          <div className="flex items-center gap-1.5 mb-1">
-            <span className={`w-1.5 h-1.5 rounded-full ${AGENT_STATUS_COLORS[agent.status]}`} />
-            <span className="text-[11px] text-muted-foreground">
-              {AGENT_STATUS_LABELS[agent.status]}
-              {agent.status !== 'running' && ` · ${timeAgo(agent.last_activity)}`}
+            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${AGENT_STATUS_COLORS[agent.status]} ${isRunning ? 'animate-pulse' : ''}`} />
+            <span className="text-[10px] text-muted-foreground shrink-0">
+              {isRunning ? 'working' : timeAgo(agent.last_activity)}
             </span>
           </div>
 
-          {/* Latest activity summary */}
-          {summaryLine && (
+          {/* Current goal */}
+          {currentGoal && (
+            <div className="text-[11px] text-primary truncate mb-0.5">
+              {currentGoal.name}
+            </div>
+          )}
+
+          {/* What it's doing right now */}
+          {isRunning && lastCommand?.status === 'running' && (
+            <div className="text-[11px] text-warning truncate">
+              {lastCommand.prompt.slice(0, 80)}...
+            </div>
+          )}
+          {!isRunning && summaryLine && (
             <div className="text-[11px] text-muted-foreground truncate">{summaryLine}</div>
           )}
-          {lastCommand && !summaryLine && (
+          {!isRunning && !summaryLine && lastCommand && (
             <div className="text-[11px] text-muted-foreground truncate italic">
-              {lastCommand.status === 'running' ? 'Working on task...' : lastCommand.prompt.slice(0, 60)}
+              {lastCommand.prompt.slice(0, 60)}
             </div>
           )}
         </div>
@@ -57,15 +70,20 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
       {/* XP bar */}
       {(agent.xp || 0) > 0 && <XpBar xp={agent.xp || 0} size="sm" />}
 
-      {/* Autopilot badge */}
-      {agent.autopilot === 1 && (
-        <div className="mt-2">
+      {/* Status badges */}
+      <div className="flex gap-1 mt-2 flex-wrap">
+        {agent.autopilot === 1 && (
           <Badge variant="default" className="text-[10px]">
-            <span className="w-1 h-1 rounded-full bg-primary animate-pulse" />
-            Autopilot
+            autopilot {Math.round(agent.autopilot_interval / 60)}m
           </Badge>
-        </div>
-      )}
+        )}
+        {agent.self_improve === 1 && (
+          <Badge variant="secondary" className="text-[10px]">self-improve</Badge>
+        )}
+        {agent.workflow_id && (
+          <Badge variant="muted" className="text-[10px]">workflow</Badge>
+        )}
+      </div>
     </Card>
   );
 }

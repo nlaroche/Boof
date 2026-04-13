@@ -22,6 +22,7 @@ export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
 
   const statusColors = AGENT_STATUS_BADGE_COLORS;
   const statusLabels = AGENT_STATUS_LABELS;
+  const isRunning = agent.status === 'running';
 
   return (
     <Card
@@ -38,14 +39,20 @@ export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
               <Badge className={statusColors[agent.status]}>
                 {statusLabels[agent.status]}
               </Badge>
+              {!isRunning && (
+                <span className="text-[10px] text-muted-foreground">{timeAgo(agent.last_activity)}</span>
+              )}
             </div>
             {currentGoal && (
-              <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-                Goal: {currentGoal.name}
+              <div className="text-[11px] text-primary truncate mt-0.5">
+                {currentGoal.name}
               </div>
             )}
           </div>
-          {agent.autopilot === 1 && <Badge variant="default" className="shrink-0 text-[9px]">auto</Badge>}
+          <div className="flex flex-col gap-0.5 items-end shrink-0">
+            {agent.autopilot === 1 && <Badge variant="default" className="text-[9px]">auto {Math.round(agent.autopilot_interval / 60)}m</Badge>}
+            {agent.self_improve === 1 && <Badge variant="secondary" className="text-[9px]">SI</Badge>}
+          </div>
         </div>
 
         {/* XP bar */}
@@ -59,6 +66,13 @@ export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
               <span className="text-[10px] text-warning">Working...</span>
             </div>
             <p className="text-[10px] text-foreground truncate mt-0.5">{truncate(runningCmd.prompt, 80)}</p>
+          </div>
+        )}
+
+        {/* Idle status with next run info */}
+        {!isRunning && agent.autopilot === 1 && agent.autopilot_last_run && (
+          <div className="mt-2 text-[10px] text-muted-foreground">
+            Last run {timeAgo(agent.autopilot_last_run)} · next in ~{Math.max(0, Math.round((agent.autopilot_interval - (Date.now() - new Date(agent.autopilot_last_run).getTime()) / 1000) / 60))}m
           </div>
         )}
 
