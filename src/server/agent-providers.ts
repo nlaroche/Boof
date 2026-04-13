@@ -41,43 +41,10 @@ function baseEnv(): Record<string, string> {
   return env;
 }
 
-// ── MiniMax M2.5 via cc-mirror (Windows-only) ──────────────────────────
-// MiniMax provider requires cc-mirror which is only available on Windows.
-// On macOS this provider will be registered but won't work — use Claude providers instead.
-
 import { homedir } from 'os';
 import { join } from 'path';
 
 const home = homedir();
-
-const minimaxProvider: AgentProvider = {
-  name: 'MiniMax M2.5',
-  command: process.env.MINIMAX_CMD
-    || (isWindows
-      ? join(home, '.cc-mirror', 'minimax', 'native', 'claude.exe')
-      : 'minimax'),
-  inputCostPer1M: 0.15,
-  outputCostPer1M: 0.60,
-  getArgs(prompt: string) {
-    return [
-      '-p', '--verbose', '--output-format', 'stream-json',
-      '--dangerously-skip-permissions',
-      prompt,
-    ];
-  },
-  getEnv() {
-    const env = baseEnv();
-    env['CLAUDE_CONFIG_DIR'] = join(home, '.cc-mirror', 'minimax', 'config');
-    env['TWEAKCC_CONFIG_DIR'] = join(home, '.cc-mirror', 'minimax', 'tweakcc');
-    env['ANTHROPIC_BASE_URL'] = 'https://api.minimax.io/anthropic';
-    env['ANTHROPIC_MODEL'] = 'MiniMax-M2.5-lightning';
-    env['ANTHROPIC_SMALL_FAST_MODEL'] = 'MiniMax-M2.5-lightning';
-    env['ANTHROPIC_DEFAULT_SONNET_MODEL'] = 'MiniMax-M2.5-lightning';
-    env['ANTHROPIC_DEFAULT_OPUS_MODEL'] = 'MiniMax-M2.5-lightning';
-    env['ANTHROPIC_DEFAULT_HAIKU_MODEL'] = 'MiniMax-M2.5-lightning';
-    return env;
-  },
-};
 
 // ── Claude Code providers ───────────────────────────────────────────────
 // On Windows, use node + cli.js directly to bypass claude.cmd which
@@ -231,7 +198,6 @@ const customProvider: AgentProvider = {
 // ── Registry ────────────────────────────────────────────────────────────
 
 const providers: Record<string, AgentProvider> = {
-  minimax: minimaxProvider,
   'claude-sonnet': claudeSonnetProvider,
   'claude-opus': claudeOpusProvider,
   'claude-haiku': claudeHaikuProvider,
@@ -243,9 +209,9 @@ const providers: Record<string, AgentProvider> = {
   'custom': customProvider,
 };
 
-/** Get a provider by agent_type string. Falls back to claude-sonnet. */
+/** Get a provider by agent_type string. Falls back to qwen3-coder. */
 export function getProvider(agentType: string): AgentProvider {
-  return providers[agentType] || providers['claude-sonnet'];
+  return providers[agentType] || providers['qwen3-coder'];
 }
 
 /**
@@ -259,7 +225,7 @@ export function getModelForRole(agent: { agent_type?: string; model_config?: str
       if (config[role]) return config[role];
     } catch { /* invalid JSON, fall through */ }
   }
-  return agent.agent_type || 'claude-sonnet';
+  return agent.agent_type || 'qwen3-coder';
 }
 
 /** List all available provider names with their display names and pricing */

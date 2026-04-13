@@ -305,7 +305,7 @@ describe('db-helpers', () => {
       assert.equal(agent.working_directory, '/test/dir');
       assert.equal(agent.status, 'idle');
       assert.equal(agent.profile_id, 'robot');
-      assert.equal(agent.agent_type, 'minimax');
+      assert.equal(agent.agent_type, 'qwen3-coder');
       assert.equal(broadcasts.length, 1);
     });
 
@@ -314,7 +314,7 @@ describe('db-helpers', () => {
       assert.ok(agent);
       assert.equal(agent.name, 'Agent');
       assert.equal(agent.profile_id, 'robot');
-      assert.equal(agent.agent_type, 'minimax');
+      assert.equal(agent.agent_type, 'qwen3-coder');
     });
 
     it('createAgent with custom profile and type', () => {

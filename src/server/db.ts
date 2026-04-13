@@ -81,7 +81,7 @@ export async function initDb(): Promise<Database> {
   addColumnIfMissing('agents', 'schedule', 'TEXT DEFAULT NULL');
   addColumnIfMissing('agents', 'schedule_enabled', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'schedule_prompt', "TEXT DEFAULT ''");
-  addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'minimax'");
+  addColumnIfMissing('agents', 'agent_type', "TEXT DEFAULT 'qwen3-coder'");
   addColumnIfMissing('agents', 'xp', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'self_improve', 'INTEGER DEFAULT 0');
   addColumnIfMissing('agents', 'worktree_path', 'TEXT DEFAULT NULL');

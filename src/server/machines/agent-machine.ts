@@ -38,7 +38,7 @@ export function createAgentMachineDef(ctx: Partial<AgentContext> = {}): MachineD
       name: '',
       workingDirectory: '',
       worktreePath: null,
-      agentType: 'minimax',
+      agentType: 'qwen3-coder',
       retries: 0,
       lastError: null,
       startedAt: null,

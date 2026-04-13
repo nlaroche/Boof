@@ -6,9 +6,8 @@ describe('listProviders', () => {
   it('returns all available providers with pricing', () => {
     const providers = listProviders();
     assert.ok(Array.isArray(providers));
-    assert.ok(providers.length >= 10);
+    assert.ok(providers.length >= 9);
     const ids = providers.map(p => p.id);
-    assert.ok(ids.includes('minimax'));
     assert.ok(ids.includes('claude-sonnet'));
     assert.ok(ids.includes('claude-opus'));
     assert.ok(ids.includes('claude-haiku'));
@@ -18,6 +17,8 @@ describe('listProviders', () => {
     assert.ok(ids.includes('aider'));
     assert.ok(ids.includes('codex'));
     assert.ok(ids.includes('custom'));
+    // minimax should NOT be present
+    assert.ok(!ids.includes('minimax'));
     // Each has pricing info
     for (const p of providers) {
       assert.ok(typeof p.inputCost === 'number');
@@ -28,9 +29,9 @@ describe('listProviders', () => {
 });
 
 describe('getProvider', () => {
-  it('returns minimax provider by key', () => {
-    const provider = getProvider('minimax');
-    assert.equal(provider.name, 'MiniMax M2.5');
+  it('returns qwen3-coder provider by key', () => {
+    const provider = getProvider('qwen3-coder');
+    assert.equal(provider.name, 'Qwen3 Coder Plus');
     assert.ok(typeof provider.command === 'string');
     assert.ok(provider.command.length > 0);
   });
@@ -53,14 +54,14 @@ describe('getProvider', () => {
     assert.ok(typeof provider.command === 'string');
   });
 
-  it('falls back to claude-sonnet for unknown key', () => {
+  it('falls back to qwen3-coder for unknown key', () => {
     const provider = getProvider('nonexistent-provider');
-    assert.equal(provider.name, 'Claude Sonnet 4.6');
+    assert.equal(provider.name, 'Qwen3 Coder Plus');
   });
 
-  it('falls back to claude-sonnet for empty string', () => {
+  it('falls back to qwen3-coder for empty string', () => {
     const provider = getProvider('');
-    assert.equal(provider.name, 'Claude Sonnet 4.6');
+    assert.equal(provider.name, 'Qwen3 Coder Plus');
   });
 });
 
@@ -79,14 +80,14 @@ describe('calculateCost', () => {
 });
 
 describe('AgentProvider interface', () => {
-  it('minimax provider has required methods', () => {
-    const provider = getProvider('minimax');
+  it('qwen3-coder provider has required methods', () => {
+    const provider = getProvider('qwen3-coder');
     assert.equal(typeof provider.getArgs, 'function');
     assert.equal(typeof provider.getEnv, 'function');
   });
 
-  it('minimax provider getArgs returns array with prompt', () => {
-    const provider = getProvider('minimax');
+  it('qwen3-coder provider getArgs returns array with prompt', () => {
+    const provider = getProvider('qwen3-coder');
     const args = provider.getArgs('test prompt');
     assert.ok(Array.isArray(args));
     assert.ok(args.includes('test prompt'));
@@ -97,8 +98,8 @@ describe('AgentProvider interface', () => {
     assert.ok(args.includes('--dangerously-skip-permissions'));
   });
 
-  it('minimax provider getEnv returns object with required vars', () => {
-    const provider = getProvider('minimax');
+  it('qwen3-coder provider getEnv returns object with Dashscope vars', () => {
+    const provider = getProvider('qwen3-coder');
     const env = provider.getEnv();
     assert.ok(typeof env === 'object');
     assert.equal(env['DISABLE_AUTOUPDATER'], '1');
@@ -106,15 +107,13 @@ describe('AgentProvider interface', () => {
     assert.equal(env['DISABLE_INSTALLATION_CHECKS'], '1');
     assert.equal(env['API_TIMEOUT_MS'], '3000000');
     assert.equal(env['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'], '1');
-    // MiniMax-specific vars
-    assert.ok(env['CLAUDE_CONFIG_DIR']);
-    assert.ok(env['TWEAKCC_CONFIG_DIR']);
-    assert.equal(env['ANTHROPIC_BASE_URL'], 'https://api.minimax.io/anthropic');
-    assert.equal(env['ANTHROPIC_MODEL'], 'MiniMax-M2.5-lightning');
+    // Dashscope-specific vars
+    assert.equal(env['ANTHROPIC_BASE_URL'], 'https://dashscope-intl.aliyuncs.com/apps/anthropic');
+    assert.equal(env['ANTHROPIC_MODEL'], 'qwen3-coder-plus');
   });
 
-  it('minimax provider getEnv removes dangerous vars', () => {
-    const provider = getProvider('minimax');
+  it('qwen3-coder provider getEnv removes dangerous vars', () => {
+    const provider = getProvider('qwen3-coder');
     const env = provider.getEnv();
     assert.equal(env['CLAUDECODE'], undefined);
     assert.equal(env['CLAUDE_CODE_ENTRYPOINT'], undefined);

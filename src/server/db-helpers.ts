@@ -206,7 +206,7 @@ export function createAgent(input: AgentCreateInput, broadcast: (agent: Agent) =
   const now = getNow();
   const name = input.name || 'Agent';
   const profileId = input.profileId || 'robot';
-  const agentType = input.agentType || 'minimax';
+  const agentType = input.agentType || 'qwen3-coder';
 
   return createAndFetch<Agent>(
     'agents', id,
