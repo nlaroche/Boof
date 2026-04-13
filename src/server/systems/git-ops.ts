@@ -87,6 +87,24 @@ export async function createAgentBranch(
   const timestamp = Date.now();
   const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
   const base = baseBranch || `origin/${getDefaultBranch(worktreePath)}`;
+
+  // Clean up any dirty state from a previous agent run.
+  // Agent worktrees are disposable — uncommitted changes are leftovers from
+  // a failed or interrupted run and safe to discard.
+  try {
+    const { stdout: status } = await execAsync('git status --porcelain', {
+      cwd: worktreePath,
+      timeout: Timeouts.GIT_QUICK,
+    });
+    if (status.trim()) {
+      console.log(`[git-ops] Cleaning dirty worktree before branch creation (${status.trim().split('\n').length} files)`);
+      await execAsync('git checkout -- .', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
+      await execAsync('git clean -fd', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
+    }
+  } catch (cleanErr) {
+    console.warn(`[git-ops] Worktree cleanup warning: ${cleanErr}`);
+  }
+
   await execAsync(`git checkout -b "${branchName}" "${base}"`, {
     cwd: worktreePath,
     timeout: Timeouts.GIT_CHECKOUT,
