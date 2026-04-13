@@ -1155,14 +1155,21 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
           // Check if goal is ready for consolidation (all tasks done)
           if (isGoalReadyForConsolidation(goalId)) {
-            console.log(`[autopilot] Goal ${goalId} ready for consolidation — triggering merge gate`);
-            logToGoal(goalId, agentId, 'consolidation_triggered', `All tasks done, initiating review & merge`, '', 0, true);
-            // Fire-and-forget — consolidation runs asynchronously
-            initiateConsolidation(goalId, agent.working_directory, (gate) => {
-              broadcast({ type: 'merge-gate:updated' as any, gate });
-            }).catch(err => {
-              console.error(`[autopilot] Consolidation error for goal ${goalId}:`, err);
-            });
+            // Respect auto_merge flag — if disabled, just log and skip
+            const currentGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+            if (currentGoal && currentGoal.auto_merge === 0) {
+              console.log(`[autopilot] Goal ${goalId} ready but auto_merge is off — skipping consolidation`);
+              logToGoal(goalId, agentId, 'consolidation_ready', `All tasks done — auto-merge disabled, waiting for manual trigger`, '', 0, true);
+            } else {
+              console.log(`[autopilot] Goal ${goalId} ready for consolidation — triggering merge gate`);
+              logToGoal(goalId, agentId, 'consolidation_triggered', `All tasks done, initiating review & merge`, '', 0, true);
+              // Fire-and-forget — consolidation runs asynchronously
+              initiateConsolidation(goalId, agent.working_directory, (gate) => {
+                broadcast({ type: 'merge-gate:updated' as any, gate });
+              }).catch(err => {
+                console.error(`[autopilot] Consolidation error for goal ${goalId}:`, err);
+              });
+            }
           }
         } else {
           console.log(`[autopilot] Merge to goal branch failed for ${agentBranch}: ${mergeResult.output.slice(0, 200)}`);

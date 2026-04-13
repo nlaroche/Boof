@@ -273,6 +273,8 @@ export interface GoalCreateInput {
   projectId?: string;
   proposedBy?: string;
   proposalStatus?: string;
+  mergeTarget?: string;
+  autoMerge?: number;
 }
 
 export function createGoal(input: GoalCreateInput, broadcast: (goal: Goal) => void): Goal | null {
@@ -303,6 +305,8 @@ export interface GoalUpdateInput {
   repo_id?: string | null;
   project_id?: string | null;
   proposal_status?: string | null;
+  merge_target?: string | null;
+  auto_merge?: number;
 }
 
 export function updateGoal(goalId: string, fields: GoalUpdateInput, broadcast: (goal: Goal) => void): Goal | null {
@@ -316,6 +320,8 @@ export function updateGoal(goalId: string, fields: GoalUpdateInput, broadcast: (
   if (fields.repo_id !== undefined) { updates.push('repo_id = ?'); values.push(fields.repo_id); }
   if (fields.project_id !== undefined) { updates.push('project_id = ?'); values.push(fields.project_id); }
   if (fields.proposal_status !== undefined) { updates.push('proposal_status = ?'); values.push(fields.proposal_status); }
+  if (fields.merge_target !== undefined) { updates.push('merge_target = ?'); values.push(fields.merge_target); }
+  if (fields.auto_merge !== undefined) { updates.push('auto_merge = ?'); values.push(fields.auto_merge); }
 
   return updateAndFetch<Goal>('goals', goalId, updates, values, broadcast);
 }

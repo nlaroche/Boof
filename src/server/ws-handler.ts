@@ -24,7 +24,7 @@ import {
   listGoalLog, listAgentCommands, listAgentActivity,
   listGuidelines as dbListGuidelines, updateGuidelineStatus, updateGuideline,
   createGuideline, deleteGuideline as dbDeleteGuideline, approveAllGuidelines,
-  listMergeGates, getMergeGate, getReviewFindings, resolveReviewFinding,
+  listMergeGates, getMergeGate, getReviewFindings, resolveReviewFinding, getReviewConfig, upsertReviewConfig,
   listAuditRecords, listAgentPatterns, listAgentFixes,
   listAllTaskResearch, listExperimentRecords, getExperimentRuns,
 } from './db-helpers.js';
@@ -698,6 +698,21 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       const { findingId, resolvedBy } = message as any;
       resolveReviewFinding(findingId, resolvedBy);
       // Re-fetch to get the updated finding
+      break;
+    }
+
+    // ── Review Config ──
+
+    case 'reviewConfig:get': {
+      const config = getReviewConfig((message as any).repoPath);
+      send(ws, { type: 'reviewConfig:get', config } as any);
+      break;
+    }
+
+    case 'reviewConfig:update': {
+      const { repoPath, fields } = message as any;
+      const config = upsertReviewConfig({ repo_path: repoPath, ...fields });
+      send(ws, { type: 'reviewConfig:updated', config } as any);
       break;
     }
 

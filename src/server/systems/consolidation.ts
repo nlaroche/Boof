@@ -76,7 +76,7 @@ export async function initiateConsolidation(
 
   // Get or discover review config
   const config = getOrDiscoverReviewConfig(repoPath);
-  const targetBranch = config?.target_branch || getDefaultBranch(repoPath);
+  const targetBranch = goal.merge_target || config?.target_branch || getDefaultBranch(repoPath);
 
   // Find completed task branches
   const goalSlug = goal.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);

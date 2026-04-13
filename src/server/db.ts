@@ -300,6 +300,8 @@ export async function initDb(): Promise<Database> {
   // Cost tracking
   addColumnIfMissing('run_metrics', 'cost_usd', 'REAL DEFAULT 0');
   addColumnIfMissing('goals', 'budget_cap_usd', 'REAL DEFAULT NULL');
+  addColumnIfMissing('goals', 'merge_target', 'TEXT DEFAULT NULL');
+  addColumnIfMissing('goals', 'auto_merge', 'INTEGER DEFAULT 1');
 
   // Closed-loop experiment system
   db.run(`

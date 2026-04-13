@@ -62,6 +62,8 @@ export interface Goal {
   proposal_status: 'approved' | 'pending' | 'rejected' | null;
   completed_at: string | null;
   budget_cap_usd: number | null;
+  merge_target: string | null;
+  auto_merge: number;
   created_at: string;
   updated_at: string;
 }
@@ -565,6 +567,9 @@ export type WSClientMessage =
   // Review Findings
   | { type: 'reviewFindings:list'; mergeGateId: string; cycle?: number }
   | { type: 'reviewFindings:resolve'; findingId: string; resolvedBy: string }
+  // Review Config
+  | { type: 'reviewConfig:get'; repoPath: string }
+  | { type: 'reviewConfig:update'; repoPath: string; fields: Partial<ReviewConfig> }
   // Audit Trail
   | { type: 'audit:list'; mergeGateId?: string; goalId?: string; limit?: number }
   | { type: 'audit:summary'; mergeGateId: string }

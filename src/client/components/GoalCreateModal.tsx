@@ -20,6 +20,7 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [repoId, setRepoId] = useState('');
+  const [mergeTarget, setMergeTarget] = useState('');
   const [search, setSearch] = useState('');
   const repos = useStore((s) => s.repos);
 
@@ -30,10 +31,12 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       setName(editGoal.name);
       setDescription(editGoal.description || '');
       setRepoId(editGoal.repo_id || '');
+      setMergeTarget(editGoal.merge_target || '');
     } else {
       setName('');
       setDescription('');
       setRepoId('');
+      setMergeTarget('');
     }
   }, [editGoal]);
 
@@ -63,7 +66,8 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
         name: name.trim(),
         description: description.trim(),
         repo_id: repoId || null,
-      },
+        merge_target: mergeTarget.trim() || null,
+      } as any,
     });
     onClose();
   };
@@ -96,6 +100,17 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
             placeholder="What should the agent work towards?"
             rows={3}
           />
+        </div>
+
+        <div>
+          <Label className="mb-1.5">Merge target branch (optional)</Label>
+          <Input
+            value={mergeTarget}
+            onChange={(e) => setMergeTarget(e.target.value)}
+            placeholder="develop"
+            className="font-mono"
+          />
+          <p className="text-[10px] text-muted-foreground mt-1">Branch to merge into when all tasks complete. Defaults to develop.</p>
         </div>
 
         <div>
