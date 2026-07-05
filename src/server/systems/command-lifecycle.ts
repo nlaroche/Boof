@@ -91,6 +91,18 @@ export function clearCurrentCommandId(agentId: string): void {
 
 // retryState and reviewPending replaced by commandMachines — see CommandMachine
 
+/**
+ * Agents whose current command was interrupted by the user (M2).
+ * A user interrupt must finalize the command as stopped/failed WITHOUT the
+ * auto-retry path. The flag is consumed by the exit handler.
+ */
+const interruptedAgents = new Set<string>();
+
+/** Mark an agent's current command as user-interrupted (skips auto-retry). */
+export function markCommandInterrupted(agentId: string): void {
+  interruptedAgents.add(agentId);
+}
+
 /** Track running improvements: agentId → improvementId */
 const runningImprovements: Map<string, string> = new Map();
 
@@ -372,12 +384,16 @@ function assessAndAwardXp(
   });
   broadcast({ type: 'agent:assessments', agentId, assessments: getAgentAssessments(agentId) });
 
-  // Award XP
+  // Award XP (only if the agent still exists — M14: never broadcast xp for a
+  // deleted agent, which injects a ghost row into the client store).
   if (succeeded) {
-    const xpGain = assessment.score >= 90 ? XP.PERFECT_SCORE_BONUS : XP.COMMAND_COMPLETE;
-    const reason = `Command completed (score ${assessment.score})`;
-    const { newXp, event } = awardXp(agentId, xpGain, reason, 'command');
-    broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
+    const stillExists = getOne<{ id: string }>('SELECT id FROM agents WHERE id = ?', [agentId]);
+    if (stillExists) {
+      const xpGain = assessment.score >= 90 ? XP.PERFECT_SCORE_BONUS : XP.COMMAND_COMPLETE;
+      const reason = `Command completed (score ${assessment.score})`;
+      const { newXp, event } = awardXp(agentId, xpGain, reason, 'command');
+      broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
+    }
   }
 
   // Async: identify improvements after agent goes idle
@@ -454,11 +470,14 @@ export function createExitHandler(
     // Transition machine: running → checking
     machine?.send('exit', { exitCode: code, rawOutput: '' });
 
+    // M2: a user interrupt finalizes as failed/stopped and must NOT auto-retry.
+    const wasInterrupted = interruptedAgents.delete(id);
+
     const summary = finalizeCommand(id, code, prompt, broadcast);
     const { failed, rawTail } = detectEffectiveFailure(id, code);
 
-    // Auto-retry on failure
-    if (failed && tryRetry(id, code, prompt, taskId, rawTail, broadcast)) {
+    // Auto-retry on failure (skipped entirely when the user interrupted).
+    if (!wasInterrupted && failed && tryRetry(id, code, prompt, taskId, rawTail, broadcast)) {
       return; // Retry initiated, don't finalize yet
     }
 

@@ -16,17 +16,19 @@ import { getAndApplyVariant } from './experiment-loop.js';
 import { buildRepoMap, formatRepoMap } from './repo-map.js';
 import type { Goal, GoalLogEntry, Improvement, Skill } from '../../client/lib/types.js';
 
-// ── Shared State (set during prompt build, read after run) ──
+// ── Per-run State (set during prompt build, read after run) ──
+// Keyed by agentId so concurrent agents don't clobber each other's attribution
+// (M7 — module globals raced across agents and corrupted A/B + skill tracking).
 
 /** Skills matched during the last prompt build — used for usage tracking */
-let _lastMatchedSkills: Skill[] = [];
-export function getLastMatchedSkills(): Skill[] { return _lastMatchedSkills; }
-export function clearLastMatchedSkills(): void { _lastMatchedSkills = []; }
+const _lastMatchedSkills = new Map<string, Skill[]>();
+export function getLastMatchedSkills(agentId: string): Skill[] { return _lastMatchedSkills.get(agentId) ?? []; }
+export function clearLastMatchedSkills(agentId: string): void { _lastMatchedSkills.delete(agentId); }
 
 /** Experiment variant picked during the last prompt build */
-let _currentExperimentPick: { experimentId: string; variant: 'a' | 'b' } | null = null;
-export function getCurrentExperimentPick() { return _currentExperimentPick; }
-export function clearCurrentExperimentPick(): void { _currentExperimentPick = null; }
+const _currentExperimentPick = new Map<string, { experimentId: string; variant: 'a' | 'b' }>();
+export function getCurrentExperimentPick(agentId: string) { return _currentExperimentPick.get(agentId) ?? null; }
+export function clearCurrentExperimentPick(agentId: string): void { _currentExperimentPick.delete(agentId); }
 
 // ── Implementation Prompt ──
 
@@ -44,14 +46,14 @@ export function buildAutopilotPrompt(
   const activeVersion = getActivePromptVersion(agentId);
 
   // Closed-loop experiment system: check for active experiments
-  _currentExperimentPick = null;
+  _currentExperimentPick.delete(agentId);
   let experimentPromptInjection = '';
   const experimentResult = getAndApplyVariant(agentId, { agentId, goalId: goal.id });
   if (experimentResult) {
-    _currentExperimentPick = {
+    _currentExperimentPick.set(agentId, {
       experimentId: experimentResult.experimentId,
       variant: experimentResult.variant === 'control' ? 'a' : 'b',
-    };
+    });
     if (experimentResult.application.promptModification) {
       experimentPromptInjection = experimentResult.application.promptModification + '\n';
     }
@@ -61,7 +63,7 @@ export function buildAutopilotPrompt(
     const promptExperiment = activeExperiments.find(e => e.metric === 'score' && e.variant_a && e.variant_b);
     if (promptExperiment) {
       const variant = pickExperimentVariant(promptExperiment);
-      _currentExperimentPick = { experimentId: promptExperiment.id, variant };
+      _currentExperimentPick.set(agentId, { experimentId: promptExperiment.id, variant });
     }
   }
 
@@ -114,7 +116,7 @@ export function buildAutopilotPrompt(
         }
       }
       prompt += '\n';
-      _lastMatchedSkills = matchedSkills;
+      _lastMatchedSkills.set(agentId, matchedSkills);
     }
   }
 
