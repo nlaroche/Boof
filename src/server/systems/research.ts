@@ -1,20 +1,41 @@
 /**
  * Research agent system — investigates best practices before implementation.
  *
- * Uses Claude Opus (with WebSearch/WebFetch tools) to research:
+ * Runs a cheap model (with WebSearch/WebFetch tools) to research:
  * - API documentation and usage patterns
  * - Best practices for the task's domain
  * - Examples from other projects
  * - Common pitfalls and gotchas
+ *
+ * Research is opportunistic and not on the critical path, so it defaults to a
+ * cheap provider rather than an Opus-priced one unless the agent explicitly
+ * configures a research-role model.
  *
  * Research results are stored in task_research and injected into
  * the implementation prompt so the coding agent has context.
  */
 import { runQuery, getOne, getAll, generateId, getNow } from '../db-helpers.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from '../pty-manager.js';
-import { getModelForRole } from '../agent-providers.js';
 import { AgentRole } from '../engine/constants.js';
 import type { Agent, TaskResearch } from '../../client/lib/types.js';
+
+/** Cheap default model for research runs (overridden by an explicit research-role config). */
+const DEFAULT_RESEARCH_MODEL = 'qwen3-flash';
+
+/**
+ * Resolve the model for a research run. Prefers an explicit research-role model
+ * from the agent's model_config, but otherwise defaults to a cheap model — NOT
+ * the agent's implementation model, which may be Opus-priced.
+ */
+function resolveResearchModel(agent: Agent): string {
+  if (agent.model_config) {
+    try {
+      const config = JSON.parse(agent.model_config);
+      if (config[AgentRole.RESEARCH]) return config[AgentRole.RESEARCH];
+    } catch { /* invalid JSON — fall through to cheap default */ }
+  }
+  return DEFAULT_RESEARCH_MODEL;
+}
 
 // ── Research Execution ──
 
@@ -41,7 +62,7 @@ export async function researchForTask(
     return existing;
   }
 
-  const researchModel = getModelForRole(agent, AgentRole.RESEARCH);
+  const researchModel = resolveResearchModel(agent);
   const prompt = buildResearchPrompt(taskTitle, taskDescription, repoContext);
   const researchAgentId = `research-${taskId.slice(0, 8)}`;
 
@@ -188,16 +209,17 @@ export function shouldResearch(taskTitle: string, taskDescription: string, failu
 
   const text = `${taskTitle} ${taskDescription}`.toLowerCase();
 
-  // Research keywords: unfamiliar APIs, external services, new patterns
+  // Only trigger on explicit signals that a task involves an unfamiliar
+  // library/API/protocol — NOT on ubiquitous words like "api", "cache",
+  // "database", "performance" that appear in nearly every task and caused a
+  // costly research run almost every time.
   const researchTriggers = [
-    'api', 'integration', 'library', 'package', 'sdk',
-    'auth', 'oauth', 'jwt', 'webhook',
-    'database', 'migration', 'schema',
-    'deploy', 'ci/cd', 'docker', 'kubernetes',
-    'websocket', 'graphql', 'grpc',
-    'performance', 'optimize', 'cache',
-    'security', 'encryption', 'sanitize',
-    'research', 'best practice', 'pattern',
+    // explicit intent to research / integrate something external
+    'best practice', 'research ', 'unfamiliar', 'new library', 'new package',
+    'third-party', 'third party', 'external api', 'integrate with', 'integration with',
+    // specific named protocols / services (specific enough to be meaningful)
+    'oauth', 'saml', 'webhook', 'graphql', 'grpc', 'stripe', 'twilio',
+    'openai', 'anthropic', ' sdk', 'protocol buffer', 'protobuf',
   ];
 
   return researchTriggers.some(trigger => text.includes(trigger));
