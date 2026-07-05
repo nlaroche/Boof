@@ -164,7 +164,7 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
 
     // ── CRUD: Goals ──
     case 'goal:create':
-      createGoal({ name: message.name, description: message.description, repoId: message.repoId, projectId: (message as any).projectId }, (goal) => broadcast({ type: 'goal:updated', goal }));
+      createGoal({ name: message.name, description: message.description, repoId: message.repoId, projectId: (message as any).projectId, mergeTarget: (message as any).mergeTarget }, (goal) => broadcast({ type: 'goal:updated', goal }));
       break;
 
     case 'goal:propose':

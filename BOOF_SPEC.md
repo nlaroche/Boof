@@ -1,3 +1,5 @@
+> **HISTORICAL (v1 spec).** This is the original design doc, kept for reference. The product has since grown into an autonomous multi-agent goal engine — see `docs/ARCHITECTURE.md` for current design and `docs/PRODUCT-VISION.md` for the roadmap.
+
 # 🔨 Boof — Mobile Claude Code Command Center
 
 > A personal PWA + desktop server that lets you control Claude Code agents from your phone. Speech-to-text, task management, parallel sessions, zero friction.

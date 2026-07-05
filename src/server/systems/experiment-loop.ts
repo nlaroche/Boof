@@ -661,7 +661,9 @@ function concludeExperiment(
   const strategy = getStrategy(experiment.experiment_type);
   const now = getNow();
 
-  let finalStatus = verdict;
+  // Map the analysis verdict onto a persisted status. A promote/rollback verdict
+  // with no registered strategy must not leak the verdict word into the status column.
+  let finalStatus: 'promoted' | 'rolled_back' | 'inconclusive' = 'inconclusive';
   let actionResult = { success: true, description: '' };
 
   if (verdict === 'promote' && strategy) {
@@ -881,7 +883,7 @@ export function generateHypotheses(agentId: string): ExperimentRecord[] {
  */
 export function proposeExperiment(
   agentId: string,
-  type: string,
+  type: 'prompt' | 'model' | 'pattern' | 'workflow' | 'fix',
   name: string,
   hypothesis: string,
   controlConfig: Record<string, unknown>,

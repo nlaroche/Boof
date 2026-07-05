@@ -1,3 +1,5 @@
+> **HISTORICAL.** The fixes described here (repo map, DONE_WHEN criteria, forced task assignment, structured memory) have been implemented. Kept for design rationale. Current open defects live in `docs/KNOWN-ISSUES.md`.
+
 # Engine Improvements — What's Actually Broken
 
 ## Problem 1: Planning is blind

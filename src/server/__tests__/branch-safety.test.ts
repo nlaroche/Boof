@@ -105,7 +105,7 @@ describe('autopilot branch safety', () => {
     const funcStart = gitOpsSource.indexOf('export async function mergeToMain');
     assert.ok(funcStart >= 0, 'mergeToMain not found in git-ops.ts');
 
-    const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
+    const funcBody = gitOpsSource.slice(funcStart, funcStart + 3500);
     assert.ok(
       /'merge',\s*'--abort'/.test(funcBody),
       'mergeToMain should abort the merge on failure'

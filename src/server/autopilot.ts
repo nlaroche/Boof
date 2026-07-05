@@ -14,7 +14,7 @@ import {
   createAgentBranch, abandonBranch, mergeToMain,
   mergeToGoalBranch, createGoalBranch,
   listAgentBranches as gitListAgentBranches, autoCommit,
-  getDefaultBranch,
+  getDefaultBranch, withRepoLock,
 } from './systems/git-ops.js';
 import { isGoalReadyForConsolidation, initiateConsolidation } from './systems/consolidation.js';
 import { invalidateRepoMapCache } from './systems/repo-map.js';
@@ -609,7 +609,9 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const wtPath = path.join(agent.working_directory + '-agents', `${safeName}-${agent.id.slice(0, 8)}`);
       fs.mkdirSync(path.dirname(wtPath), { recursive: true });
       const defaultBranch = getDefaultBranch(agent.working_directory);
-      execSync(`git worktree add --detach "${wtPath}" ${defaultBranch}`, { cwd: agent.working_directory, timeout: 30_000 });
+      await withRepoLock(agent.working_directory, async () => {
+        execSync(`git worktree add --detach "${wtPath}" ${defaultBranch}`, { cwd: agent.working_directory, timeout: 30_000 });
+      });
       const srcModules = path.join(agent.working_directory, 'node_modules');
       const dstModules = path.join(wtPath, 'node_modules');
       if (fs.existsSync(srcModules) && !fs.existsSync(dstModules)) {

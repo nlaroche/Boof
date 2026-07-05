@@ -1,6 +1,11 @@
 # Boof — Project Instructions
 
-Personal PWA + Node server for controlling Claude Code from a phone.
+Personal PWA + Node server for running autonomous coding agents against goals, controlled from a phone. Agents plan tasks, work in git branches/worktrees on autopilot, and a merge-gate pipeline consolidates → reviews → tests → merges their work.
+
+## CRITICAL: Stop the Server Before Editing Code
+The dev server (Vite HMR + autopilot) watches files and can revert or stomp edits, and autopilot runs `git checkout` which destroys uncommitted changes.
+1. Check: `powershell -ExecutionPolicy Bypass -Command "Get-NetTCPConnection -LocalPort 3456 -ErrorAction SilentlyContinue"`
+2. Kill it before editing, commit before restarting. Never start the server with uncommitted edits.
 
 ## Stack
 - Server: Node.js, Express 5, ws, node-pty, sql.js, tsx
@@ -20,6 +25,8 @@ Personal PWA + Node server for controlling Claude Code from a phone.
 ## Architecture & Standards
 - **Read first:** `docs/ARCHITECTURE.md` — full system design, all modules, data flow
 - **Code rules:** `docs/CODE-STANDARDS.md` — file size limits, where code goes, error handling
+- **Known bugs:** `docs/KNOWN-ISSUES.md` — ranked open defects from the 2026-07 full review; check before "fixing" adjacent code
+- **Roadmap:** `docs/PRODUCT-VISION.md` — build priorities. `BOOF_SPEC.md` and `docs/ENGINE-IMPROVEMENTS.md` are historical.
 - State machines for all lifecycles (`machines/`)
 - Focused systems in `systems/` — one concern each
 - All CRUD through `db-helpers.ts` patterns

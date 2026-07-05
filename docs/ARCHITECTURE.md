@@ -42,6 +42,8 @@ src/server/
     review-agent.ts              # Review guidelines, repo scanning, review prompt building
     audit-trail.ts               # Hash-chained audit logging
     self-heal.ts                 # Merge conflict + test failure auto-fix
+    maintenance.ts               # Periodic git hygiene: stale branch cleanup, retry merges, state recovery
+    research.ts                  # Pre-task research agent runs (library docs, API exploration)
 
   autopilot.ts                   # Main orchestrator — ties all systems together
   ws-handler.ts                  # WebSocket message routing (thin dispatcher)
@@ -50,9 +52,13 @@ src/server/
   pty-manager.ts                 # PTY/child_process management for Claude Code
   self-improve.ts                # XP, assessments, skills, reflections, experiments
   agent-memory.ts                # Agent memory (file-based + DB structured patterns/fixes)
-  agent-providers.ts             # Model provider registry (7 providers with pricing)
-  scheduler.ts                   # Cron-based scheduling
+  agent-providers.ts             # Model provider registry (9 providers with pricing)
+  scheduler.ts                   # Cron-based scheduling (NOT wired: initScheduler never called from index.ts)
+  notifications.ts               # Web push (NOT wired: VAPID init + subscription registration missing)
+  git-utils.ts                   # Low-level git helpers (commit, dirty-check)
+  prompt-analysis.ts             # Prompt quality analysis
   branch-guard.ts                # Protected branch enforcement
+  index.ts                       # Express + WS server entry, startup recovery
 ```
 
 ## System Descriptions
@@ -90,8 +96,14 @@ XP and leveling, performance assessment (task-type-aware scoring with positive s
 ### Agent Memory (`agent-memory.ts`)
 Dual-layer: file-based (`.boof/memory.json` — patterns, mistakes, guidelines) + DB-structured (`agent_patterns` with domain tags and verification, `agent_fixes` with error signatures). Loaded into prompts filtered by task relevance.
 
+### Maintenance (`systems/maintenance.ts`)
+Periodic git hygiene loop (first run 60s after boot, then every 24h): recover stranded checkouts, retry unmerged agent branches, delete orphaned branches/worktrees, prune remotes. Logs to `maintenance_log` table.
+
+### Research (`systems/research.ts`)
+Pre-task research runs triggered by keyword heuristics in task text. Results stored in `research` table, surfaced in ResearchScreen.
+
 ### Cost Tracking
-Per-provider pricing in `agent-providers.ts`. Cost calculated from tokens on every run, stored in `run_metrics.cost_usd`. Budget caps on goals — autopilot pauses goal if budget exceeded.
+Per-provider pricing in `agent-providers.ts`, stored in `run_metrics.cost_usd`. **Caveat: tokens are estimated from character counts (chars/4) of prompt + parsed output, not real API usage — and only the implementation step is metered.** Planning, reflection, research, and review runs record no cost. Budget caps on goals pause the goal when exceeded, but against this estimate. (Claude Code's stream-json `result` message carries real usage; pty-manager currently discards it.)
 
 ## Client Architecture
 
@@ -145,7 +157,7 @@ src/client/
 | SideNav  |    Main Content         | Context Panel    |
 | 224px    |    flex-1               | 360px, optional  |
 +----------+-------------------------+------------------+
-Status Bar (top, 32px): connection dot, agent count, cost
+Status Bar (top, 32px): connection dot, agent count (cost badge planned, not yet implemented)
 ```
 
 ### Mobile Layout (<768px)
@@ -174,6 +186,8 @@ Autopilot loop (server-side, no WS trigger):
 
 ### State Machines
 Every entity lifecycle is a `MachineDefinition<State, Event, Context>`. Instantiate with `new StateMachine(def)`. States have descriptions, invariants, onEnter hooks. Transitions have guards and reducers. Full history recorded.
+
+**Wiring status (honest):** only `command-machine` and `merge-gate-machine` are driven at runtime. `agent-machine`, `goal-machine`, `task-machine`, and `autopilot-machine` are exercised by tests only — production status changes for those entities are direct SQL writes. Merge-gate machines are in-memory only: after a server restart the machine is recreated in `pending` regardless of the persisted DB status, so guards (max review cycles / heal attempts) do not survive restarts.
 
 ### Utility Scoring
 Multiplicative combination of weighted factors. Zero on any factor = hard veto. All factors normalized to 0-1. Used for task selection and goal rotation.

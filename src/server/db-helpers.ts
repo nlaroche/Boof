@@ -282,14 +282,14 @@ export function createGoal(input: GoalCreateInput, broadcast: (goal: Goal) => vo
   const now = getNow();
 
   const sql = input.proposedBy
-    ? `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, proposed_by, proposal_status, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`
-    : `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, created_at, updated_at)
-       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?)`;
+    ? `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, merge_target, proposed_by, proposal_status, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, ?)`
+    : `INSERT INTO goals (id, name, description, status, priority, repo_id, project_id, merge_target, created_at, updated_at)
+       VALUES (?, ?, ?, 'active', 0, ?, ?, ?, ?, ?)`;
 
   const params = input.proposedBy
-    ? [id, input.name, input.description || '', input.repoId || null, input.projectId || null, input.proposedBy, input.proposalStatus || 'pending', now, now]
-    : [id, input.name, input.description || '', input.repoId || null, input.projectId || null, now, now];
+    ? [id, input.name, input.description || '', input.repoId || null, input.projectId || null, input.mergeTarget || null, input.proposedBy, input.proposalStatus || 'pending', now, now]
+    : [id, input.name, input.description || '', input.repoId || null, input.projectId || null, input.mergeTarget || null, now, now];
 
   runQuery(sql, params);
   const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [id]);
