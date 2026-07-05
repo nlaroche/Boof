@@ -26,6 +26,10 @@ interface Props {
   onClose: () => void;
 }
 
+// Radix Select forbids an empty-string <Select.Item value=""> (it throws on open,
+// crashing the screen — H9). Use a sentinel that maps to '' (= "none") on change.
+const NONE_VALUE = '__none__';
+
 function RadixSelect({ value, onValueChange, placeholder, items }: {
   value: string;
   onValueChange: (v: string) => void;
@@ -33,7 +37,10 @@ function RadixSelect({ value, onValueChange, placeholder, items }: {
   items: { value: string; label: string }[];
 }) {
   return (
-    <Select.Root value={value} onValueChange={onValueChange}>
+    <Select.Root
+      value={value || NONE_VALUE}
+      onValueChange={(v) => onValueChange(v === NONE_VALUE ? '' : v)}
+    >
       <Select.Trigger className="w-full flex items-center justify-between bg-background border border-input rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring focus:ring-2 focus:ring-ring/25 transition-all">
         <Select.Value placeholder={placeholder} />
         <Select.Icon className="text-muted-foreground">&#9662;</Select.Icon>
@@ -41,7 +48,7 @@ function RadixSelect({ value, onValueChange, placeholder, items }: {
       <Select.Portal>
         <Select.Content className="radix-select-content z-[60]" position="popper" sideOffset={4}>
           <Select.Viewport>
-            <Select.Item value="" className="radix-select-item">
+            <Select.Item value={NONE_VALUE} className="radix-select-item">
               <Select.ItemText>{placeholder}</Select.ItemText>
             </Select.Item>
             {items.map((item) => (

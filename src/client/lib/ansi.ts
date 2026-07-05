@@ -20,7 +20,22 @@ const COLORS_90_97 = [
   '#ffffff', // 97 bright white
 ];
 
-export function ansiToHtml(text: string): string {
+/**
+ * Escape HTML-significant characters so agent output (which may contain `<T>`
+ * generics, `<script>`, or echoed markup) renders as text, not injected DOM.
+ * Runs BEFORE ANSI parsing — escape sequences (\x1b[...m) contain none of these
+ * characters, so escaping first is safe and the parser still sees valid codes.
+ */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+export function ansiToHtml(rawText: string): string {
+  const text = escapeHtml(rawText);
   let result = '';
   let buffer = '';
   let fg: string | null = null;

@@ -51,7 +51,17 @@ interface StoreState {
   experimentRecords: ExperimentRecord[];
   experimentRuns: Record<string, ExperimentRun[]>;
   guidelines: Record<string, ReviewGuideline[]>;
+  // Per-nav-target unread alert counts (bumped by server `notify` events)
+  navAlerts: Record<string, number>;
+  // Per-screen loading flags so fetch-on-mount screens show skeletons
+  // instead of flashing an empty state before the first response arrives.
+  loading: Record<string, boolean>;
   ui: UIState;
+
+  bumpNavAlert: (screen: string) => void;
+  clearNavAlert: (screen: string) => void;
+  setLoading: (key: string, value: boolean) => void;
+  resetOutputs: () => void;
 
   // New setters
   setMergeGates: (gates: MergeGate[]) => void;
@@ -159,6 +169,8 @@ export const useStore = create<StoreState>((set) => ({
   experimentRecords: [],
   experimentRuns: {},
   guidelines: {},
+  navAlerts: {},
+  loading: { pipeline: true, reviews: true, research: true, audit: true },
   ui: {
     activeScreen: 'home',
     selectedAgentId: null,
@@ -167,7 +179,27 @@ export const useStore = create<StoreState>((set) => ({
     contextPanel: { open: false, content: null },
   },
 
-  setMergeGates: (gates) => set({ mergeGates: gates }),
+  bumpNavAlert: (screen) =>
+    set((state) => ({
+      navAlerts: { ...state.navAlerts, [screen]: (state.navAlerts[screen] || 0) + 1 },
+    })),
+
+  clearNavAlert: (screen) =>
+    set((state) => {
+      if (!state.navAlerts[screen]) return {};
+      return { navAlerts: { ...state.navAlerts, [screen]: 0 } };
+    }),
+
+  setLoading: (key, value) =>
+    set((state) => ({ loading: { ...state.loading, [key]: value } })),
+
+  resetOutputs: () => set({ activeOutputs: {} }),
+
+  setMergeGates: (gates) =>
+    set((state) => ({
+      mergeGates: gates,
+      loading: { ...state.loading, pipeline: false, reviews: gates.length === 0 ? false : state.loading.reviews },
+    })),
 
   updateMergeGate: (gate) =>
     set((state) => {
@@ -183,16 +215,19 @@ export const useStore = create<StoreState>((set) => ({
   setReviewFindings: (mergeGateId, findings) =>
     set((state) => ({
       reviewFindings: { ...state.reviewFindings, [mergeGateId]: findings },
+      loading: { ...state.loading, reviews: false },
     })),
 
   setAuditRecords: (key, records) =>
     set((state) => ({
       auditRecords: { ...state.auditRecords, [key]: records },
+      loading: { ...state.loading, audit: false },
     })),
 
   setTaskResearch: (taskId, research) =>
     set((state) => ({
       taskResearch: { ...state.taskResearch, [taskId]: research },
+      loading: { ...state.loading, research: false },
     })),
 
   setAgentPatterns: (agentId, patterns) =>
@@ -430,8 +465,20 @@ export const useStore = create<StoreState>((set) => ({
   appendOutput: (agentId, chunk) =>
     set((state) => {
       const current = state.activeOutputs[agentId] || [];
-      const newLines = chunk.split('\n');
-      const updated = [...current, ...newLines];
+      const parts = chunk.split('\n');
+      // Chunks can split mid-line at arbitrary byte boundaries. Append the
+      // first segment to the last buffered line rather than starting a new
+      // line, so a line broken across two chunks is stitched back together.
+      // (When the previous chunk ended in '\n', its trailing '' element is the
+      // last line, so this correctly starts a fresh line.)
+      let updated: string[];
+      if (current.length > 0) {
+        updated = [...current];
+        updated[updated.length - 1] += parts[0];
+        for (let i = 1; i < parts.length; i++) updated.push(parts[i]);
+      } else {
+        updated = parts;
+      }
       if (updated.length > MAX_OUTPUT_LINES) {
         updated.splice(0, updated.length - MAX_OUTPUT_LINES);
       }
@@ -536,6 +583,8 @@ export const useStore = create<StoreState>((set) => ({
   setActiveScreen: (screen) =>
     set((state) => ({
       ui: { ...state.ui, activeScreen: screen },
+      // Visiting a screen clears its unread alert badge.
+      navAlerts: state.navAlerts[screen] ? { ...state.navAlerts, [screen]: 0 } : state.navAlerts,
     })),
 
   setSelectedAgentId: (id) =>
