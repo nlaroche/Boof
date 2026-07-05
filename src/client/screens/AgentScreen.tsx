@@ -209,8 +209,12 @@ export function AgentScreen({ onSend }: Props) {
             variant="ghost"
             size="icon"
             onClick={() => {
-              if (showHistory) setActiveScreen('agents');
-              else { setViewing(null); userScrolledUp.current = false; }
+              if (showHistory) {
+                // Return to the actual origin screen (Home / Agents / Dashboard)
+                // via the history stack; fall back to Agents on a fresh load.
+                if (window.history.length > 1) window.history.back();
+                else setActiveScreen('agents');
+              } else { setViewing(null); userScrolledUp.current = false; }
             }}
             className="min-w-[44px] min-h-[44px]"
           >

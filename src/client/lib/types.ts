@@ -512,7 +512,7 @@ export type WSClientMessage =
   | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
-  | { type: 'goal:create'; name: string; description?: string; repoId?: string; projectId?: string; mergeTarget?: string }
+  | { type: 'goal:create'; name: string; description?: string; repoId?: string; projectId?: string; mergeTarget?: string; budgetCapUsd?: number; priority?: number; assignAgentId?: string }
   | { type: 'goal:propose'; agentId: string; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
