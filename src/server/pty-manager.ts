@@ -4,8 +4,17 @@ import { spawn as cpSpawn, type ChildProcess } from 'child_process';
 import path from 'path';
 import { getProvider } from './agent-providers.js';
 import type { AgentProvider } from './agent-providers.js';
+import { Timeouts } from './engine/constants.js';
 
 const usePty = process.platform === 'win32';
+
+/** Real usage reported by an agent run (from Claude Code stream-json `result`). */
+export interface AgentUsage {
+  inputTokens: number;
+  outputTokens: number;
+  /** Real end-to-end cost in USD, when the provider reports it (null otherwise). */
+  costUsd: number | null;
+}
 
 /** Wrapper that gives child_process.spawn the same onData/onExit/kill API as node-pty */
 interface ProcHandle {
@@ -13,11 +22,13 @@ interface ProcHandle {
   kill(): void;
   onData(cb: (data: string) => void): void;
   onExit(cb: (e: { exitCode: number }) => void): void;
+  /** Attach a handler for spawn/runtime errors (missing binary, EPIPE, etc.). */
+  onError(cb: (err: Error) => void): void;
 }
 
 function wrapChildProcess(cp: ChildProcess): ProcHandle {
   return {
-    pid: cp.pid!,
+    pid: cp.pid ?? -1,
     kill() { cp.kill(); },
     onData(cb) {
       cp.stdout?.on('data', (d: Buffer) => cb(d.toString()));
@@ -25,6 +36,9 @@ function wrapChildProcess(cp: ChildProcess): ProcHandle {
     },
     onExit(cb) {
       cp.on('exit', (code) => cb({ exitCode: code ?? 1 }));
+    },
+    onError(cb) {
+      cp.on('error', (err) => cb(err));
     },
   };
 }
@@ -36,6 +50,8 @@ interface AgentState {
   agentType: string;
   onOutput: (id: string, chunk: string) => void;
   onExit: (id: string, code: number) => void;
+  /** Usage captured from the most recent run's stream-json `result` message. */
+  lastUsage: AgentUsage | null;
 }
 
 const agents: Map<string, AgentState> = new Map();
@@ -59,6 +75,7 @@ export function createAgent(
     agentType,
     onOutput,
     onExit,
+    lastUsage: null,
   });
 
   console.log(`Agent ${id} registered (${name}) [${agentType}]`);
@@ -252,6 +269,34 @@ function parseStreamJsonLine(line: string): string | null {
 }
 
 /**
+ * Extract real usage from a Claude Code stream-json `result` message.
+ * Returns null if the line is not a result message or carries no usage.
+ * (M1 — real cost tracking; pty-manager previously discarded this.)
+ */
+function extractUsage(line: string): AgentUsage | null {
+  try {
+    const obj = JSON.parse(line.replace(/\n/g, ''));
+    if (obj.type !== 'result') return null;
+    const usage = obj.usage || {};
+    const inputTokens =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0);
+    const outputTokens = usage.output_tokens ?? 0;
+    const costUsd = typeof obj.total_cost_usd === 'number' ? obj.total_cost_usd : null;
+    if (inputTokens === 0 && outputTokens === 0 && costUsd === null) return null;
+    return { inputTokens, outputTokens, costUsd };
+  } catch {
+    return null;
+  }
+}
+
+/** Read the usage captured from an agent's most recent completed run. */
+export function getLastUsage(id: string): AgentUsage | null {
+  return agents.get(id)?.lastUsage ?? null;
+}
+
+/**
  * Wrap the user's prompt with instructions that force implementation.
  * Without this, the model may enter plan mode or just describe what to do.
  */
@@ -274,24 +319,67 @@ function spawnWithProvider(
 
   console.log(`[agent ${id.slice(0,6)}] spawning ${provider.name} (${usePty ? 'pty' : 'child_process'}) prompt=${text.slice(0, 80)}...`);
 
+  // Reset usage capture for this run.
+  state.lastUsage = null;
+
+  // Guard so the run settles exactly once (normal exit, spawn error, or watchdog).
+  let settled = false;
+  let watchdog: ReturnType<typeof setTimeout> | null = null;
+
+  const settleExit = (exitCode: number) => {
+    if (settled) return;
+    settled = true;
+    if (watchdog) { clearTimeout(watchdog); watchdog = null; }
+    if (state.activePty === proc) {
+      state.activePty = null;
+    }
+    state.onExit(id, exitCode);
+  };
+
   let proc: ProcHandle;
-  if (usePty) {
-    proc = pty.spawn(provider.command, args, {
-      cwd: state.workingDirectory,
-      cols: 1000,
-      rows: 50,
-      env,
-    } as any) as unknown as ProcHandle;
-  } else {
-    const cp = cpSpawn(provider.command, args, {
-      cwd: state.workingDirectory,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    proc = wrapChildProcess(cp);
+  try {
+    if (usePty) {
+      proc = pty.spawn(provider.command, args, {
+        cwd: state.workingDirectory,
+        cols: 1000,
+        rows: 50,
+        env,
+      } as any) as unknown as ProcHandle;
+    } else {
+      const cp = cpSpawn(provider.command, args, {
+        cwd: state.workingDirectory,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      proc = wrapChildProcess(cp);
+    }
+  } catch (spawnErr: any) {
+    // Synchronous spawn failure (e.g. missing binary on ConPTY). Fail the run
+    // cleanly instead of throwing an uncaught exception that crashes the server.
+    console.error(`[agent ${id.slice(0,6)}] spawn failed:`, spawnErr?.message || spawnErr);
+    state.onOutput(id, `\n[error] Failed to launch ${provider.name}: ${spawnErr?.message || spawnErr}\n`);
+    settleExit(1);
+    return;
   }
 
   state.activePty = proc;
+
+  // Async spawn/runtime error (missing binary via child_process, EPIPE, etc.).
+  proc.onError?.((err) => {
+    console.error(`[agent ${id.slice(0,6)}] process error:`, err?.message || err);
+    state.onOutput(id, `\n[error] ${provider.name} process error: ${err?.message || err}\n`);
+    try { proc.kill(); } catch {}
+    settleExit(1);
+  });
+
+  // Watchdog: hard cap on run duration. Prevents a hung process from wedging
+  // the agent forever (and ensures runAgentStep's promise always settles).
+  watchdog = setTimeout(() => {
+    console.error(`[agent ${id.slice(0,6)}] watchdog: run exceeded hard cap, killing process`);
+    state.onOutput(id, `\n[error] Run exceeded ${Math.round(Timeouts.AGENT_RUN_HARD_CAP / 60000)}min hard cap — killed.\n`);
+    try { proc.kill(); } catch {}
+    settleExit(1);
+  }, Timeouts.AGENT_RUN_HARD_CAP);
 
   // JSON object extraction using brace counting instead of line splitting,
   // because ConPTY can inject newlines inside JSON objects (especially Write/Edit
@@ -429,6 +517,9 @@ function spawnWithProvider(
       if (text) {
         pendingOutput += text;
       }
+      // Capture real usage from the stream-json `result` message (M1).
+      const usage = extractUsage(jsonStr);
+      if (usage) state.lastUsage = usage;
     }
 
     if (flushTimer) clearTimeout(flushTimer);
@@ -440,16 +531,15 @@ function spawnWithProvider(
     if (rawBuffer.trim()) {
       const text = parseStreamJsonLine(rawBuffer.trim());
       if (text) pendingOutput += text;
+      const usage = extractUsage(rawBuffer.trim());
+      if (usage) state.lastUsage = usage;
     }
 
     if (flushTimer) clearTimeout(flushTimer);
     flushOutput();
 
     console.log(`[agent ${id.slice(0,6)}] claude exited code=${exitCode}`);
-    if (state.activePty === proc) {
-      state.activePty = null;
-    }
-    state.onExit(id, exitCode);
+    settleExit(exitCode);
   });
 }
 

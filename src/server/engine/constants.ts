@@ -195,6 +195,8 @@ export const Timeouts = {
   CONSOLIDATION: 180_000,
   /** Scheduler check interval */
   SCHEDULER_INTERVAL: 60_000,
+  /** Hard cap on a single agent run before the watchdog kills it (60 min) */
+  AGENT_RUN_HARD_CAP: 60 * 60 * 1000,
 } as const;
 
 // ============================================================================
