@@ -54,6 +54,7 @@ export const PIPELINE_STATES = [
   'approved',
   'merging',
   'merged',
+  'failed',
 ] as const;
 
 export type PipelineState = typeof PIPELINE_STATES[number];

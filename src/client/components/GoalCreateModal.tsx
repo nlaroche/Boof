@@ -52,7 +52,8 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       type: 'goal:create',
       name: name.trim(),
       description: description.trim(),
-      repoId: repoId || undefined
+      repoId: repoId || undefined,
+      mergeTarget: mergeTarget.trim() || undefined,
     });
     onClose();
   };

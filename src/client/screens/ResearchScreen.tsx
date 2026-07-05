@@ -6,6 +6,8 @@ import { Card, CardContent } from '../components/ui/card';
 import { EmptyState } from '../components/EmptyState';
 import { timeAgo, formatDuration, formatTokens, safeJsonParse, safeHostname } from '../lib/format';
 import { useEntityMap, lookupName } from '../lib/lookups';
+import { useOnReconnect } from '../hooks/useReconnect';
+import { SkeletonList } from '../components/Skeletons';
 import type { WSClientMessage, TaskResearch } from '../lib/types';
 
 interface Props {
@@ -16,6 +18,7 @@ export function ResearchScreen({ onSend }: Props) {
   const taskResearch = useStore((s) => s.taskResearch);
   const agents = useStore((s) => s.agents);
   const agentMap = useEntityMap(agents);
+  const loading = useStore((s) => s.loading.research);
   const allResearch = Object.values(taskResearch)
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -23,16 +26,21 @@ export function ResearchScreen({ onSend }: Props) {
   useEffect(() => {
     onSend({ type: 'research:list', limit: 50 });
   }, [onSend]);
+  useOnReconnect(() => onSend({ type: 'research:list', limit: 50 }));
 
   if (allResearch.length === 0) {
     return (
       <div className="p-6">
         <h1 className="text-xl font-bold text-foreground mb-6">Research</h1>
-        <EmptyState
-          icon="??"
-          title="No research results"
-          description="Research is conducted by agents before implementing tasks, using web search and code analysis."
-        />
+        {loading ? (
+          <SkeletonList count={3} />
+        ) : (
+          <EmptyState
+            icon="??"
+            title="No research results"
+            description="Research is conducted by agents before implementing tasks, using web search and code analysis."
+          />
+        )}
       </div>
     );
   }

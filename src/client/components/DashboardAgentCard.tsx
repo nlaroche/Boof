@@ -1,17 +1,22 @@
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
 import { getPortrait, getLevel, XpBar, AGENT_STATUS_BADGE_COLORS, AGENT_STATUS_LABELS } from './AgentWidget';
 import { formatDuration, truncate, timeAgo } from '../lib/format';
-import type { Agent, Command, Goal } from '../lib/types';
+import { useNow } from '../hooks/useNow';
+import type { Agent, Command, Goal, WSClientMessage } from '../lib/types';
+
+const STALE_MS = 15 * 60 * 1000;
 
 interface Props {
   agent: Agent;
   commands: Command[];
   goals: Goal[];
   onClick: () => void;
+  onSend?: (msg: WSClientMessage) => void;
 }
 
-export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
+export function DashboardAgentCard({ agent, commands, goals, onClick, onSend }: Props) {
   const agentCommands = commands
     .filter((c) => c.agent_id === agent.id)
     .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime());
@@ -23,6 +28,17 @@ export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
   const statusColors = AGENT_STATUS_BADGE_COLORS;
   const statusLabels = AGENT_STATUS_LABELS;
   const isRunning = agent.status === 'running';
+
+  const now = useNow(!!runningCmd);
+  const elapsedMs = runningCmd ? now - new Date(runningCmd.started_at).getTime() : 0;
+  const isStale = elapsedMs > STALE_MS;
+
+  const handleStop = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onSend && confirm(`Stop ${agent.name}?`)) {
+      onSend({ type: 'agent:interrupt', agentId: agent.id });
+    }
+  };
 
   return (
     <Card
@@ -60,10 +76,22 @@ export function DashboardAgentCard({ agent, commands, goals, onClick }: Props) {
 
         {/* Running command */}
         {runningCmd && (
-          <div className="mt-2 bg-warning/10 rounded-md px-2 py-1.5">
+          <div className={`mt-2 rounded-md px-2 py-1.5 ${isStale ? 'bg-warning/20' : 'bg-warning/10'}`}>
             <div className="flex items-center gap-1.5">
               <span className="w-1.5 h-1.5 rounded-full bg-warning animate-pulse shrink-0" />
-              <span className="text-[10px] text-warning">Working...</span>
+              <span className={`text-[10px] ${isStale ? 'text-warning font-medium' : 'text-warning'}`}>
+                Working… {formatDuration(elapsedMs)}
+              </span>
+              {onSend && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleStop}
+                  className="ml-auto text-[10px] h-5 px-1.5 text-destructive hover:text-destructive"
+                >
+                  Stop
+                </Button>
+              )}
             </div>
             <p className="text-[10px] text-foreground truncate mt-0.5">{truncate(runningCmd.prompt, 80)}</p>
           </div>

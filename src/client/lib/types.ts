@@ -512,7 +512,7 @@ export type WSClientMessage =
   | { type: 'agent:activity'; agentId: string; limit?: number }
   | { type: 'sync:request' }
   | { type: 'agent:history'; agentId: string; limit?: number }
-  | { type: 'goal:create'; name: string; description?: string; repoId?: string; projectId?: string }
+  | { type: 'goal:create'; name: string; description?: string; repoId?: string; projectId?: string; mergeTarget?: string }
   | { type: 'goal:propose'; agentId: string; name: string; description?: string; repoId?: string }
   | { type: 'goal:update'; goalId: string; fields: Partial<Goal> }
   | { type: 'goal:delete'; goalId: string }
@@ -585,9 +585,6 @@ export type WSClientMessage =
   // Experiment Records
   | { type: 'experimentRecords:list'; agentId?: string; status?: string }
   | { type: 'experimentRecords:runs'; experimentId: string }
-  // Analytics
-  | { type: 'analytics:cost'; agentId?: string; days?: number }
-  | { type: 'analytics:performance'; agentId?: string; days?: number }
   | { type: 'maintenance:get-config' }
   | { type: 'maintenance:update-config'; config: Record<string, unknown> }
   | { type: 'maintenance:get-log'; limit?: number }
@@ -669,9 +666,6 @@ export type WSServerMessage =
   | { type: 'experimentRecords:list'; experiments: ExperimentRecord[] }
   | { type: 'experimentRecords:runs'; experimentId: string; runs: ExperimentRun[] }
   | { type: 'experimentRecord:updated'; experiment: ExperimentRecord }
-  // Analytics
-  | { type: 'analytics:cost'; data: CostAnalytics }
-  | { type: 'analytics:performance'; data: PerformanceAnalytics }
   | { type: 'maintenance:config'; config: Record<string, unknown> }
   | { type: 'maintenance:log'; entries: unknown[] }
   | { type: 'maintenance:triggered' };
@@ -692,17 +686,3 @@ export interface AuditSummary {
   totalTokens: number;
 }
 
-export interface CostAnalytics {
-  totalCostUsd: number;
-  byAgent: { agentId: string; agentName: string; costUsd: number }[];
-  byGoal: { goalId: string; goalName: string; costUsd: number }[];
-  daily: { date: string; costUsd: number }[];
-}
-
-export interface PerformanceAnalytics {
-  successRate: number;
-  avgDurationMs: number;
-  daily: { date: string; successRate: number; avgDurationMs: number; runs: number }[];
-  failureCategories: { category: string; count: number }[];
-  topErrors: { type: string; count: number }[];
-}

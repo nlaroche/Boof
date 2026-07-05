@@ -4,10 +4,12 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { EmptyState } from '../components/EmptyState';
+import { SkeletonList } from '../components/Skeletons';
 import { PipelineVisualization } from '../components/PipelineVisualization';
 import { useEntityMap, lookupName } from '../lib/lookups';
 import { safeJsonParse } from '../lib/format';
 import { MERGE_GATE_STATUS_VARIANT } from '../lib/ui-constants';
+import { useOnReconnect } from '../hooks/useReconnect';
 import type { WSClientMessage } from '../lib/types';
 
 interface Props {
@@ -17,11 +19,15 @@ interface Props {
 export function PipelineScreen({ onSend }: Props) {
   const mergeGates = useStore((s) => s.mergeGates);
   const goals = useStore((s) => s.goals);
+  const loading = useStore((s) => s.loading.pipeline);
   const goalMap = useEntityMap(goals);
 
   useEffect(() => {
     onSend({ type: 'mergeGate:list' });
   }, [onSend]);
+
+  // Re-fetch after a reconnect so a phone waking up isn't left with stale gates.
+  useOnReconnect(() => onSend({ type: 'mergeGate:list' }));
 
   // Goals with all tasks done that could be consolidated
   const tasks = useStore((s) => s.tasks);
@@ -38,11 +44,15 @@ export function PipelineScreen({ onSend }: Props) {
     return (
       <div className="p-6">
         <h1 className="text-xl font-bold text-foreground mb-6">Pipeline</h1>
-        <EmptyState
-          icon="|>"
-          title="No merge gates"
-          description="Merge gates are created when all tasks for a goal are completed and consolidation begins."
-        />
+        {loading ? (
+          <SkeletonList count={3} />
+        ) : (
+          <EmptyState
+            icon="|>"
+            title="No merge gates"
+            description="Merge gates are created when all tasks for a goal are completed and consolidation begins."
+          />
+        )}
       </div>
     );
   }

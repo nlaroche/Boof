@@ -1,15 +1,31 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { toast } from 'sonner';
 import { useStore } from '../stores/store';
+import { emitReconnect } from './useReconnect';
+import { showServerNotify } from '../lib/notify';
 import type { WSClientMessage, WSServerMessage } from '../lib/types';
+
+// Map an agentId to the nav target whose badge should light up for its alerts.
+const NOTIFY_NAV_TARGET = 'agents';
+const MAX_QUEUE = 50;
 
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const backoff = useRef(1000);
+  const disposed = useRef(false);
+  const firstConnect = useRef(true);
+  // Messages attempted while the socket is down — flushed on reopen.
+  const queue = useRef<WSClientMessage[]>([]);
 
   const connect = useCallback(() => {
+    // Don't open a second socket if one is already connecting/open.
+    const existing = wsRef.current;
+    if (existing && (existing.readyState === WebSocket.CONNECTING || existing.readyState === WebSocket.OPEN)) {
+      return;
+    }
+
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const url = `${protocol}//${window.location.host}/ws`;
 
@@ -19,10 +35,31 @@ export function useWebSocket() {
     ws.onopen = () => {
       setConnected(true);
       backoff.current = 1000;
+      const isReconnect = !firstConnect.current;
+      firstConnect.current = false;
+
+      // Clear any buffered live output BEFORE requesting sync so the server's
+      // replay doesn't append duplicates on top of what we already have.
+      useStore.getState().resetOutputs();
+
       ws.send(JSON.stringify({ type: 'sync:request' }));
       ws.send(JSON.stringify({ type: 'global:skills' }));
       ws.send(JSON.stringify({ type: 'global:stats' }));
       ws.send(JSON.stringify({ type: 'global:learnings', limit: 10 }));
+
+      // Flush queued sends.
+      const pending = queue.current;
+      queue.current = [];
+      for (const m of pending) {
+        try {
+          ws.send(JSON.stringify(m));
+        } catch (e) {
+          console.error('[ws] flush failed:', (e as Error).message);
+        }
+      }
+
+      // Let screens re-fetch their scoped mount data after a reconnect.
+      if (isReconnect) emitReconnect();
     };
 
     ws.onmessage = (event) => {
@@ -40,6 +77,10 @@ export function useWebSocket() {
             s.setProjects(msg.projects || []);
             if (msg.commands) {
               s.setCommands(msg.commands);
+            }
+            // Merge gates travel with sync so Needs Attention is populated on load/reconnect.
+            if (msg.mergeGates) {
+              s.setMergeGates(msg.mergeGates);
             }
             break;
           case 'agent:output':
@@ -83,7 +124,8 @@ export function useWebSocket() {
             });
             break;
           case 'notify':
-            // Could trigger browser notification here
+            showServerNotify(msg.title, msg.body);
+            s.bumpNavAlert(NOTIFY_NAV_TARGET);
             break;
           case 'agent:activity':
             s.setAgentActivity(msg.agentId, msg.entries);
@@ -127,10 +169,15 @@ export function useWebSocket() {
           case 'improvement:updated':
             s.updateImprovement(msg.improvement);
             break;
-          case 'agent:xp':
-            s.updateAgent({ ...s.agents.find((a) => a.id === msg.agentId)!, xp: msg.xp });
+          case 'agent:xp': {
+            // Guard: a stray xp event for an unknown agent must not inject a
+            // ghost agent record (all other fields would be undefined).
+            const existing = s.agents.find((a) => a.id === msg.agentId);
+            if (!existing) break;
+            s.updateAgent({ ...existing, xp: msg.xp });
             if (msg.event) s.addXpEvent(msg.agentId, msg.event);
             break;
+          }
           case 'agent:xp-events':
             s.setAgentXpEvents(msg.agentId, msg.events);
             break;
@@ -208,9 +255,15 @@ export function useWebSocket() {
             break;
           case 'mergeGate:updated':
             s.updateMergeGate(msg.gate);
-            toast.info(`Pipeline: ${msg.gate.status}`, {
-              description: `Gate for goal branch ${msg.gate.goal_branch}`,
-            });
+            // Only surface the states that need a human's eyes — a gate emits
+            // ~8 FSM transitions per run and toasting each is noise.
+            if (msg.gate.status === 'approved') {
+              toast.success(`Ready to merge: ${msg.gate.goal_branch}`);
+            } else if (msg.gate.status === 'merged') {
+              toast.success(`Merged: ${msg.gate.goal_branch} → ${msg.gate.target_branch}`);
+            } else if (msg.gate.status === 'failed') {
+              toast.error(`Merge gate failed: ${msg.gate.goal_branch}`);
+            }
             break;
           // Review Findings
           case 'reviewFindings:list':
@@ -237,6 +290,8 @@ export function useWebSocket() {
             for (const r of msg.research) {
               s.setTaskResearch(r.task_id, r);
             }
+            // Ensure the loading flag clears even when there is no research yet.
+            s.setLoading('research', false);
             break;
           case 'research:result':
             s.setTaskResearch(msg.taskId, msg.research);
@@ -283,6 +338,7 @@ export function useWebSocket() {
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
+      if (disposed.current) return; // unmounted — don't resurrect a zombie timer
       reconnectTimer.current = setTimeout(() => {
         backoff.current = Math.min(backoff.current * 2, 30000);
         connect();
@@ -294,18 +350,51 @@ export function useWebSocket() {
     };
   }, []);
 
-  useEffect(() => {
+  // Reconnect immediately (cancel any pending backoff) — used on app resume
+  // and network-online, when a phone's socket is likely already dead.
+  const reconnectNow = useCallback(() => {
+    const ws = wsRef.current;
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (reconnectTimer.current) {
+      clearTimeout(reconnectTimer.current);
+      reconnectTimer.current = undefined;
+    }
+    backoff.current = 1000;
     connect();
+  }, [connect]);
+
+  useEffect(() => {
+    disposed.current = false;
+    connect();
+
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') reconnectNow();
+    };
+    const onOnline = () => reconnectNow();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('online', onOnline);
+
     return () => {
+      disposed.current = true;
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('online', onOnline);
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
       if (wsRef.current) wsRef.current.close();
     };
-  }, [connect]);
+  }, [connect, reconnectNow]);
 
   const send = useCallback((msg: WSClientMessage) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(msg));
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+      return;
     }
+    // Socket down: queue so taps (Approve / Merge / Stop) aren't silently lost.
+    if (queue.current.length >= MAX_QUEUE) {
+      toast.error('Still offline — some queued actions were dropped');
+      return;
+    }
+    queue.current.push(msg);
   }, []);
 
   return { send, connected };

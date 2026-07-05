@@ -7,6 +7,8 @@ import { EmptyState } from '../components/EmptyState';
 import { timeAgo, formatTokens, formatCost, formatDuration, safeJsonParse } from '../lib/format';
 import { useEntityMap, lookupName } from '../lib/lookups';
 import { AUDIT_OUTCOME_VARIANT } from '../lib/ui-constants';
+import { useOnReconnect } from '../hooks/useReconnect';
+import { SkeletonList } from '../components/Skeletons';
 import type { WSClientMessage, AuditRecord } from '../lib/types';
 
 interface Props {
@@ -17,6 +19,7 @@ export function AuditScreen({ onSend }: Props) {
   const auditRecords = useStore((s) => s.auditRecords);
   const agents = useStore((s) => s.agents);
   const agentMap = useEntityMap(agents);
+  const loading = useStore((s) => s.loading.audit);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterAction, setFilterAction] = useState<string | null>(null);
 
@@ -35,16 +38,21 @@ export function AuditScreen({ onSend }: Props) {
   useEffect(() => {
     onSend({ type: 'audit:list', limit: 200 });
   }, [onSend]);
+  useOnReconnect(() => onSend({ type: 'audit:list', limit: 200 }));
 
   if (records.length === 0 && !filterAction) {
     return (
       <div className="p-6">
         <h1 className="text-xl font-bold text-foreground mb-6">Audit Trail</h1>
-        <EmptyState
-          icon="##"
-          title="No audit records"
-          description="Audit records are created during merge gate operations (consolidation, review, testing, healing, merging)."
-        />
+        {loading ? (
+          <SkeletonList count={4} />
+        ) : (
+          <EmptyState
+            icon="##"
+            title="No audit records"
+            description="Audit records are created during merge gate operations (consolidation, review, testing, healing, merging)."
+          />
+        )}
       </div>
     );
   }

@@ -6,6 +6,7 @@ import { DashboardAgentCard } from '../components/DashboardAgentCard';
 import { SkillsList } from '../components/SkillsList';
 import { LearningItem } from '../components/LearningItem';
 import { CollapsibleSection } from '../components/CollapsibleSection';
+import { NeedsAttention } from '../components/NeedsAttention';
 import { formatDuration } from '../lib/format';
 import type { WSClientMessage } from '../lib/types';
 
@@ -35,6 +36,8 @@ export function DashboardScreen({ onSend, onSendToAgent }: Props) {
   return (
     <div className="p-4 space-y-5 max-w-7xl pb-24">
       <h1 className="text-xl font-bold text-foreground">Dashboard</h1>
+
+      <NeedsAttention onSend={onSend} />
 
       {/* Enhanced Stats Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -117,6 +120,7 @@ export function DashboardScreen({ onSend, onSendToAgent }: Props) {
                 agent={agent}
                 commands={commands}
                 goals={goals}
+                onSend={onSend}
                 onClick={() => {
                   setSelectedAgentId(agent.id);
                   setActiveScreen('agent');

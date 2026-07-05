@@ -1,13 +1,15 @@
-import { useMemo } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useStore } from '../stores/store';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Badge } from '../components/ui/badge';
+import { Button } from '../components/ui/button';
 import { Progress } from '../components/ui/progress';
 import { EmptyState } from '../components/EmptyState';
-import { formatTokens, formatDuration } from '../lib/format';
+import { formatTokens, formatDuration, formatCost } from '../lib/format';
 import { EXPERIMENT_STATUS_VARIANT } from '../lib/ui-constants';
-import type { WSClientMessage } from '../lib/types';
+import { useOnReconnect } from '../hooks/useReconnect';
+import type { WSClientMessage, GlobalStats, Agent, ExperimentRecord } from '../lib/types';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -18,6 +20,22 @@ export function AnalyticsScreen({ onSend }: Props) {
   const agents = useStore((s) => s.agents);
   const goals = useStore((s) => s.goals);
   const experimentRecords = useStore((s) => s.experimentRecords);
+
+  // Experiment records are fetched per-agent (the server returns [] without an
+  // agentId), so drive the Experiments tab from a selected agent.
+  const [expAgentId, setExpAgentId] = useState<string>('');
+
+  useEffect(() => {
+    if (!expAgentId && agents.length > 0) setExpAgentId(agents[0].id);
+  }, [agents, expAgentId]);
+
+  useEffect(() => {
+    if (expAgentId) onSend({ type: 'experimentRecords:list', agentId: expAgentId });
+  }, [expAgentId, onSend]);
+
+  useOnReconnect(() => {
+    if (expAgentId) onSend({ type: 'experimentRecords:list', agentId: expAgentId });
+  });
 
   return (
     <div className="p-6">
@@ -39,7 +57,20 @@ export function AnalyticsScreen({ onSend }: Props) {
         </TabsContent>
 
         <TabsContent value="experiments">
-          <ExperimentsTab experiments={experimentRecords} />
+          <div className="mt-4 flex flex-wrap gap-1.5">
+            {agents.map((a) => (
+              <Button
+                key={a.id}
+                variant={expAgentId === a.id ? 'default' : 'outline'}
+                size="sm"
+                onClick={() => setExpAgentId(a.id)}
+                className="text-xs"
+              >
+                {a.name}
+              </Button>
+            ))}
+          </div>
+          <ExperimentsTab experiments={experimentRecords} hasAgents={agents.length > 0} />
         </TabsContent>
       </Tabs>
     </div>
@@ -59,16 +90,19 @@ function StatCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CostTab({ globalStats, agents }: { globalStats: import('../lib/types').GlobalStats | null; agents: import('../lib/types').Agent[] }) {
-  const maxXp = useMemo(() => Math.max(...agents.map(a => a.xp), 1), [agents]);
+function CostTab({ globalStats, agents }: { globalStats: GlobalStats | null; agents: Agent[] }) {
+  const maxXp = useMemo(() => Math.max(...agents.map((a) => a.xp), 1), [agents]);
 
   return (
     <div className="mt-4">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <StatCard label="Total Tokens" value={globalStats ? formatTokens(globalStats.totalTokensUsed) : '--'} />
-        <StatCard label="Total Commands" value={globalStats?.totalCommands?.toString() ?? '--'} />
-        <StatCard label="Total XP" value={globalStats?.totalXp?.toString() ?? '--'} />
+        <StatCard label="Est. cost today" value={globalStats ? formatCost(globalStats.costTodayUsd || 0) : '--'} />
+        <StatCard label="Total tokens" value={globalStats ? formatTokens(globalStats.totalTokensUsed) : '--'} />
+        <StatCard label="Total commands" value={globalStats?.totalCommands?.toString() ?? '--'} />
       </div>
+      <p className="text-[10px] text-muted-foreground/70 mt-2">
+        Cost is estimated from token counts (chars/4) of metered runs — treat as an approximation, not billing.
+      </p>
 
       {agents.length > 0 && (
         <div className="mt-6">
@@ -88,22 +122,23 @@ function CostTab({ globalStats, agents }: { globalStats: import('../lib/types').
   );
 }
 
-function PerformanceTab({ globalStats, activeGoalCount }: { globalStats: import('../lib/types').GlobalStats | null; activeGoalCount: number }) {
+function PerformanceTab({ globalStats, activeGoalCount }: { globalStats: GlobalStats | null; activeGoalCount: number }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-      <StatCard label="Success Rate" value={globalStats ? `${(globalStats.successRate * 100).toFixed(0)}%` : '--'} />
+      {/* Server already returns 0-100 — do not scale again. */}
+      <StatCard label="Success Rate" value={globalStats ? `${globalStats.successRate.toFixed(0)}%` : '--'} />
       <StatCard label="Avg Duration" value={globalStats ? formatDuration(globalStats.avgDurationMs) : '--'} />
       <StatCard label="Active Goals" value={activeGoalCount.toString()} />
     </div>
   );
 }
 
-function ExperimentsTab({ experiments }: { experiments: import('../lib/types').ExperimentRecord[] }) {
+function ExperimentsTab({ experiments, hasAgents }: { experiments: ExperimentRecord[]; hasAgents: boolean }) {
   if (experiments.length === 0) {
     return (
       <EmptyState
         icon="$$"
-        title="No experiments"
+        title={hasAgents ? 'No experiments for this agent' : 'No experiments'}
         description="Experiments are auto-generated from agent reflections and failure patterns."
       />
     );

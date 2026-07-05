@@ -5,6 +5,7 @@ import { TaskSummaryModal } from '../components/TaskSummaryModal';
 import { useSpeech } from '../hooks/useSpeech';
 import { useIsDesktop } from '../hooks/useIsDesktop';
 import { ansiToHtml } from '../lib/ansi';
+import { useOnReconnect } from '../hooks/useReconnect';
 import { timeAgo } from '../lib/format';
 import { cn } from '@/lib/utils';
 import { Button } from '../components/ui/button';
@@ -114,6 +115,16 @@ export function AgentScreen({ onSend }: Props) {
       onSend({ type: 'agent:timeline', agentId: selectedAgentId });
     }
   }, [selectedAgentId, onSend]);
+
+  // Re-fetch this agent's history/activity/etc after a reconnect.
+  useOnReconnect(() => {
+    if (!selectedAgentId) return;
+    onSend({ type: 'agent:history', agentId: selectedAgentId, limit: 50 });
+    onSend({ type: 'agent:activity', agentId: selectedAgentId, limit: 50 });
+    onSend({ type: 'agent:branches', agentId: selectedAgentId });
+    onSend({ type: 'agent:xp-events', agentId: selectedAgentId });
+    onSend({ type: 'agent:dashboard', agentId: selectedAgentId });
+  });
 
   // Auto-switch to live when agent starts running
   useEffect(() => {
