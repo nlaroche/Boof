@@ -3,7 +3,8 @@ import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { runQuery, getOne, getAll, generateId, getNow, estimateTokens } from './db-helpers.js';
-import { createAgent, sendToAgent, hasAgent, killAgent } from './pty-manager.js';
+import { createAgent, sendToAgent, hasAgent, killAgent, getLastUsage } from './pty-manager.js';
+import type { AgentUsage } from './pty-manager.js';
 import { getBroadcast } from './ws-handler.js';
 import { initBoofDir, getMemoryContext, getStructuredMemoryContext, recordMistake, recordPattern, recordGuideline, getGoalLogCached, invalidateGoalLogCache, proposeGoals } from './agent-memory.js';
 // branch-guard is used by systems/git-ops.ts directly
@@ -24,7 +25,7 @@ import {
 import { getProvider, calculateCost, getModelForRole } from './agent-providers.js';
 import { AgentRole } from './engine/constants.js';
 import { recordRunResult, onReflection as experimentOnReflection } from './systems/experiment-loop.js';
-import { checkGoalBudget } from './db-helpers.js';
+import { checkGoalBudget, getMergeGateForGoal } from './db-helpers.js';
 import {
   buildAutopilotPrompt, buildPlanningPrompt,
   getLastMatchedSkills, clearLastMatchedSkills,
@@ -144,7 +145,8 @@ function logToGoal(
   diffStats: string,
   durationMs: number,
   success: boolean,
-  tokens?: { prompt: number; completion: number; total: number }
+  tokens?: { prompt: number; completion: number; total: number },
+  costUsd: number = 0
 ): void {
   const broadcast = getBroadcast();
   const logId = generateId();
@@ -156,7 +158,7 @@ function logToGoal(
   runQuery(
     `INSERT INTO goal_log (id, goal_id, agent_id, action, summary, diff_stats, cost_usd, duration_ms, success, prompt_tokens, completion_tokens, total_tokens, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [logId, goalId, agentId, action, summary, diffStats, 0, durationMs, success ? 1 : 0, promptTokens, completionTokens, totalTokens, now]
+    [logId, goalId, agentId, action, summary, diffStats, costUsd, durationMs, success ? 1 : 0, promptTokens, completionTokens, totalTokens, now]
   );
 
   invalidateGoalLogCache(goalId);
@@ -175,7 +177,7 @@ function runAgentStep(
   prompt: string,
   broadcast: (msg: WSServerMessage) => void,
   options?: { skipWrap?: boolean; modelOverride?: string }
-): Promise<{ code: number; output: string }> {
+): Promise<{ code: number; output: string; usage: AgentUsage | null }> {
   return new Promise((resolve) => {
     if (hasAgent(agentId)) {
       killAgent(agentId);
@@ -188,7 +190,8 @@ function runAgentStep(
     };
 
     const handleExit = (id: string, code: number) => {
-      resolve({ code, output });
+      // Capture real usage (M1) before the next step overwrites it.
+      resolve({ code, output, usage: getLastUsage(id) });
     };
 
     const model = options?.modelOverride || agent.agent_type;
@@ -299,9 +302,46 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
   const remainingCount = remaining?.count ?? 0;
 
   const goalCompleted = remainingCount === 0;
+  let completedGoalName = goalId;
 
   if (goalCompleted) {
-    // All tasks done — mark goal completed
+    // All tasks resolved — but distinguish real success from "all archived as
+    // failures" (M8). A goal with zero done tasks and some archived ones is
+    // completed *with failures*, not a clean success.
+    const doneCount = getOne<{ c: number }>(
+      "SELECT COUNT(*) as c FROM tasks WHERE goal_id = ? AND status = 'done'", [goalId]
+    )?.c ?? 0;
+    const archivedCount = getOne<{ c: number }>(
+      "SELECT COUNT(*) as c FROM tasks WHERE goal_id = ? AND status = 'archived'", [goalId]
+    )?.c ?? 0;
+    const completedWithFailures = doneCount === 0 && archivedCount > 0;
+
+    // H4: if merged-but-unconsolidated work exists, still initiate consolidation
+    // before we walk away from the goal (a failed final task must not strand
+    // already-merged branches on the goal branch).
+    try {
+      const mergedWork = getOne<{ c: number }>(
+        "SELECT COUNT(*) as c FROM goal_log WHERE goal_id = ? AND action = 'branch_merged'", [goalId]
+      )?.c ?? 0;
+      const gate = getMergeGateForGoal(goalId);
+      const gateUnfinished = !gate || gate.status === 'failed';
+      if (mergedWork > 0 && gateUnfinished) {
+        const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
+        if (agent) {
+          console.log(`[autopilot] Goal ${goalId} has unconsolidated merged work — initiating consolidation`);
+          logToGoal(goalId, agentId, 'consolidation_triggered', 'Unconsolidated merged work found on goal completion', '', 0, true);
+          initiateConsolidation(goalId, agent.working_directory, (gate2) => {
+            broadcast({ type: 'mergeGate:updated', gate: gate2 });
+          }).catch(err => {
+            console.error(`[autopilot] Consolidation error for goal ${goalId}:`, err);
+          });
+        }
+      }
+    } catch (consErr) {
+      console.error(`[autopilot] Failed to check/initiate consolidation for goal ${goalId}:`, consErr);
+    }
+
+    // Mark goal completed
     const now = new Date().toISOString();
     runQuery(
       `UPDATE goals SET status = 'completed', completed_at = ?, updated_at = ? WHERE id = ?`,
@@ -309,13 +349,19 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
     );
 
     const completedGoal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
+    completedGoalName = completedGoal?.name ?? goalId;
     if (completedGoal) {
       broadcast({ type: 'goal:completed', goalId, agentId, goal: completedGoal });
       broadcast({ type: 'goal:updated', goal: completedGoal });
     }
 
-    console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
-    sendGoalCompletedNotification(completedGoal?.name ?? goalId).catch(() => {});
+    if (completedWithFailures) {
+      console.log(`[autopilot] Goal ${goalId} completed WITH FAILURES — all ${archivedCount} task(s) archived as failures.`);
+      logToGoal(goalId, agentId, 'goal_completed_with_failures', `Completed with failures: ${archivedCount} task(s) archived, none succeeded`, '', 0, false);
+      broadcast({ type: 'notify', agentId, title: 'Goal completed with failures', body: `"${completedGoalName}": all ${archivedCount} task(s) failed/archived. Review needed.` });
+    } else {
+      console.log(`[autopilot] Goal ${goalId} completed — all tasks done. Looking for next goal...`);
+    }
   }
 
   // ── Momentum-based rotation ──
@@ -429,6 +475,10 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
       }
       runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
       agentIdleSince.set(agentId, Date.now());
+      // Notify with the completed goal name (no next goal to cycle to).
+      sendGoalCompletedNotification(completedGoalName).catch((err) => {
+        console.error('[autopilot] Failed to send goal-completed notification:', err);
+      });
     }
     return goalCompleted;
   }
@@ -450,9 +500,12 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
       chunk: `\n[autopilot] Rotating to next goal: "${nextGoal.name}" (done ${tasksDone} tasks on current)\n`,
     });
   } else {
-    // Goal completed — pick highest priority
+    // Goal completed — pick highest priority. Notify with the completed goal's
+    // NAME (not its id — M8) plus the goal we're cycling to.
     nextGoal = candidates[0];
-    sendGoalCompletedNotification(goalId, nextGoal.name).catch(() => {});
+    sendGoalCompletedNotification(completedGoalName, nextGoal.name).catch((err) => {
+      console.error('[autopilot] Failed to send goal-completed notification:', err);
+    });
   }
 
   runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [nextGoal.id, agentId]);
@@ -463,6 +516,37 @@ export async function checkAndCycleGoal(agentId: string, goalId: string): Promis
 
 // ── Main Autopilot Run ──────────────────────────────────────────────────
 
+/**
+ * Pick the next active goal for an agent (highest priority, excluding one goal),
+ * pin it, and broadcast the switch. If none exist, clear the pin and set the
+ * idle backoff so the loop stops re-triggering. Returns the selected goal id,
+ * or null if none available. (H1 — never spin on a pinned inactive goal.)
+ */
+function selectNextActiveGoal(
+  agentId: string,
+  excludeGoalId: string | null,
+  broadcast: (msg: WSServerMessage) => void,
+): string | null {
+  const candidates = getAll<Goal>(
+    "SELECT * FROM goals WHERE status = 'active' ORDER BY priority DESC, created_at ASC",
+    []
+  ).filter(g => g.id !== excludeGoalId);
+
+  if (candidates.length === 0) {
+    runQuery('UPDATE agents SET autopilot_goal_id = NULL WHERE id = ?', [agentId]);
+    agentIdleSince.set(agentId, Date.now());
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} has no active goals — cleared pin, idle backoff engaged`);
+    return null;
+  }
+
+  const next = candidates[0];
+  runQuery('UPDATE agents SET autopilot_goal_id = ? WHERE id = ?', [next.id, agentId]);
+  agentIdleSince.delete(agentId);
+  broadcast({ type: 'goal:switched', agentId, previousGoalId: excludeGoalId, newGoalId: next.id, goal: next });
+  console.log(`[autopilot] Agent ${agentId.slice(0, 6)} re-pinned to active goal "${next.name}" (priority ${next.priority})`);
+  return next.id;
+}
+
 export async function triggerAutopilotRun(agentId: string): Promise<void> {
   if (runningAutopilots.has(agentId)) {
     console.log(`[autopilot] Agent ${agentId.slice(0, 6)} already running, skipping`);
@@ -472,19 +556,29 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
   const agent = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
   if (!agent) return;
 
+  const broadcast = getBroadcast();
+
+  // Update last-run on EVERY trigger attempt so a bail-out below can't hot-loop
+  // the 30s checker (H1). The real run below updates it again with status.
+  runQuery('UPDATE agents SET autopilot_last_run = ? WHERE id = ?', [new Date().toISOString(), agentId]);
+
   const goalId = agent.autopilot_goal_id;
   if (!goalId) {
-    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} has no goal, skipping`);
-    return;
+    // No pinned goal — try to adopt the next active goal instead of idling.
+    console.log(`[autopilot] Agent ${agentId.slice(0, 6)} has no goal — selecting next active goal`);
+    selectNextActiveGoal(agentId, null, broadcast);
+    return; // next loop iteration runs the newly-pinned goal
   }
 
   const goal = getOne<Goal>('SELECT * FROM goals WHERE id = ?', [goalId]);
   if (!goal || goal.status !== 'active') {
-    console.log(`[autopilot] Goal ${goalId} not active, skipping`);
+    // Pinned goal is gone or inactive — rotate to another active goal (or clear
+    // the pin + idle backoff). Never spin forever on a dead pin (H1).
+    console.log(`[autopilot] Goal ${goalId} not active — clearing pin and rotating`);
+    selectNextActiveGoal(agentId, goalId, broadcast);
     return;
   }
 
-  const broadcast = getBroadcast();
   const startTime = Date.now();
   const goalSlug = slugify(goal.name);
   let lastMatchedSkillIds: string[] = [];
@@ -701,6 +795,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     let implPromptTokens = 0;
     let implCompletionTokens = 0;
     let implTotalTokens = 0;
+    let implCostUsd: number | null = null; // real cost from provider, when reported (M1)
     let testFailureCount = 0;
 
     if (workflowObj && workflowObj.steps.length > 0) {
@@ -809,7 +904,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const tasksForPrompt = [taskWithDoneWhen, ...pendingTasks.filter(t => (t as any).id !== currentTask.id)];
       let prompt = buildAutopilotPrompt(goal, recentLogs, tasksForPrompt, researchContext + taskMemoryContext, agentId, taskDesc);
       // Track which skills were matched for this run (from prompt-builder)
-      lastMatchedSkillIds = getLastMatchedSkills().map((s: Skill) => s.id);
+      lastMatchedSkillIds = getLastMatchedSkills(agentId).map((s: Skill) => s.id);
       prompt += `\n\nIMPORTANT: Implement the changes directly. Do NOT enter plan mode, do NOT just describe what to do, do NOT ask for confirmation. Read the relevant files, make the code changes using Edit/Write tools, and verify the result. Act autonomously and complete the task fully.`;
       const promptBuildMs = Date.now() - promptBuildStart;
       console.log(`[perf:implementation] Prompt build: ${promptBuildMs}ms (${prompt.length} chars)`);
@@ -819,11 +914,14 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       const agentStepMs = Date.now() - agentStepStart;
       console.log(`[perf:implementation] Agent execution: ${agentStepMs}ms (exit code: ${runResult.code})`);
 
-      // Track token usage for implementation phase
-      implPromptTokens = estimateTokens(prompt);
-      implCompletionTokens = estimateTokens(runResult.output);
+      // Track token usage for implementation phase.
+      // Prefer REAL usage from the provider's stream-json `result` (M1); fall
+      // back to the chars/4 estimate for providers that don't report usage.
+      implPromptTokens = runResult.usage?.inputTokens || estimateTokens(prompt);
+      implCompletionTokens = runResult.usage?.outputTokens || estimateTokens(runResult.output);
       implTotalTokens = implPromptTokens + implCompletionTokens;
-      console.log(`[tokens:implementation] Prompt: ${implPromptTokens}, Completion: ${implCompletionTokens}, Total: ${implTotalTokens}`);
+      implCostUsd = runResult.usage?.costUsd ?? null;
+      console.log(`[tokens:implementation] Prompt: ${implPromptTokens}, Completion: ${implCompletionTokens}, Total: ${implTotalTokens}${implCostUsd != null ? ` (real cost $${implCostUsd.toFixed(4)})` : ' (estimated)'}`);
 
       success = runResult.code === 0;
       summary = success ? `Completed task: ${currentTask.title}` : `Failed task: ${currentTask.title} (exit code ${runResult.code})`;
@@ -983,7 +1081,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     const tokenData = workflowObj
       ? undefined // Workflow mode doesn't track single prompt/completion
       : { prompt: implPromptTokens, completion: implCompletionTokens, total: implTotalTokens };
-    logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success, tokenData);
+    // Record real cost on the goal_log entry (M1 — was always 0).
+    const runCostUsd = implCostUsd != null
+      ? implCostUsd
+      : (workflowObj ? 0 : calculateCost(getProvider(getModelForRole(agent, AgentRole.IMPLEMENTATION)), implPromptTokens, implCompletionTokens));
+    logToGoal(goalId, agentId, 'autopilot_run', summary + branchInfo, diffStats, durationMs, success, tokenData, runCostUsd);
 
     // Self-improve: assess performance, persist metrics, reflect, extract skills
     let assessmentScore = 0;
@@ -1002,9 +1104,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
 
       // Persist run metrics to DB
       const activeVersion = getActivePromptVersion(agentId);
-      // Calculate cost from token usage
+      // Prefer the provider's real reported cost (M1); else derive from tokens.
       const provider = getProvider(getModelForRole(agent, AgentRole.IMPLEMENTATION));
-      const costUsd = calculateCost(provider, implPromptTokens, implCompletionTokens);
+      const costUsd = implCostUsd != null
+        ? implCostUsd
+        : calculateCost(provider, implPromptTokens, implCompletionTokens);
 
       persistRunMetrics({
         agentId,
@@ -1032,10 +1136,10 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
       for (const skillId of lastMatchedSkillIds) {
         updateSkillUsage(skillId, success, assessment.score);
       }
-      clearLastMatchedSkills();
+      clearLastMatchedSkills(agentId);
 
       // Record experiment results — multi-metric for closed-loop system
-      const expPick = getCurrentExperimentPick();
+      const expPick = getCurrentExperimentPick(agentId);
       if (expPick) {
         const expVariant = expPick.variant === 'a' ? 'control' : 'treatment';
         recordRunResult(
@@ -1046,14 +1150,17 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
         );
         // Also record in old experiment system for backward compat
         recordExperimentResult(expPick.experimentId, expPick.variant, assessment.score);
-        clearCurrentExperimentPick();
+        clearCurrentExperimentPick(agentId);
       }
 
       if (success) {
         const xpAmount = assessment.score >= 90 ? 3 : 1;
         const reason = `Autopilot: ${currentTask?.title || goalSlug} (score ${assessment.score})`;
         const { newXp, event } = awardXp(agentId, xpAmount, reason, 'autopilot');
-        broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
+        // M14: only broadcast xp for an agent that still exists.
+        if (getOne<{ id: string }>('SELECT id FROM agents WHERE id = ?', [agentId])) {
+          broadcast({ type: 'agent:xp', agentId, xp: newXp, event });
+        }
       } else {
         identifyImprovements(agentId, assessment.id, summary, goalSlug, assessment.score, 0);
       }
@@ -1165,7 +1272,7 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
               logToGoal(goalId, agentId, 'consolidation_triggered', `All tasks done, initiating review & merge`, '', 0, true);
               // Fire-and-forget — consolidation runs asynchronously
               initiateConsolidation(goalId, agent.working_directory, (gate) => {
-                broadcast({ type: 'merge-gate:updated' as any, gate });
+                broadcast({ type: 'mergeGate:updated', gate });
               }).catch(err => {
                 console.error(`[autopilot] Consolidation error for goal ${goalId}:`, err);
               });
@@ -1205,6 +1312,11 @@ export async function triggerAutopilotRun(agentId: string): Promise<void> {
     runQuery("UPDATE agents SET status = 'idle', last_activity = ? WHERE id = ?", [finishedAt, agentId]);
     broadcast({ type: 'agent:status', agentId, status: 'idle' });
     runningAutopilots.delete(agentId);
+
+    // H3: unregister the PTY agent so a later manual `agent:send` installs a
+    // fresh exit handler instead of reusing autopilot's stale one (which would
+    // leave the command running forever and never reset the agent to idle).
+    killAgent(agentId);
   }
 }
 

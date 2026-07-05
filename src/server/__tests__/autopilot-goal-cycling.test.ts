@@ -6,7 +6,7 @@ import path from 'path';
 import { initDb } from '../db.js';
 import { runQuery, getOne, getAll } from '../db.js';
 import { initBoofDir, recordPattern, proposeGoals } from '../agent-memory.js';
-import { MAX_GOALS_PER_SESSION, MAX_CYCLES_PER_HOUR, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkCycleRateLimit, checkAndCycleGoal } from '../autopilot.js';
+import { MAX_GOALS_PER_SESSION, MAX_CYCLES_PER_HOUR, IDLE_BACKOFF_MS, resetAgentSessionCounters, checkCycleRateLimit, checkAndCycleGoal, triggerAutopilotRun } from '../autopilot.js';
 import { initScheduler, stopScheduler } from '../scheduler.js';
 
 const TEST_DB_PATH = './test-goal-cycling.db';
@@ -783,5 +783,64 @@ describe('scheduler goal-cycling integration', () => {
     // Goal should still be active
     const goal = getOne<{ status: string }>('SELECT status FROM goals WHERE id = ?', [goalId]);
     assert.equal(goal?.status, 'active', 'Goal should remain active when tasks are pending');
+  });
+});
+
+describe('H1: autopilot never spins on a pinned inactive goal', () => {
+  beforeEach(async () => {
+    goalCounter = 0;
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+    process.env.DB_PATH = TEST_DB_PATH;
+    await initDb();
+  });
+
+  afterEach(() => {
+    if (fs.existsSync(TEST_DB_PATH)) fs.unlinkSync(TEST_DB_PATH);
+  });
+
+  it('rotates to another active goal when pinned goal is completed/inactive', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+
+    const completedGoal = createGoal('Completed Goal', 3, 'completed');
+    const activeGoal = createGoal('Active Goal', 5, 'active');
+    createTask(activeGoal, 'Pending', 'todo');
+
+    // Pin agent to the completed (inactive) goal — the wedge scenario.
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Wedge Agent', '.', 1, ?, 'idle', ?, ?)`,
+      [agentId, completedGoal, now, now]
+    );
+
+    await triggerAutopilotRun(agentId);
+
+    const agent = getOne<{ autopilot_goal_id: string | null; autopilot_last_run: string | null }>(
+      'SELECT autopilot_goal_id, autopilot_last_run FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, activeGoal, 'Should re-pin to the active goal');
+    assert.ok(agent?.autopilot_last_run, 'autopilot_last_run must be updated so the loop cannot hot-loop');
+  });
+
+  it('clears the pin when no other active goals exist', async () => {
+    const agentId = generateId();
+    const now = new Date().toISOString();
+
+    const completedGoal = createGoal('Only (completed) Goal', 3, 'completed');
+    runQuery(
+      `INSERT INTO agents (id, name, working_directory, autopilot, autopilot_goal_id, status, created_at, last_activity)
+       VALUES (?, 'Lonely Agent', '.', 1, ?, 'idle', ?, ?)`,
+      [agentId, completedGoal, now, now]
+    );
+
+    await triggerAutopilotRun(agentId);
+
+    const agent = getOne<{ autopilot_goal_id: string | null; autopilot_last_run: string | null }>(
+      'SELECT autopilot_goal_id, autopilot_last_run FROM agents WHERE id = ?',
+      [agentId]
+    );
+    assert.equal(agent?.autopilot_goal_id, null, 'Pin must be cleared when no active goals remain');
+    assert.ok(agent?.autopilot_last_run, 'autopilot_last_run must still be updated');
   });
 });
