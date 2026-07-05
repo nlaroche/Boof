@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useStore } from '../stores/store';
 import { DrawerModal } from '../components/DrawerModal';
+import { GoalCreateModal } from '../components/GoalCreateModal';
 import { cn } from '@/lib/utils';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
@@ -8,7 +9,6 @@ import { Textarea } from '../components/ui/textarea';
 import { Label } from '../components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
-import { Separator } from '../components/ui/separator';
 import { EmptyState } from '../components/EmptyState';
 import { SkillsList } from '../components/SkillsList';
 import { CollapsibleSection } from '../components/CollapsibleSection';
@@ -57,9 +57,71 @@ function ProjectCard({ project, onSelect, onSend }: { project: Project; onSelect
   );
 }
 
+function AddRepoSheet({ project, linked, onSend, onClose }: { project: Project; linked: string[]; onSend: (msg: WSClientMessage) => void; onClose: () => void }) {
+  const repos = useStore((s) => s.repos);
+  const [search, setSearch] = useState('');
+  const available = repos.filter((r) => !linked.includes(r.path));
+  const filtered = search.trim()
+    ? available.filter((r) => r.name.toLowerCase().includes(search.toLowerCase()) || r.path.toLowerCase().includes(search.toLowerCase()))
+    : available;
+
+  return (
+    <DrawerModal open title="Add repo to project" onClose={onClose}>
+      <div className="space-y-3">
+        <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search repos..." />
+        <div className="max-h-72 overflow-y-auto space-y-1.5">
+          {filtered.length === 0 ? (
+            <p className="text-center text-muted-foreground text-sm py-4">
+              {repos.length === 0 ? 'No repos available' : available.length === 0 ? 'All repos already linked' : 'No matching repos'}
+            </p>
+          ) : (
+            filtered.map((repo) => (
+              <Card
+                key={repo.path}
+                onClick={() => { onSend({ type: 'project:add-repo', projectId: project.id, repoPath: repo.path }); onClose(); }}
+                className="p-2.5 cursor-pointer hover:bg-secondary flex items-center justify-between"
+              >
+                <span className="text-sm text-foreground truncate">{repo.name}</span>
+                {repo.hasGit && <Badge variant="secondary" className="ml-2 shrink-0">git</Badge>}
+              </Card>
+            ))
+          )}
+        </div>
+      </div>
+    </DrawerModal>
+  );
+}
+
+function AttachGoalSheet({ project, onSend, onClose }: { project: Project; onSend: (msg: WSClientMessage) => void; onClose: () => void }) {
+  const goals = useStore((s) => s.goals);
+  const unattached = goals.filter((g) => g.project_id !== project.id && g.status !== 'completed');
+
+  return (
+    <DrawerModal open title="Attach existing goal" onClose={onClose}>
+      <div className="space-y-1.5">
+        {unattached.length === 0 ? (
+          <p className="text-center text-muted-foreground text-sm py-4">No goals available to attach. Create a new one instead.</p>
+        ) : (
+          unattached.map((g) => (
+            <Card
+              key={g.id}
+              onClick={() => { onSend({ type: 'goal:update', goalId: g.id, fields: { project_id: project.id } as any }); onClose(); }}
+              className="p-2.5 cursor-pointer hover:bg-secondary flex items-center justify-between gap-2"
+            >
+              <span className="text-sm text-foreground truncate">{g.name}</span>
+              <Badge variant={g.status === 'active' ? 'success' : 'muted'} className="shrink-0">{g.status}</Badge>
+            </Card>
+          ))
+        )}
+      </div>
+    </DrawerModal>
+  );
+}
+
 function ProjectDetail({ project, onSend, onClose }: { project: Project; onSend: (msg: WSClientMessage) => void; onClose: () => void }) {
   const goals = useStore((s) => s.goals);
   const agents = useStore((s) => s.agents);
+  const repos = useStore((s) => s.repos);
   const projectGoals = goals.filter((g) => g.project_id === project.id);
   const projectRepos = useStore((s) => s.projectRepos[project.id] ?? EMPTY_REPOS);
   const projectSkills = useStore((s) => s.projectSkills[project.id] ?? []);
@@ -67,6 +129,13 @@ function ProjectDetail({ project, onSend, onClose }: { project: Project; onSend:
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description);
   const [archPlan, setArchPlan] = useState(project.architecture_plan);
+  const [showAddRepo, setShowAddRepo] = useState(false);
+  const [showAttachGoal, setShowAttachGoal] = useState(false);
+  const [showNewGoal, setShowNewGoal] = useState(false);
+
+  useEffect(() => {
+    if (repos.length === 0) onSend({ type: 'repos:list' });
+  }, [repos.length, onSend]);
 
   const activeAgents = agents.filter((a) => {
     const agentGoal = goals.find((g) => g.id === a.autopilot_goal_id);
@@ -169,8 +238,11 @@ function ProjectDetail({ project, onSend, onClose }: { project: Project; onSend:
 
       {/* Repos */}
       <Card>
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
           <CardTitle className="text-muted-foreground">Repos ({projectRepos.length})</CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => setShowAddRepo(true)} className="text-xs text-primary h-7 px-2">
+            + Add repo
+          </Button>
         </CardHeader>
         <CardContent>
           {projectRepos.length > 0 ? (
@@ -197,8 +269,16 @@ function ProjectDetail({ project, onSend, onClose }: { project: Project; onSend:
 
       {/* Goals */}
       <Card>
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-2 flex-row items-center justify-between space-y-0">
           <CardTitle className="text-muted-foreground">Goals ({projectGoals.length})</CardTitle>
+          <div className="flex gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setShowAttachGoal(true)} className="text-xs text-primary h-7 px-2">
+              Attach
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setShowNewGoal(true)} className="text-xs text-primary h-7 px-2">
+              + New
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {projectGoals.length > 0 ? (
@@ -246,6 +326,16 @@ function ProjectDetail({ project, onSend, onClose }: { project: Project; onSend:
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {showAddRepo && (
+        <AddRepoSheet project={project} linked={projectRepos} onSend={onSend} onClose={() => setShowAddRepo(false)} />
+      )}
+      {showAttachGoal && (
+        <AttachGoalSheet project={project} onSend={onSend} onClose={() => setShowAttachGoal(false)} />
+      )}
+      {showNewGoal && (
+        <GoalCreateModal onSend={onSend} onClose={() => setShowNewGoal(false)} defaultProjectId={project.id} />
       )}
     </div>
   );

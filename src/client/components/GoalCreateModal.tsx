@@ -14,15 +14,23 @@ interface Props {
   onSend: (msg: WSClientMessage) => void;
   onClose: () => void;
   editGoal?: Goal | null;
+  /** Pre-scope a newly created goal to this project (used from ProjectsScreen). */
+  defaultProjectId?: string;
 }
 
-export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
+export function GoalCreateModal({ onSend, onClose, editGoal, defaultProjectId }: Props) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [repoId, setRepoId] = useState('');
   const [mergeTarget, setMergeTarget] = useState('');
+  const [projectId, setProjectId] = useState('');
+  const [budgetCap, setBudgetCap] = useState('');
+  const [priority, setPriority] = useState(0);
+  const [assignAgentId, setAssignAgentId] = useState('');
   const [search, setSearch] = useState('');
   const repos = useStore((s) => s.repos);
+  const projects = useStore((s) => s.projects);
+  const agents = useStore((s) => s.agents);
 
   const isEdit = !!editGoal;
 
@@ -32,19 +40,29 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       setDescription(editGoal.description || '');
       setRepoId(editGoal.repo_id || '');
       setMergeTarget(editGoal.merge_target || '');
+      setProjectId(editGoal.project_id || '');
+      setBudgetCap(editGoal.budget_cap_usd != null ? String(editGoal.budget_cap_usd) : '');
+      setPriority(editGoal.priority || 0);
+      setAssignAgentId('');
     } else {
       setName('');
       setDescription('');
       setRepoId('');
       setMergeTarget('');
+      setProjectId(defaultProjectId || '');
+      setBudgetCap('');
+      setPriority(0);
+      setAssignAgentId('');
     }
-  }, [editGoal]);
+  }, [editGoal, defaultProjectId]);
 
   const filteredRepos = search.trim()
     ? repos.filter((r) => r.name.toLowerCase().includes(search.toLowerCase()))
     : repos;
 
   const selectedRepo = repos.find((r) => r.path === repoId);
+
+  const budgetNum = budgetCap.trim() ? parseFloat(budgetCap) : null;
 
   const handleCreate = () => {
     if (!name.trim()) return;
@@ -53,7 +71,11 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
       name: name.trim(),
       description: description.trim(),
       repoId: repoId || undefined,
+      projectId: projectId || undefined,
       mergeTarget: mergeTarget.trim() || undefined,
+      budgetCapUsd: budgetNum != null && !Number.isNaN(budgetNum) ? budgetNum : undefined,
+      priority: priority > 0 ? priority : undefined,
+      assignAgentId: assignAgentId || undefined,
     });
     onClose();
   };
@@ -67,9 +89,17 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
         name: name.trim(),
         description: description.trim(),
         repo_id: repoId || null,
+        project_id: projectId || null,
         merge_target: mergeTarget.trim() || null,
+        budget_cap_usd: budgetNum != null && !Number.isNaN(budgetNum) ? budgetNum : null,
+        priority,
       } as any,
     });
+    // Assigning an agent uses the autopilot message (not a goal field).
+    if (assignAgentId) {
+      const a = agents.find((ag) => ag.id === assignAgentId);
+      onSend({ type: 'agent:autopilot', agentId: assignAgentId, autopilot: true, interval: a?.autopilot_interval || 600, goalId: editGoal.id });
+    }
     onClose();
   };
 
@@ -102,6 +132,82 @@ export function GoalCreateModal({ onSend, onClose, editGoal }: Props) {
             rows={3}
           />
         </div>
+
+        {projects.length > 0 && (
+          <div>
+            <Label className="mb-1.5">Project (optional)</Label>
+            <select
+              value={projectId}
+              onChange={(e) => setProjectId(e.target.value)}
+              className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring"
+            >
+              <option value="">No project</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <Label className="mb-1.5">Budget cap (USD, optional)</Label>
+            <Input
+              type="number"
+              inputMode="decimal"
+              min="0"
+              step="0.5"
+              value={budgetCap}
+              onChange={(e) => setBudgetCap(e.target.value)}
+              placeholder="e.g. 5"
+              className="font-mono"
+            />
+          </div>
+        </div>
+
+        <div>
+          <Label className="mb-1.5">Priority</Label>
+          <div className="flex items-center gap-1.5">
+            {[1, 2, 3, 4, 5].map((p) => (
+              <Button
+                key={p}
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setPriority(p === priority ? 0 : p)}
+                className={cn(
+                  'w-8 h-8 p-0 rounded text-xs font-bold',
+                  priority === p ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'border border-input'
+                )}
+              >
+                {p}
+              </Button>
+            ))}
+            {priority > 0 && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setPriority(0)} className="text-[10px] text-muted-foreground hover:text-destructive h-8 px-2">
+                clear
+              </Button>
+            )}
+          </div>
+          <p className="text-[10px] text-muted-foreground mt-1">5 = highest. Higher-priority goals are scheduled first.</p>
+        </div>
+
+        {agents.length > 0 && (
+          <div>
+            <Label className="mb-1.5">Assign agent now (optional)</Label>
+            <select
+              value={assignAgentId}
+              onChange={(e) => setAssignAgentId(e.target.value)}
+              className="w-full bg-background border border-input rounded-lg px-3 py-2 text-sm text-foreground focus:outline-none focus:border-ring"
+            >
+              <option value="">Don't assign</option>
+              {agents.map((a) => (
+                <option key={a.id} value={a.id}>{a.name} ({a.status})</option>
+              ))}
+            </select>
+            <p className="text-[10px] text-muted-foreground mt-1">Enables the agent's autopilot pinned to this goal.</p>
+          </div>
+        )}
 
         <div>
           <Label className="mb-1.5">Merge target branch (optional)</Label>
