@@ -11,6 +11,14 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      // injectManifest so our own service worker can add push + notificationclick
+      // handlers while still precaching the app shell (Web Push, Task 1).
+      strategies: 'injectManifest',
+      srcDir: 'src/client',
+      filename: 'sw.ts',
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+      },
       includeAssets: ['boof-icon-192.png', 'boof-icon-512.png', 'boof-icon-192.svg', 'boof-icon-512.svg'],
       manifest: {
         name: 'Boof - Claude Code Command Center',

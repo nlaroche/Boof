@@ -16,8 +16,24 @@
  */
 import { runQuery, getOne, getAll, generateId, getNow } from '../db-helpers.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from '../pty-manager.js';
+import { createWorktree, removeWorktree } from './git-ops.js';
 import { AgentRole } from '../engine/constants.js';
 import type { Agent, TaskResearch } from '../../client/lib/types.js';
+
+/**
+ * Resolve an isolated working directory for the read-only research agent so it
+ * never runs (with `--dangerously-skip-permissions`) in the user's dirty shared
+ * tree (Task 3). Prefers the agent's existing worktree; otherwise creates a
+ * disposable detached worktree that the caller removes when done. Returns the
+ * cwd and, if we created one, the worktree to clean up.
+ */
+function resolveResearchCwd(agent: Agent, taskId: string): { cwd: string; disposable: string | null } {
+  if (agent.worktree_path) return { cwd: agent.worktree_path, disposable: null };
+  const wt = createWorktree(agent.working_directory, `research-${taskId.slice(0, 6)}`, taskId);
+  if (wt) return { cwd: wt, disposable: wt };
+  // Last resort: the shared repo (read-only work only).
+  return { cwd: agent.working_directory, disposable: null };
+}
 
 /** Cheap default model for research runs (overridden by an explicit research-role config). */
 const DEFAULT_RESEARCH_MODEL = 'qwen3-flash';
@@ -70,6 +86,7 @@ export async function researchForTask(
   broadcast({ type: 'agent:output', agentId: agent.id, chunk: `\n[research] Researching best practices for: ${taskTitle}...\n` });
 
   const startTime = Date.now();
+  const { cwd: researchCwd, disposable: researchWorktree } = resolveResearchCwd(agent, taskId);
 
   try {
     const output = await new Promise<string>((resolve) => {
@@ -79,11 +96,12 @@ export async function researchForTask(
       const handleOutput = (_id: string, chunk: string) => { buf += chunk; };
       const handleExit = (_id: string, _code: number) => { resolve(buf); };
 
-      createAgent(researchAgentId, agent.working_directory, 'Research Agent', handleOutput, handleExit, researchModel);
+      createAgent(researchAgentId, researchCwd, 'Research Agent', handleOutput, handleExit, researchModel);
       sendToAgent(researchAgentId, prompt, { skipWrap: true });
     });
 
     if (hasAgent(researchAgentId)) killAgent(researchAgentId);
+    if (researchWorktree) removeWorktree(agent.working_directory, researchWorktree);
 
     const durationMs = Date.now() - startTime;
     const parsed = parseResearchOutput(output);
@@ -106,6 +124,7 @@ export async function researchForTask(
   } catch (err: any) {
     console.error(`[research] Error:`, err.message || err);
     if (hasAgent(researchAgentId)) killAgent(researchAgentId);
+    if (researchWorktree) removeWorktree(agent.working_directory, researchWorktree);
     return null;
   }
 }

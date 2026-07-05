@@ -588,7 +588,11 @@ export type WSClientMessage =
   | { type: 'maintenance:get-config' }
   | { type: 'maintenance:update-config'; config: Record<string, unknown> }
   | { type: 'maintenance:get-log'; limit?: number }
-  | { type: 'maintenance:trigger'; dryRun?: boolean };
+  | { type: 'maintenance:trigger'; dryRun?: boolean }
+  // Web Push
+  | { type: 'push:subscribe'; subscription: PushSubscriptionJSON }
+  | { type: 'push:unsubscribe'; endpoint: string }
+  | { type: 'push:vapid-key' };
 
 export type WSServerMessage =
   | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[]; mergeGates?: MergeGate[] }
@@ -668,7 +672,9 @@ export type WSServerMessage =
   | { type: 'experimentRecord:updated'; experiment: ExperimentRecord }
   | { type: 'maintenance:config'; config: Record<string, unknown> }
   | { type: 'maintenance:log'; entries: unknown[] }
-  | { type: 'maintenance:triggered' };
+  | { type: 'maintenance:triggered' }
+  // Web Push
+  | { type: 'push:vapid-key'; key: string | null };
 
 export interface RepoInfo {
   name: string;
