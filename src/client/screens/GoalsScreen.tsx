@@ -1,12 +1,16 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../stores/store';
 import { GoalCard } from '../components/GoalCard';
 import { GoalCreateModal } from '../components/GoalCreateModal';
+import { GateSheet } from '../components/GateSheet';
 import type { WSClientMessage, Goal } from '../lib/types';
 import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { EmptyState } from '../components/EmptyState';
+import { useOnReconnect } from '../hooks/useReconnect';
+import { useGoalLogsPrefetch } from '../hooks/useGoalLogsPrefetch';
+import { MERGE_GATE_STATUS_VARIANT } from '../lib/ui-constants';
 
 interface Props {
   onSend: (msg: WSClientMessage) => void;
@@ -16,16 +20,35 @@ export function GoalsScreen({ onSend }: Props) {
   const goals = useStore((s) => s.goals);
   const repos = useStore((s) => s.repos);
   const agents = useStore((s) => s.agents);
-  const tasks = useStore((s) => s.tasks);
-  const goalLogs = useStore((s) => s.goalLogs);
+  const mergeGates = useStore((s) => s.mergeGates);
   const [showCreate, setShowCreate] = useState(false);
   const [editGoal, setEditGoal] = useState<Goal | null>(null);
+  const [selectedGateId, setSelectedGateId] = useState<string | null>(null);
 
   useEffect(() => {
     if (repos.length === 0) {
       onSend({ type: 'repos:list' });
     }
+    onSend({ type: 'mergeGate:list' });
   }, [repos.length, onSend]);
+
+  useOnReconnect(() => onSend({ type: 'mergeGate:list' }));
+
+  // Prefetch recent logs for active goals so collapsed budget bars are correct
+  // before a goal is expanded (KNOWN-ISSUES: budget reads $0 until first expand).
+  const activeGoalIds = useMemo(
+    () => goals.filter((g) => g.status === 'active').map((g) => g.id),
+    [goals]
+  );
+  useGoalLogsPrefetch(onSend, activeGoalIds);
+
+  // Gates that still need a human's eyes or are mid-flight (hide merged/terminal).
+  const openGates = useMemo(
+    () => mergeGates.filter((g) => g.status !== 'merged'),
+    [mergeGates]
+  );
+  const selectedGate = mergeGates.find((g) => g.id === selectedGateId) || null;
+  const goalName = (goalId: string) => goals.find((g) => g.id === goalId)?.name || 'goal';
 
   const proposedGoals = goals.filter((g) => g.proposal_status === 'pending');
   const activeGoals = goals.filter((g) => g.status === 'active' && g.proposal_status !== 'pending');
@@ -64,6 +87,31 @@ export function GoalsScreen({ onSend }: Props) {
           + New
         </Button>
       </div>
+
+      {/* Merges — active/approved/failed merge gates across goals */}
+      {openGates.length > 0 && (
+        <div className="mb-4">
+          <h2 className="text-xs font-semibold text-foreground mb-2 flex items-center gap-2">
+            Merges
+            <span className="text-[10px] text-muted-foreground">{openGates.length}</span>
+          </h2>
+          <div className="space-y-1.5">
+            {openGates.map((gate) => (
+              <Card
+                key={gate.id}
+                onClick={() => setSelectedGateId(gate.id)}
+                className="p-2.5 flex items-center gap-2 cursor-pointer hover:bg-secondary"
+              >
+                <Badge variant={MERGE_GATE_STATUS_VARIANT[gate.status]} className="text-[10px] shrink-0">
+                  {gate.status}
+                </Badge>
+                <span className="text-xs text-foreground truncate flex-1 min-w-0">{goalName(gate.goal_id)}</span>
+                <span className="text-[10px] text-muted-foreground font-mono shrink-0">→ {gate.target_branch}</span>
+              </Card>
+            ))}
+          </div>
+        </div>
+      )}
 
       {goals.length === 0 && proposedGoals.length === 0 ? (
         <EmptyState
@@ -143,6 +191,14 @@ export function GoalsScreen({ onSend }: Props) {
       )}
 
       {showCreate && <GoalCreateModal onSend={onSend} onClose={handleClose} editGoal={editGoal} />}
+      {selectedGate && (
+        <GateSheet
+          gate={selectedGate}
+          goalName={goalName(selectedGate.goal_id)}
+          onSend={onSend}
+          onClose={() => setSelectedGateId(null)}
+        />
+      )}
     </div>
   );
 }

@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import type { Goal, GoalLogEntry, MergeGate, WSClientMessage } from '../lib/types';
+import { useState } from 'react';
+import type { Goal, GoalLogEntry, Task, WSClientMessage } from '../lib/types';
 import { useStore } from '../stores/store';
 import { cn } from '@/lib/utils';
 import { formatCost } from '../lib/format';
@@ -8,6 +8,8 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Progress } from './ui/progress';
+import { GateSheet } from './GateSheet';
+import { AgentAssignSheet } from './AgentAssignSheet';
 
 const PRIORITY_LABELS: Record<number, { label: string; variant: 'destructive' | 'warning' | 'default' | 'muted' }> = {
   5: { label: 'P1', variant: 'destructive' },
@@ -42,6 +44,20 @@ const GATE_STATUS_LABEL: Record<string, { label: string; variant: 'default' | 's
   failed: { label: 'Failed', variant: 'destructive' },
 };
 
+const TASK_STATUS_ICON: Record<Task['status'], string> = {
+  todo: '○',        // ○
+  in_progress: '◔', // ◔
+  done: '✓',        // ✓
+  archived: '—',    // —
+};
+
+const TASK_STATUS_COLOR: Record<Task['status'], string> = {
+  todo: 'text-muted-foreground',
+  in_progress: 'text-warning',
+  done: 'text-success',
+  archived: 'text-muted-foreground',
+};
+
 function formatTime(iso: string): string {
   const d = new Date(iso);
   const now = Date.now();
@@ -58,6 +74,9 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
   const [targetDraft, setTargetDraft] = useState('');
+  const [showGate, setShowGate] = useState(false);
+  const [showAssign, setShowAssign] = useState(false);
+  const setActiveScreen = useStore((s) => s.setActiveScreen);
   const goalLogs = useStore((s) => s.goalLogs[goal.id] ?? EMPTY_LOGS);
   const goalStats = useStore((s) => s.goalStats[goal.id]);
   const agents = useStore((s) => s.agents);
@@ -191,15 +210,19 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
             {linkedTasks.length > 0 && <span>{doneTasks}/{linkedTasks.length} tasks done</span>}
             <span>{formatTime(goal.updated_at)}</span>
           </div>
-          {/* Merge gate status indicator */}
-          {gateStatus && (
-            <div className="flex items-center gap-2 mt-1.5">
+          {/* Merge gate status indicator — taps through to the gate sheet */}
+          {gateStatus && activeGate && (
+            <div
+              className="flex items-center gap-2 mt-1.5 cursor-pointer w-fit"
+              onClick={(e) => { e.stopPropagation(); setShowGate(true); }}
+            >
               <Badge variant={gateStatus.variant} className="text-[10px]">{gateStatus.label}</Badge>
-              {activeGate && activeGate.target_branch && (
+              {activeGate.target_branch && (
                 <span className="text-[10px] text-muted-foreground font-mono">
                   → {activeGate.target_branch}
                 </span>
               )}
+              <span className="text-[10px] text-primary">view →</span>
             </div>
           )}
           {linkedTasks.length > 0 && (
@@ -226,8 +249,11 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-medium text-muted-foreground">Activity Log</span>
             <div className="flex gap-1">
+              <Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); setShowAssign(true); }} className="text-[10px] h-6 px-2 text-primary">
+                Assign Agent
+              </Button>
               <Button variant="ghost" size="sm" onClick={handleAssignRepo} className="text-[10px] h-6 px-2 text-primary">
-                Assign Repo
+                Repo
               </Button>
               <Button variant="ghost" size="sm" onClick={handleEdit} className="text-[10px] h-6 px-2">
                 Edit
@@ -357,6 +383,38 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
             )}
           </div>
 
+          {/* Tasks (read-only; full editing on the Tasks screen) */}
+          {linkedTasks.length > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-medium text-muted-foreground">Tasks ({doneTasks}/{linkedTasks.length})</span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={(e) => { e.stopPropagation(); setActiveScreen('tasks'); }}
+                  className="text-[10px] h-6 px-2 text-primary"
+                >
+                  Open Tasks →
+                </Button>
+              </div>
+              <div className="space-y-1 max-h-40 overflow-y-auto">
+                {(linkedTasks as Task[]).map((t) => (
+                  <div key={t.id} className="flex items-start gap-2 text-xs">
+                    <span className={cn('mt-0.5 shrink-0', TASK_STATUS_COLOR[t.status])}>{TASK_STATUS_ICON[t.status]}</span>
+                    <div className="flex-1 min-w-0">
+                      <div className={cn('truncate', t.status === 'done' ? 'text-muted-foreground line-through' : 'text-foreground')}>
+                        {t.title}
+                      </div>
+                      {t.done_when && (
+                        <div className="text-[10px] text-muted-foreground truncate">DONE_WHEN: {t.done_when}</div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Activity log */}
           {goalLogs.length === 0 ? (
             <p className="text-xs text-muted-foreground italic">No activity yet</p>
@@ -378,6 +436,13 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
             </div>
           )}
         </CardContent>
+      )}
+
+      {showGate && activeGate && (
+        <GateSheet gate={activeGate} goalName={goal.name} onSend={onSend} onClose={() => setShowGate(false)} />
+      )}
+      {showAssign && (
+        <AgentAssignSheet goal={goal} onSend={onSend} onClose={() => setShowAssign(false)} />
       )}
     </Card>
   );
