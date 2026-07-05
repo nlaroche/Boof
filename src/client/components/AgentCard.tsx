@@ -1,11 +1,15 @@
-import type { Agent, Command, Goal } from '../lib/types';
-import { timeAgo } from '../lib/format';
+import type { Agent, Command, Goal, WSClientMessage } from '../lib/types';
+import { timeAgo, formatDuration } from '../lib/format';
 import { useStore } from '../stores/store';
+import { useNow } from '../hooks/useNow';
 import { AGENT_STATUS_COLORS, AGENT_STATUS_LABELS, getPortrait, XpBar } from './AgentWidget';
 import { Card } from './ui/card';
 import { Badge } from './ui/badge';
+import { Button } from './ui/button';
 
-export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: Command }) {
+const STALE_MS = 15 * 60 * 1000;
+
+export function AgentCard({ agent, lastCommand, onSend }: { agent: Agent; lastCommand?: Command; onSend?: (msg: WSClientMessage) => void }) {
   const setActiveScreen = useStore((s) => s.setActiveScreen);
   const setSelectedAgentId = useStore((s) => s.setSelectedAgentId);
   const goals = useStore((s) => s.goals);
@@ -21,6 +25,19 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
 
   const summaryLine = lastCommand?.summary?.split('\n')[0] || '';
   const isRunning = agent.status === 'running';
+
+  // Elapsed time on the running command — ticks live, ambers past 15 min.
+  const runningStartedAt = isRunning && lastCommand?.status === 'running' ? lastCommand.started_at : null;
+  const now = useNow(!!runningStartedAt);
+  const elapsedMs = runningStartedAt ? now - new Date(runningStartedAt).getTime() : 0;
+  const isStale = elapsedMs > STALE_MS;
+
+  const handleStop = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onSend && confirm(`Stop ${agent.name}?`)) {
+      onSend({ type: 'agent:interrupt', agentId: agent.id });
+    }
+  };
 
   return (
     <Card
@@ -38,9 +55,23 @@ export function AgentCard({ agent, lastCommand }: { agent: Agent; lastCommand?: 
           <div className="flex items-center gap-2 mb-0.5">
             <span className="font-medium text-sm text-foreground truncate">{agent.name}</span>
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${AGENT_STATUS_COLORS[agent.status]} ${isRunning ? 'animate-pulse' : ''}`} />
-            <span className="text-[10px] text-muted-foreground shrink-0">
-              {isRunning ? 'working' : timeAgo(agent.last_activity)}
+            <span className={`text-[10px] shrink-0 ${isStale ? 'text-warning font-medium' : 'text-muted-foreground'}`}>
+              {isRunning
+                ? runningStartedAt
+                  ? `Working… ${formatDuration(elapsedMs)}`
+                  : 'working'
+                : timeAgo(agent.last_activity)}
             </span>
+            {isRunning && onSend && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleStop}
+                className="ml-auto text-[10px] h-5 px-1.5 text-destructive hover:text-destructive shrink-0"
+              >
+                Stop
+              </Button>
+            )}
           </div>
 
           {/* Current goal */}

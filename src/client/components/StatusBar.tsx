@@ -1,4 +1,6 @@
 import { useStore } from '../stores/store';
+import { formatCost } from '../lib/format';
+import { NotificationToggle } from './NotificationToggle';
 
 interface Props {
   connected: boolean;
@@ -6,6 +8,7 @@ interface Props {
 
 export function StatusBar({ connected }: Props) {
   const agents = useStore((s) => s.agents);
+  const globalStats = useStore((s) => s.globalStats);
   const runningCount = agents.filter((a) => a.status === 'running').length;
   const errorCount = agents.filter((a) => a.status === 'error').length;
 
@@ -36,7 +39,16 @@ export function StatusBar({ connected }: Props) {
         )}
       </div>
 
+      {/* Cost today */}
+      {globalStats && globalStats.costTodayUsd > 0 && (
+        <span className="font-mono" title="Estimated spend today">
+          {formatCost(globalStats.costTodayUsd)} today
+        </span>
+      )}
+
       <div className="flex-1" />
+
+      <NotificationToggle className="mr-1" />
 
       {/* Keyboard shortcut hint */}
       <span className="text-muted-foreground/50 hidden xl:inline">

@@ -49,7 +49,7 @@ function ScreenRouter({ send, onSendToAgent, isDesktop }: { send: (msg: any) => 
     case 'home':
       return isDesktop
         ? <DashboardScreen onSend={send} onSendToAgent={onSendToAgent} />
-        : <HomeScreen onSendToAgent={onSendToAgent} />;
+        : <HomeScreen onSend={send} onSendToAgent={onSendToAgent} />;
     case 'dashboard':
       return <DashboardScreen onSend={send} onSendToAgent={onSendToAgent} />;
     case 'goals':
@@ -78,7 +78,7 @@ function ScreenRouter({ send, onSendToAgent, isDesktop }: { send: (msg: any) => 
     case 'analytics':
       return <AnalyticsScreen onSend={send} />;
     default:
-      return <HomeScreen onSendToAgent={onSendToAgent} />;
+      return <HomeScreen onSend={send} onSendToAgent={onSendToAgent} />;
   }
 }
 

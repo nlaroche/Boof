@@ -1,9 +1,11 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useStore } from '../stores/store';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { EmptyState } from '../components/EmptyState';
+import { SkeletonList } from '../components/Skeletons';
 import { REVIEW_SEVERITY_VARIANT } from '../lib/ui-constants';
+import { useOnReconnect } from '../hooks/useReconnect';
 import type { WSClientMessage, ReviewFinding } from '../lib/types';
 
 interface Props {
@@ -12,10 +14,26 @@ interface Props {
 
 export function ReviewsScreen({ onSend }: Props) {
   const reviewFindings = useStore((s) => s.reviewFindings);
+  const mergeGates = useStore((s) => s.mergeGates);
+  const loading = useStore((s) => s.loading.reviews);
   const allFindings = Object.values(reviewFindings).flat();
   const [showResolved, setShowResolved] = useState(false);
   const [filterSeverity, setFilterSeverity] = useState<string | null>(null);
   const [filterCategory, setFilterCategory] = useState<string | null>(null);
+
+  // Findings are keyed by merge gate, so load the gate list first...
+  useEffect(() => {
+    onSend({ type: 'mergeGate:list' });
+  }, [onSend]);
+  useOnReconnect(() => onSend({ type: 'mergeGate:list' }));
+
+  // ...then fetch findings for each known gate. Resolves update in place via
+  // the `reviewFinding:updated` broadcast handled in the WS store.
+  useEffect(() => {
+    for (const gate of mergeGates) {
+      onSend({ type: 'reviewFindings:list', mergeGateId: gate.id });
+    }
+  }, [mergeGates, onSend]);
 
   const { severities, categories } = useMemo(() => ({
     severities: [...new Set(allFindings.map(f => f.severity))],
@@ -33,11 +51,15 @@ export function ReviewsScreen({ onSend }: Props) {
     return (
       <div className="p-6">
         <h1 className="text-xl font-bold text-foreground mb-6">Reviews</h1>
-        <EmptyState
-          icon="!!"
-          title="No review findings"
-          description="Review findings appear when the review agent analyzes consolidated branches."
-        />
+        {loading ? (
+          <SkeletonList count={3} />
+        ) : (
+          <EmptyState
+            icon="!!"
+            title="No review findings"
+            description="Review findings appear when the review agent analyzes consolidated branches."
+          />
+        )}
       </div>
     );
   }

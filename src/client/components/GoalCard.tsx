@@ -156,6 +156,12 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
   const taskPct = linkedTasks.length > 0 ? Math.round((doneTasks / linkedTasks.length) * 100) : 0;
   const allTasksDone = linkedTasks.length > 0 && doneTasks === linkedTasks.length;
 
+  // Budget progress (shown on the collapsed card when a cap is set).
+  const budgetCap = goal.budget_cap_usd || 0;
+  const spent = budgetCap > 0 ? goalLogs.reduce((sum, l) => sum + (l.cost_usd || 0), 0) : 0;
+  const budgetPct = budgetCap > 0 ? Math.min(100, Math.round((spent / budgetCap) * 100)) : 0;
+  const overBudget = budgetCap > 0 && spent > budgetCap;
+
   return (
     <Card className="overflow-hidden">
       <div className="p-3 flex items-start gap-3 cursor-pointer" onClick={handleExpand}>
@@ -198,6 +204,17 @@ export function GoalCard({ goal, onSend, onEdit }: Props) {
           )}
           {linkedTasks.length > 0 && (
             <Progress value={taskPct} className="mt-2 h-1" />
+          )}
+          {budgetCap > 0 && (
+            <div className="mt-1.5">
+              <div className="flex items-center justify-between text-[10px] mb-0.5">
+                <span className="text-muted-foreground">Budget</span>
+                <span className={cn('font-mono', overBudget ? 'text-destructive' : 'text-muted-foreground')}>
+                  {formatCost(spent)} / {formatCost(budgetCap)}
+                </span>
+              </div>
+              <Progress value={budgetPct} className={cn('h-1', overBudget && '[&>*]:bg-destructive')} />
+            </div>
           )}
         </div>
         <span className="text-muted-foreground text-xs mt-1">{expanded ? '\u25B2' : '\u25BC'}</span>

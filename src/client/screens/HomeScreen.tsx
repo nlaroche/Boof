@@ -1,9 +1,13 @@
 import { useStore } from '../stores/store';
 import { AgentCard } from '../components/AgentCard';
+import { NeedsAttention } from '../components/NeedsAttention';
+import { NotificationToggle } from '../components/NotificationToggle';
 import { Button } from '../components/ui/button';
-import type { Agent, Command } from '../lib/types';
+import { formatCost } from '../lib/format';
+import type { Agent, Command, WSClientMessage } from '../lib/types';
 
 interface Props {
+  onSend: (msg: WSClientMessage) => void;
   onSendToAgent: (agentId: string, prompt: string) => void;
 }
 
@@ -29,9 +33,10 @@ function getLastCommand(agentId: string, commands: Command[]): Command | undefin
     .sort((a, b) => new Date(b.started_at).getTime() - new Date(a.started_at).getTime())[0];
 }
 
-export function HomeScreen({ onSendToAgent }: Props) {
+export function HomeScreen({ onSend, onSendToAgent }: Props) {
   const agents = useStore((s) => s.agents);
   const commands = useStore((s) => s.commands);
+  const globalStats = useStore((s) => s.globalStats);
   const setActiveScreen = useStore((s) => s.setActiveScreen);
 
   const sorted = sortAgents(agents);
@@ -39,13 +44,27 @@ export function HomeScreen({ onSendToAgent }: Props) {
   return (
     <div className="min-h-full pb-20">
       <div className="p-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-foreground">Boof</h1>
-        <Button
-          onClick={() => setActiveScreen('agents')}
-          size="sm"
-        >
-          + Agent
-        </Button>
+        <div className="flex items-baseline gap-2">
+          <h1 className="text-2xl font-bold text-foreground">Boof</h1>
+          {globalStats && globalStats.costTodayUsd > 0 && (
+            <span className="text-xs text-muted-foreground font-mono">
+              {formatCost(globalStats.costTodayUsd)} today
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-3">
+          <NotificationToggle />
+          <Button
+            onClick={() => setActiveScreen('agents')}
+            size="sm"
+          >
+            + Agent
+          </Button>
+        </div>
+      </div>
+
+      <div className="px-3 mb-2">
+        <NeedsAttention onSend={onSend} />
       </div>
 
       {sorted.length > 0 ? (
@@ -55,6 +74,7 @@ export function HomeScreen({ onSendToAgent }: Props) {
               key={agent.id}
               agent={agent}
               lastCommand={getLastCommand(agent.id, commands)}
+              onSend={onSend}
             />
           ))}
         </div>
