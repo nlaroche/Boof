@@ -24,7 +24,8 @@ import {
   listGoalLog, listAgentCommands, listAgentActivity,
   listGuidelines as dbListGuidelines, updateGuidelineStatus, updateGuideline,
   createGuideline, deleteGuideline as dbDeleteGuideline, approveAllGuidelines,
-  listMergeGates, getMergeGate, getReviewFindings, resolveReviewFinding, getReviewConfig, upsertReviewConfig,
+  listMergeGates, getMergeGate, listActiveMergeGates, getReviewFindings, getReviewFinding, resolveReviewFinding, getReviewConfig, upsertReviewConfig,
+  getCostTodayUsd,
   listAuditRecords, listAgentPatterns, listAgentFixes,
   listAllTaskResearch, listExperimentRecords, getExperimentRuns,
 } from './db-helpers.js';
@@ -47,10 +48,10 @@ import {
   parseCommand, parseCommands,
   appendAgentOutput, clearAgentOutput, getAgentOutputBuffer,
   setCurrentCommandId, getCurrentCommandId, clearCurrentCommandId,
-  setRunningImprovement, initCommandMachine,
+  setRunningImprovement, initCommandMachine, markCommandInterrupted,
   createOutputHandler, createExitHandler, createSimpleExitHandler,
 } from './systems/command-lifecycle.js';
-import { Paths, Timeouts, AgentStatus } from './engine/constants.js';
+import { Paths, Timeouts, AgentStatus, MergeGateStatus } from './engine/constants.js';
 import { bus } from './engine/event-bus.js';
 import { getMaintenanceConfig, updateMaintenanceConfig, getMaintenanceLog, runMaintenance } from './systems/maintenance.js';
 
@@ -104,12 +105,24 @@ export function addClientForTest(ws: WebSocket): () => void {
 }
 
 export function handleWsMessage(ws: WebSocket, data: string): void {
+  let message: WSClientMessage;
   try {
-    const message = JSON.parse(data) as WSClientMessage;
-    handleMessage(ws, message);
+    message = JSON.parse(data) as WSClientMessage;
   } catch (error) {
     console.error('Failed to parse WebSocket message:', error);
+    return;
   }
+  // H7: catch async rejections from the router so one bad message can never
+  // crash the process. Log it and tell the client instead of dying.
+  handleMessage(ws, message).catch((error) => {
+    console.error(`Error handling WS message "${message.type}":`, error);
+    send(ws, {
+      type: 'notify',
+      agentId: '',
+      title: 'Server error',
+      body: `Failed to handle "${message.type}": ${error?.message || error}`,
+    });
+  });
 }
 
 // ── Message Router ──
@@ -264,6 +277,9 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
     }
 
     case 'agent:interrupt':
+      // M2: mark as user-interrupted BEFORE killing so the exit handler
+      // finalizes the command as stopped/failed without triggering auto-retry.
+      markCommandInterrupted(message.agentId);
       interruptAgent(message.agentId);
       break;
 
@@ -347,7 +363,10 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
     }
 
     case 'agent:autopilot:trigger':
-      triggerAutopilotRun(message.agentId);
+      // Fire-and-forget — never let a rejection become an unhandled crash (H7).
+      triggerAutopilotRun(message.agentId).catch((err) => {
+        console.error(`[ws] triggerAutopilotRun failed for ${message.agentId}:`, err);
+      });
       break;
 
     case 'agent:self-improve': {
@@ -414,7 +433,9 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
         const agentData = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [agentId]);
         if (agentData && agentData.status === AgentStatus.IDLE) {
           const prompt = `Self-improvement task: ${imp.description}\n\nMake minimal, focused changes. Run the build to verify.`;
-          handleMessage(ws, { type: 'agent:send', agentId, prompt });
+          handleMessage(ws, { type: 'agent:send', agentId, prompt }).catch((err) => {
+            console.error('[ws] improvement:execute → agent:send failed:', err);
+          });
         }
       }
       break;
@@ -535,7 +556,9 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       break;
 
     case 'global:stats':
-      send(ws, { type: 'global:stats:result', stats: getGlobalStats() });
+      // Attach today's real spend (M1 / WS contract b). getGlobalStats lives in
+      // self-improve; compute costTodayUsd here and merge it in.
+      send(ws, { type: 'global:stats:result', stats: { ...getGlobalStats(), costTodayUsd: getCostTodayUsd() } });
       break;
 
     case 'global:learnings':
@@ -674,7 +697,20 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
     }
 
     case 'mergeGate:merge': {
-      const { mergeGateId } = message as any;
+      const { mergeGateId, force } = message as any;
+      const gate = getMergeGate(mergeGateId);
+      if (!gate) break;
+      // Manual override is allowed, but refuse to bypass review/tests unless the
+      // gate is at least `approved` or the caller explicitly forces it (Low fix).
+      if (gate.status !== MergeGateStatus.APPROVED && !force) {
+        broadcast({
+          type: 'notify',
+          agentId: gate.review_agent_id || '',
+          title: 'Merge refused',
+          body: `Gate is "${gate.status}", not approved. Pass force:true to override review/tests.`,
+        });
+        break;
+      }
       await executeFinalMerge(mergeGateId, (g: MergeGate) => broadcast({ type: 'mergeGate:updated', gate: g } as any));
       break;
     }
@@ -697,7 +733,10 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
     case 'reviewFindings:resolve': {
       const { findingId, resolvedBy } = message as any;
       resolveReviewFinding(findingId, resolvedBy);
-      // Re-fetch to get the updated finding
+      // Re-fetch and broadcast the updated finding so the Reviews screen updates
+      // live instead of showing stale data (WS contract c).
+      const updated = getReviewFinding(findingId);
+      if (updated) broadcast({ type: 'reviewFinding:updated', finding: updated });
       break;
     }
 
@@ -825,7 +864,10 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       const workflows = listWorkflows();
       const projects = listProjects();
       const recentCommands = listCommands(100);
-      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, projects, commands: parseCommands(recentCommands) });
+      // WS contract a: include non-terminal + recently-updated merge gates so the
+      // client can hydrate the pipeline without a separate round-trip.
+      const mergeGates = listActiveMergeGates();
+      send(ws, { type: 'sync:state', folders, tasks, agents, goals, workflows, projects, commands: parseCommands(recentCommands), mergeGates });
 
       // Replay buffered output for all agents
       for (const agent of agents) {
