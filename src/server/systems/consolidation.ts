@@ -14,8 +14,7 @@ import { createMergeGateMachineDef } from '../machines/merge-gate-machine.js';
 import type { MergeGateState, MergeGateEvent, MergeGateContext } from '../machines/merge-gate-machine.js';
 import {
   createMergeGate, getMergeGate, getMergeGateForGoal, updateMergeGate,
-  getReviewConfig, getAll, getOne, generateId, getNow,
-  getUnresolvedFindings,
+  getAll, getOne, getNow,
 } from '../db-helpers.js';
 import {
   createGoalBranch, mergeToGoalBranch, mergeGoalToTarget,
@@ -23,30 +22,109 @@ import {
 } from './git-ops.js';
 import {
   getOrDiscoverReviewConfig, buildReviewPrompt, parseReviewOutput,
-  storeReviewFindings, buildRevisionPrompt,
+  storeReviewFindings,
 } from './review-agent.js';
-import { appendAuditRecord, verifyAuditChain } from './audit-trail.js';
-import { healMergeConflict, buildTestFixPrompt, classifyFailure, shouldEscalate } from './self-heal.js';
+import { appendAuditRecord } from './audit-trail.js';
 import { AuditActionType, AuditOutcome } from '../engine/constants.js';
 import { createAgent, sendToAgent, hasAgent, killAgent } from '../pty-manager.js';
-import { getProvider, getModelForRole } from '../agent-providers.js';
+import { getModelForRole } from '../agent-providers.js';
 import { AgentRole } from '../engine/constants.js';
+import { getBroadcast } from '../ws-handler.js';
 import type { Goal, Task, MergeGate } from '../../client/lib/types.js';
+
+/**
+ * Fire a user-facing notification (budget/failure alerts). Uses the global
+ * broadcast (same pattern as maintenance.ts) rather than the gate-typed
+ * broadcast callback, so it works from any code path.
+ */
+function notifyFailure(title: string, body: string): void {
+  try {
+    const broadcast = getBroadcast();
+    if (broadcast) broadcast({ type: 'notify', agentId: 'system', title, body } as any);
+  } catch (e: any) {
+    console.error(`[consolidation] notify failed: ${e.message || e}`);
+  }
+}
 
 // Active merge gate state machines
 const activeMergeGates = new Map<string, StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>>();
 
 /**
  * Get or create the merge gate state machine for a given merge gate.
+ *
+ * C2-persistence: machines are in-memory only. After a restart (or first access
+ * from a non-initiating code path) we rebuild the machine from the gate's
+ * persisted DB status so FSM guards (max review cycles / heal attempts) keep
+ * applying instead of silently resetting to `pending`.
  */
 function getMergeGateMachine(mergeGateId: string, ctx?: Partial<MergeGateContext>) {
   let machine = activeMergeGates.get(mergeGateId);
   if (!machine) {
     const def = createMergeGateMachineDef(ctx);
     machine = new StateMachine<MergeGateState, MergeGateEvent, MergeGateContext>(def);
+
+    // Restore persisted state so guards survive restarts. MergeGate.status and
+    // MergeGateState share the same string values, so the mapping is identity.
+    const gate = getMergeGate(mergeGateId);
+    if (gate && gate.status && gate.status !== 'pending') {
+      machine.restore({
+        machineId: def.id,
+        state: gate.status as MergeGateState,
+        context: {
+          ...machine.context,
+          ...ctx,
+          mergeGateId,
+          goalId: gate.goal_id,
+          goalBranchName: gate.goal_branch,
+          targetBranch: gate.target_branch,
+          repoPath: gate.repo_path,
+          reviewCycles: gate.review_cycles,
+          healAttempts: gate.heal_attempts,
+          reviewAgentId: gate.review_agent_id,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     activeMergeGates.set(mergeGateId, machine);
   }
   return machine;
+}
+
+/**
+ * Fail a merge gate loudly: drive the FSM to `failed`, audit, persist status,
+ * and notify. Used everywhere a safety check fails so gates never wedge or
+ * silently pass (C2/C3). The failure reason is persisted in `test_results`
+ * (no dedicated failure_reason column exists in the schema).
+ */
+function failGate(
+  mergeGateId: string,
+  reason: string,
+  broadcast: (gate: MergeGate) => void,
+  actionType: string = AuditActionType.ERROR,
+): void {
+  const gate = getMergeGate(mergeGateId);
+  if (!gate) return;
+
+  const machine = getMergeGateMachine(mergeGateId);
+  if (machine.state !== 'failed' && machine.state !== 'merged') {
+    const moved = machine.send('abort', { error: reason });
+    if (!moved) {
+      console.error(`[consolidation] failGate: FSM rejected 'abort' from state '${machine.state}' for gate ${mergeGateId}`);
+    }
+  }
+
+  appendAuditRecord({
+    agentId: 'system',
+    mergeGateId,
+    goalId: gate.goal_id,
+    actionType: actionType as any,
+    actionDetail: { reason },
+    outcome: AuditOutcome.FAILURE,
+  });
+
+  updateMergeGate(mergeGateId, { status: 'failed', test_results: JSON.stringify({ failureReason: reason }) }, broadcast);
+  notifyFailure('Merge gate failed', reason);
 }
 
 /**
@@ -123,23 +201,23 @@ export async function initiateConsolidation(
   machine.send('consolidate', { branches: taskBranches });
   updateMergeGate(gate.id, { status: 'consolidating' }, broadcast);
 
-  // Merge each task branch into goal branch
+  // Merge each task branch into goal branch.
+  // mergeToGoalBranch attempts self-heal on conflict internally (C4); a false
+  // result means the branch could NOT be consolidated (heal failed and the merge
+  // was aborted). We must fail the gate loudly rather than proceed without the
+  // branch's commits.
   let consolidationSuccess = true;
   let consolidationOutput = '';
+  let failedBranch: string | null = null;
 
   for (const branch of taskBranches) {
     const result = await mergeToGoalBranch(repoPath, branch, goalBranch);
     consolidationOutput += `${branch}: ${result.success ? 'OK' : 'FAILED'}\n${result.output}\n`;
 
     if (!result.success) {
-      // Attempt auto-heal for merge conflicts
-      const healResult = await healMergeConflict(repoPath, result.output);
-      if (!healResult.success) {
-        consolidationSuccess = false;
-        machine.send('conflict', { reason: `Merge conflict in ${branch}: ${result.output}` });
-        break;
-      }
-      consolidationOutput += `  → Auto-healed: ${healResult.description}\n`;
+      consolidationSuccess = false;
+      failedBranch = branch;
+      break;
     }
   }
 
@@ -172,6 +250,17 @@ export async function initiateConsolidation(
     executeReviewAgent(gate.id, goalId, repoPath, goalBranch, targetBranch, diff, broadcast)
       .catch(err => console.error(`[consolidation] Review execution error:`, err));
   } else {
+    // Consolidation failed and could not be auto-healed. Fail the gate loudly —
+    // never park it in `healing` (nothing drives that state → permanent wedge).
+    const failureReason = `Consolidation failed: could not merge task branch "${failedBranch}" into ${goalBranch} (merge conflict not auto-resolvable). Resolve manually or retry.`;
+    console.error(`[consolidation] ${failureReason}`);
+
+    machine.send('conflict', { reason: failureReason });
+    // `conflict` lands in `healing`, which has no runtime driver — force to failed.
+    if (machine.state === 'healing') {
+      machine.send('unrecoverable', { error: failureReason });
+    }
+
     appendAuditRecord({
       agentId: 'system',
       mergeGateId: gate.id,
@@ -180,13 +269,15 @@ export async function initiateConsolidation(
       actionDetail: {
         taskBranches,
         goalBranch,
+        failedBranch,
         output: consolidationOutput,
       },
       outcome: AuditOutcome.FAILURE,
       durationMs,
     });
 
-    updateMergeGate(gate.id, { status: 'healing' }, broadcast);
+    updateMergeGate(gate.id, { status: 'failed', test_results: JSON.stringify({ failureReason }) }, broadcast);
+    notifyFailure('Merge gate failed', failureReason);
   }
 
   return getMergeGate(gate.id);
@@ -243,13 +334,13 @@ async function executeReviewAgent(
   // Use a temporary agent ID for the review
   const reviewAgentId = `review-${mergeGateId.slice(0, 8)}`;
 
-  const reviewOutput = await new Promise<string>((resolve) => {
+  const review = await new Promise<{ output: string; code: number }>((resolve) => {
     let output = '';
 
     if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
 
     const handleOutput = (_id: string, chunk: string) => { output += chunk; };
-    const handleExit = (_id: string, _code: number) => { resolve(output); };
+    const handleExit = (_id: string, code: number) => { resolve({ output, code }); };
 
     // Use the review model from the agent's model_config, or fall back to claude-sonnet
     const agentRecord = getOne<{ model_config: string | null; agent_type: string }>('SELECT model_config, agent_type FROM agents WHERE autopilot_goal_id = ? OR id IN (SELECT agent_id FROM goal_log WHERE goal_id = ? LIMIT 1)', [goalId, goalId]);
@@ -264,8 +355,17 @@ async function executeReviewAgent(
   // Update the merge gate with the review agent ID
   updateMergeGate(mergeGateId, { review_agent_id: reviewAgentId }, broadcast);
 
+  // Fail closed (C3): a crashed/unauthenticated review (non-zero exit) or empty
+  // output must NOT be treated as approval. Fail the gate loudly.
+  if (review.code !== 0 || review.output.trim().length === 0) {
+    const failureReason = `Review agent produced no usable result (exit code ${review.code}, ${review.output.trim().length} chars). Not auto-approving — re-run the review or check the review agent is authenticated.`;
+    console.error(`[consolidation] ${failureReason}`);
+    failGate(mergeGateId, failureReason, broadcast, AuditActionType.REVIEW);
+    return;
+  }
+
   // Process the review results
-  const result = processReviewResults(mergeGateId, reviewOutput, broadcast);
+  const result = processReviewResults(mergeGateId, review.output, broadcast);
   console.log(`[consolidation] Review verdict: ${result.verdict} (score: ${result.score}, findings: ${result.findingCount})`);
 
   // If approved → run tests → auto-merge
@@ -336,29 +436,47 @@ export function processReviewResults(
     confidence: parsed.score / 100,
   });
 
-  // Transition state machine
+  // Transition state machine. We CHECK send() return values (C2-persistence):
+  // if a transition is rejected we log and do not write a contradictory status.
+  const verdictPayload = { verdict: { score: parsed.score, verdict: parsed.verdict, summary: parsed.summary } };
   if (parsed.verdict === 'approve') {
-    machine.send('approved', { verdict: { score: parsed.score, verdict: parsed.verdict, summary: parsed.summary } });
-    updateMergeGate(mergeGateId, {
-      status: 'testing',
-      review_verdict: verdictJson,
-      review_cycles: gate.review_cycles + 1,
-    }, broadcast);
+    const moved = machine.send('approved', verdictPayload);
+    if (!moved) {
+      console.error(`[consolidation] FSM rejected 'approved' from state '${machine.state}' for gate ${mergeGateId} — not writing 'testing'`);
+    } else {
+      updateMergeGate(mergeGateId, {
+        status: 'testing',
+        review_verdict: verdictJson,
+        review_cycles: gate.review_cycles + 1,
+      }, broadcast);
+    }
   } else if (parsed.verdict === 'changes_requested') {
-    machine.send('changes_requested', { verdict: { score: parsed.score, verdict: parsed.verdict, summary: parsed.summary } });
-    const newStatus = machine.state === 'failed' ? 'failed' : 'revising';
+    // There is no automated revision loop wired up (completeRevision has no
+    // runtime driver), so parking in `revising` would wedge the gate forever.
+    // Fail closed (C2): drive to `failed` with an actionable reason.
+    machine.send('changes_requested', verdictPayload);
+    if (machine.state === 'revising') {
+      machine.send('abort', { error: 'changes requested (no automated revision loop)' });
+    }
+    const reason = `Review requested changes (score ${parsed.score}): ${parsed.summary || 'see findings'} — no automated revision loop; fix manually or retry.`;
+    console.error(`[consolidation] ${reason}`);
     updateMergeGate(mergeGateId, {
-      status: newStatus,
+      status: 'failed',
       review_verdict: verdictJson,
       review_cycles: gate.review_cycles + 1,
+      test_results: JSON.stringify({ failureReason: reason }),
     }, broadcast);
+    notifyFailure('Merge gate failed', reason);
   } else {
-    machine.send('rejected', { verdict: { score: parsed.score, verdict: parsed.verdict, summary: parsed.summary } });
+    machine.send('rejected', verdictPayload);
+    const reason = `Review rejected (score ${parsed.score}): ${parsed.summary || 'see findings'} — escalated to human.`;
+    console.error(`[consolidation] ${reason}`);
     updateMergeGate(mergeGateId, {
       status: 'failed',
       review_verdict: verdictJson,
       review_cycles: gate.review_cycles + 1,
     }, broadcast);
+    notifyFailure('Merge gate failed', reason);
   }
 
   return {
@@ -398,24 +516,46 @@ export function processTestResults(
   });
 
   if (success) {
-    machine.send('tests_passed', { results });
+    const moved = machine.send('tests_passed', { results });
+    if (!moved) {
+      console.error(`[consolidation] FSM rejected 'tests_passed' from state '${machine.state}' for gate ${mergeGateId} — not writing 'approved'`);
+      return;
+    }
     updateMergeGate(mergeGateId, {
       status: 'approved',
       test_results: JSON.stringify(results),
     }, broadcast);
   } else {
+    // No automated test-heal loop is wired (recordHealSuccess has no runtime
+    // driver), so parking in `healing` would wedge the gate forever. Fail closed
+    // (C2): drive to `failed` with an actionable reason.
     machine.send('tests_failed', { results });
-    const newStatus = machine.state === 'failed' ? 'failed' : 'healing';
+    if (machine.state === 'healing') {
+      machine.send('unrecoverable', { error: 'tests failed (no automated heal loop)' });
+    }
+    const summary = failures.slice(0, 3).join('; ') || output.slice(-300);
+    const reason = `Tests failed: ${summary} — no automated heal loop; fix manually or retry.`;
+    console.error(`[consolidation] ${reason}`);
     updateMergeGate(mergeGateId, {
-      status: newStatus,
-      test_results: JSON.stringify(results),
-      heal_attempts: gate.heal_attempts + (newStatus === 'healing' ? 0 : 0),
+      status: 'failed',
+      test_results: JSON.stringify({ ...results, failureReason: reason }),
     }, broadcast);
+    notifyFailure('Merge gate failed', reason);
   }
 }
 
+// ── Future revision/heal-loop hooks ────────────────────────────────────────
+//
+// recordHealSuccess / recordHealFailure / completeRevision are the intended
+// drivers for the `healing` and `revising` FSM states. They are NOT wired into
+// any runtime path yet (an automated heal/revision loop requires spawning a
+// fix-up agent, which is future work). Until then, the runtime fails closed to
+// `failed` instead of parking a gate in a state nothing drives (C2). These
+// functions are kept intact so the loop can be enabled later without redesign.
+
 /**
  * Record a successful heal attempt and transition back to testing.
+ * (Future revision-loop hook — see note above; no runtime caller yet.)
  */
 export function recordHealSuccess(
   mergeGateId: string,
@@ -483,7 +623,11 @@ export async function executeFinalMerge(
   if (!gate) throw new Error(`Merge gate not found: ${mergeGateId}`);
 
   const machine = getMergeGateMachine(mergeGateId);
-  machine.send('merge');
+  const started = machine.send('merge');
+  if (!started) {
+    console.error(`[consolidation] FSM rejected 'merge' from state '${machine.state}' for gate ${mergeGateId} — refusing final merge`);
+    return false;
+  }
   updateMergeGate(mergeGateId, { status: 'merging' }, broadcast);
 
   const startTime = Date.now();
@@ -514,9 +658,18 @@ export async function executeFinalMerge(
     activeMergeGates.delete(mergeGateId);
     return true;
   } else {
+    // Final merge to the target branch conflicted. No automated heal loop drives
+    // `healing`, so fail closed (C2) with an actionable reason.
     machine.send('merge_conflict', { error: result.output });
-    const newStatus = machine.state === 'failed' ? 'failed' : 'healing';
-    updateMergeGate(mergeGateId, { status: newStatus }, broadcast);
+    if (machine.state === 'healing') {
+      machine.send('unrecoverable', { error: 'final merge conflict (no automated heal loop)' });
+    }
+    const reason = `Final merge of ${gate.goal_branch} → ${gate.target_branch} conflicted — resolve manually or retry. ${result.output.slice(0, 300)}`;
+    console.error(`[consolidation] ${reason}`);
+    updateMergeGate(mergeGateId, {
+      status: 'failed',
+      test_results: JSON.stringify({ failureReason: reason }),
+    }, broadcast);
 
     appendAuditRecord({
       agentId: 'system',
@@ -533,6 +686,7 @@ export async function executeFinalMerge(
       durationMs,
     });
 
+    notifyFailure('Merge gate failed', reason);
     return false;
   }
 }

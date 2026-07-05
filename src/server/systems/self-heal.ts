@@ -39,7 +39,15 @@ export async function healMergeConflict(
     const conflictedFiles = statusOut.split('\n').filter(Boolean);
 
     if (conflictedFiles.length === 0) {
-      return { success: true, description: 'No conflicts found', output: '' };
+      // C4: we are only called after a merge FAILED. No conflicted files means
+      // the failure was not a resolvable merge conflict (or the merge was
+      // already aborted) — do NOT report success, or the caller would proceed as
+      // if the branch merged and silently drop its work.
+      return {
+        success: false,
+        description: 'No conflicted files present to heal — merge failure is not an auto-resolvable conflict',
+        output: '',
+      };
     }
 
     // For each conflicted file, try to resolve using --theirs (accept incoming changes)

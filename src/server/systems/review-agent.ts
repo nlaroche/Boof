@@ -875,8 +875,11 @@ const VALID_CATEGORIES = new Set(['bug', 'security', 'performance', 'style', 'ar
  */
 export function parseReviewOutput(output: string): ParsedReviewResult {
   const findings: ParsedReviewResult['findings'] = [];
-  let verdict: ParsedReviewResult['verdict'] = 'approve';
-  let score = 100;
+  // Fail closed (C3): if the review output has no parseable VERDICT line, we must
+  // NOT auto-approve. Default to changes_requested / score 0 until an explicit
+  // approval is parsed from the agent's output.
+  let verdict: ParsedReviewResult['verdict'] = 'changes_requested';
+  let score = 0;
   let summary = '';
 
   // Parse findings
@@ -930,6 +933,24 @@ export function parseReviewOutput(output: string): ParsedReviewResult {
   const summaryMatch = output.match(/^SUMMARY:\s*(.+)/m);
   if (summaryMatch) {
     summary = summaryMatch[1].trim();
+  }
+
+  // Fail closed (C3): a review with no parseable VERDICT is treated as
+  // changes_requested, never an approval. Surface it as a finding + summary so
+  // the reason is visible in the UI and audit trail.
+  if (!verdictMatch) {
+    verdict = 'changes_requested';
+    if (!scoreMatch) score = 0;
+    if (!summary) summary = 'review output unparseable — no VERDICT line found';
+    findings.push({
+      severity: 'critical',
+      filePath: '(review)',
+      lineStart: null,
+      lineEnd: null,
+      category: 'bug',
+      description: 'Review output could not be parsed (no VERDICT line). Failing closed — not auto-approving.',
+      suggestion: 'Re-run the review; check the review agent authenticated and produced the required VERDICT/SCORE/SUMMARY block.',
+    });
   }
 
   return { findings, verdict, score, summary };
