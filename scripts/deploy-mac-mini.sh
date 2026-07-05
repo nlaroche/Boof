@@ -84,6 +84,14 @@ if ! npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund 2>&1 |
   exit 1
 fi
 
+# Build the client — the launchd service runs the server via tsx (no build needed),
+# but the PWA is served from dist/client and goes stale without this step.
+echo "[remote] Building client (vite)..."
+if ! node node_modules/vite/bin/vite.js build 2>&1 | tail -8; then
+  echo "[remote] ✗ vite build failed"
+  exit 1
+fi
+
 echo "[remote] Restarting launchd service $LABEL..."
 launchctl unload "$PLIST" 2>/dev/null || true
 sleep 1
