@@ -19,7 +19,10 @@ import {
 import {
   createGoalBranch, mergeToGoalBranch, mergeGoalToTarget,
   getConsolidatedDiff, getGoalBranchFiles, listAgentBranches, getDefaultBranch,
+  createWorktree, removeWorktree,
 } from './git-ops.js';
+import { execFileSync } from 'child_process';
+import { Timeouts } from '../engine/constants.js';
 import {
   getOrDiscoverReviewConfig, buildReviewPrompt, parseReviewOutput,
   storeReviewFindings,
@@ -288,6 +291,29 @@ export async function initiateConsolidation(
  * Called after the review agent completes its analysis.
  */
 /**
+ * Prepare an isolated, disposable worktree for the review agent, checked out
+ * (detached) at the goal branch's tip. The review agent runs with
+ * `--dangerously-skip-permissions`, so it must NOT run in the user's shared
+ * working tree (Task 3). Returns the worktree path, or null to signal the
+ * caller should fall back to the shared repo (review still runs, just not
+ * isolated) rather than skip review entirely.
+ */
+function prepareReviewerWorktree(repoPath: string, goalBranch: string, mergeGateId: string): string | null {
+  try {
+    const worktreePath = createWorktree(repoPath, 'reviewer', mergeGateId);
+    if (!worktreePath) return null;
+    // Point the detached worktree at the goal branch's state to be reviewed.
+    execFileSync('git', ['-C', worktreePath, 'checkout', '--detach', goalBranch], {
+      timeout: Timeouts.GIT_CHECKOUT,
+    });
+    return worktreePath;
+  } catch (err: any) {
+    console.error(`[consolidation] Failed to prepare reviewer worktree: ${err.message || err}`);
+    return null;
+  }
+}
+
+/**
  * Spawn a review agent to analyze the consolidated diff.
  * Uses a temporary agent with the review prompt built from
  * approved guidelines. Parses the output and calls processReviewResults.
@@ -334,23 +360,36 @@ async function executeReviewAgent(
   // Use a temporary agent ID for the review
   const reviewAgentId = `review-${mergeGateId.slice(0, 8)}`;
 
-  const review = await new Promise<{ output: string; code: number }>((resolve) => {
-    let output = '';
+  // Task 3: run the review agent in a dedicated worktree checked out at the
+  // goal branch, never in the user's shared tree. Fall back to the shared repo
+  // only if the worktree can't be prepared (review must still run).
+  const reviewWorktree = prepareReviewerWorktree(repoPath, goalBranch, mergeGateId);
+  const reviewCwd = reviewWorktree || repoPath;
+  if (!reviewWorktree) {
+    console.warn(`[consolidation] Reviewer worktree unavailable — running review in shared repo ${repoPath}`);
+  }
 
+  let review: { output: string; code: number };
+  try {
+    review = await new Promise<{ output: string; code: number }>((resolve) => {
+      let output = '';
+
+      if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
+
+      const handleOutput = (_id: string, chunk: string) => { output += chunk; };
+      const handleExit = (_id: string, code: number) => { resolve({ output, code }); };
+
+      // Use the review model from the agent's model_config, or fall back to claude-sonnet
+      const agentRecord = getOne<{ model_config: string | null; agent_type: string }>('SELECT model_config, agent_type FROM agents WHERE autopilot_goal_id = ? OR id IN (SELECT agent_id FROM goal_log WHERE goal_id = ? LIMIT 1)', [goalId, goalId]);
+      const reviewModel = getModelForRole(agentRecord || { agent_type: 'claude-sonnet' }, AgentRole.REVIEW);
+      createAgent(reviewAgentId, reviewCwd, 'QA Reviewer', handleOutput, handleExit, reviewModel);
+      sendToAgent(reviewAgentId, reviewPrompt, { skipWrap: true });
+    });
+  } finally {
+    // Clean up the temporary agent and its disposable worktree.
     if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
-
-    const handleOutput = (_id: string, chunk: string) => { output += chunk; };
-    const handleExit = (_id: string, code: number) => { resolve({ output, code }); };
-
-    // Use the review model from the agent's model_config, or fall back to claude-sonnet
-    const agentRecord = getOne<{ model_config: string | null; agent_type: string }>('SELECT model_config, agent_type FROM agents WHERE autopilot_goal_id = ? OR id IN (SELECT agent_id FROM goal_log WHERE goal_id = ? LIMIT 1)', [goalId, goalId]);
-    const reviewModel = getModelForRole(agentRecord || { agent_type: 'claude-sonnet' }, AgentRole.REVIEW);
-    createAgent(reviewAgentId, repoPath, 'QA Reviewer', handleOutput, handleExit, reviewModel);
-    sendToAgent(reviewAgentId, reviewPrompt, { skipWrap: true });
-  });
-
-  // Clean up the temporary agent
-  if (hasAgent(reviewAgentId)) killAgent(reviewAgentId);
+    if (reviewWorktree) removeWorktree(repoPath, reviewWorktree);
+  }
 
   // Update the merge gate with the review agent ID
   updateMergeGate(mergeGateId, { review_agent_id: reviewAgentId }, broadcast);
