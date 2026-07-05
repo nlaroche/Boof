@@ -21,6 +21,7 @@ import {
   listAgentBranches,
   listGoalBranches,
   mergeToGoalBranch,
+  withRepoLock,
 } from './git-ops.js';
 import { Timeouts } from '../engine/constants.js';
 import { getBroadcast } from '../ws-handler.js';
@@ -380,11 +381,33 @@ async function gitHousekeeping(cwd: string, dryRun: boolean): Promise<Maintenanc
     results.push({ action: 'git_gc', detail: `git gc failed: ${err.message}`, success: false });
   }
 
+  // remote prune (M9): skip cleanly on repos with no `origin` remote, or when a
+  // fetch/prune fails due to missing credentials — this must not fail every run.
+  let hasOrigin = false;
+  try {
+    const { stdout } = await execAsync('git remote', { cwd, timeout: Timeouts.GIT_QUICK });
+    hasOrigin = stdout.split('\n').map(r => r.trim()).includes('origin');
+  } catch (err: any) {
+    console.warn(`[maintenance] could not list remotes in ${cwd}: ${err.message || err}`);
+  }
+
+  if (!hasOrigin) {
+    results.push({ action: 'remote_prune', detail: 'skipped — no origin remote configured', success: true });
+    return results;
+  }
+
   try {
     await execAsync('git remote prune origin', { cwd, timeout: Timeouts.GIT_CHECKOUT });
     results.push({ action: 'remote_prune', detail: 'git remote prune origin completed', success: true });
   } catch (err: any) {
-    results.push({ action: 'remote_prune', detail: `remote prune failed: ${err.message}`, success: false });
+    const msg = String(err.message || err);
+    // Auth / network failures are not actionable maintenance failures — record
+    // as a logged skip rather than a hard failure that reddens every run.
+    if (/authentication|could not read|permission denied|host key|password|credential|403|401/i.test(msg)) {
+      results.push({ action: 'remote_prune', detail: `skipped — remote unreachable / no credentials: ${msg.slice(0, 160)}`, success: true });
+    } else {
+      results.push({ action: 'remote_prune', detail: `remote prune failed: ${msg}`, success: false });
+    }
   }
 
   return results;
@@ -439,11 +462,16 @@ export async function runMaintenance(configOverride?: Partial<MaintenanceConfig>
     log(`Maintaining: ${repoPath}`);
     const allResults: MaintenanceResult[] = [];
 
+    // All main-repo-mutating operations run under the per-repo mutex (H6) so
+    // they never race with a concurrent agent merge / consolidation on the same
+    // working tree. retryFailedMerges is NOT wrapped here — it calls the already
+    // self-locking mergeToGoalBranch, so wrapping it would deadlock.
+
     // 1. Git state recovery (always runs first)
-    const stateResults = await recoverGitState(repoPath, config.dry_run);
+    const stateResults = await withRepoLock(repoPath, () => recoverGitState(repoPath, config.dry_run));
     allResults.push(...stateResults);
 
-    // 2. Retry failed merges
+    // 2. Retry failed merges (mergeToGoalBranch acquires the lock itself)
     if (config.retry_failed_merges) {
       const mergeResults = await retryFailedMerges(repoPath, config.dry_run);
       allResults.push(...mergeResults);
@@ -451,17 +479,17 @@ export async function runMaintenance(configOverride?: Partial<MaintenanceConfig>
 
     // 3. Orphan branch cleanup
     if (config.orphan_branch_max_age_days > 0) {
-      const orphanResults = await cleanOrphanBranches(repoPath, config.orphan_branch_max_age_days, config.dry_run);
+      const orphanResults = await withRepoLock(repoPath, () => cleanOrphanBranches(repoPath, config.orphan_branch_max_age_days, config.dry_run));
       allResults.push(...orphanResults);
     }
 
     // 4. Worktree pruning
-    const worktreeResults = await pruneWorktrees(repoPath, config.dry_run);
+    const worktreeResults = await withRepoLock(repoPath, () => pruneWorktrees(repoPath, config.dry_run));
     allResults.push(...worktreeResults);
 
     // 5. Git housekeeping
     if (config.git_gc) {
-      const gcResults = await gitHousekeeping(repoPath, config.dry_run);
+      const gcResults = await withRepoLock(repoPath, () => gitHousekeeping(repoPath, config.dry_run));
       allResults.push(...gcResults);
     }
 
