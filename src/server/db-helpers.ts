@@ -651,7 +651,11 @@ export function updateMergeGate(id: string, fields: Partial<MergeGate>, broadcas
   if (fields.heal_attempts !== undefined) { updates.push('heal_attempts = ?'); values.push(fields.heal_attempts); }
   if (fields.review_verdict !== undefined) { updates.push('review_verdict = ?'); values.push(fields.review_verdict); }
   if (fields.test_results !== undefined) { updates.push('test_results = ?'); values.push(fields.test_results); }
-  if (fields.consolidated_diff !== undefined) { updates.push('consolidated_diff = ?'); values.push(fields.consolidated_diff); }
+  if (fields.consolidated_diff !== undefined) {
+    // M4: cap the stored diff so a huge consolidation can't bloat the DB file.
+    updates.push('consolidated_diff = ?');
+    values.push(capText(fields.consolidated_diff, MAX_CONSOLIDATED_DIFF_BYTES));
+  }
   if (fields.merged_at !== undefined) { updates.push('merged_at = ?'); values.push(fields.merged_at); }
 
   return updateAndFetch<MergeGate>('merge_gates', id, updates, values, broadcast);
@@ -1163,4 +1167,81 @@ export function listAuditRecords(opts: { mergeGateId?: string; goalId?: string; 
     'SELECT * FROM audit_records ORDER BY created_at DESC LIMIT ?',
     [opts.limit || 100]
   );
+}
+
+// ============================================================================
+// Retention / Pruning (M4)
+// ============================================================================
+
+/** Cap a stored diff/blob at this many bytes (256KB per merge_gates row). */
+export const MAX_CONSOLIDATED_DIFF_BYTES = 256 * 1024;
+/** Truncate old command raw_output down to this many chars (10KB). */
+const RAW_OUTPUT_KEEP_CHARS = 10 * 1024;
+/** raw_output older than this many days gets truncated. */
+const RAW_OUTPUT_MAX_AGE_DAYS = 14;
+/** Orphaned command rows older than this many days get deleted. */
+const ORPHAN_COMMAND_MAX_AGE_DAYS = 30;
+
+/** Truncate a string to at most `maxBytes` (approx, UTF-16 chars) with a marker. */
+export function capText(text: string | null | undefined, maxBytes: number): string {
+  if (!text) return text ?? '';
+  if (text.length <= maxBytes) return text;
+  return text.slice(0, maxBytes) + `\n…[truncated at ${maxBytes} bytes]`;
+}
+
+export interface PruneResult {
+  truncatedOutputs: number;
+  deletedCommands: number;
+}
+
+/**
+ * Daily retention prune for unbounded tables. Conservative by design:
+ *  - commands.raw_output older than 14 days → truncated to the first 10KB
+ *    (keeps the head of the log for debugging; drops the long tail).
+ *  - commands rows older than 30 days whose agent no longer exists
+ *    ("run-orphaned") → deleted outright.
+ *
+ * Deliberately NOT pruned:
+ *  - audit_records — hash-chained; deleting a row breaks the chain.
+ *  - goal_log / run_metrics — small per-row; kept for analytics history.
+ * merge_gates.consolidated_diff is capped at write time (see updateMergeGate),
+ * not here.
+ */
+export function pruneRetention(): PruneResult {
+  const now = Date.now();
+  const rawCutoff = new Date(now - RAW_OUTPUT_MAX_AGE_DAYS * 86_400_000).toISOString();
+  const orphanCutoff = new Date(now - ORPHAN_COMMAND_MAX_AGE_DAYS * 86_400_000).toISOString();
+
+  // Truncate long old raw_output blobs. Do it in JS so we keep the first N chars
+  // rather than relying on SQLite substr semantics for large text.
+  const bloated = getAll<{ id: string; raw_output: string }>(
+    `SELECT id, raw_output FROM commands
+     WHERE started_at < ? AND length(raw_output) > ?`,
+    [rawCutoff, RAW_OUTPUT_KEEP_CHARS]
+  );
+  let truncatedOutputs = 0;
+  for (const row of bloated) {
+    runQuery('UPDATE commands SET raw_output = ? WHERE id = ?', [
+      row.raw_output.slice(0, RAW_OUTPUT_KEEP_CHARS) + '\n…[truncated by retention prune]',
+      row.id,
+    ]);
+    truncatedOutputs++;
+  }
+
+  // Delete orphaned old command rows (agent deleted, row aged out).
+  const orphans = getAll<{ c: number }>(
+    `SELECT COUNT(*) as c FROM commands
+     WHERE started_at < ? AND agent_id NOT IN (SELECT id FROM agents)`,
+    [orphanCutoff]
+  );
+  const deletedCommands = orphans[0]?.c ?? 0;
+  if (deletedCommands > 0) {
+    runQuery(
+      `DELETE FROM commands
+       WHERE started_at < ? AND agent_id NOT IN (SELECT id FROM agents)`,
+      [orphanCutoff]
+    );
+  }
+
+  return { truncatedOutputs, deletedCommands };
 }

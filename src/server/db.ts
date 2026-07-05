@@ -20,6 +20,11 @@ function addColumnIfMissing(tableName: string, columnName: string, columnDef: st
 }
 
 export async function initDb(): Promise<Database> {
+  // Drop any debounced flush from a previous DB instance so it can't write the
+  // old in-memory state over the file we're about to load (matters in tests).
+  cancelPendingSave();
+  backupTakenThisBoot = false;
+
   const SQL = await initSqlJs();
   const DB_PATH = getDbPath();
 
@@ -588,30 +593,118 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
+  // Web Push subscriptions — one row per browser/device subscription.
+  db.run(`
+    CREATE TABLE IF NOT EXISTS push_subscriptions (
+      endpoint TEXT PRIMARY KEY,
+      keys TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL
+    )
+  `);
+
   // Reset agents stuck 'running' from a previous crash, and revive 'dead' agents
   // so one bad manual command can't permanently drop an agent out of autopilot (M6).
   db.run(`UPDATE agents SET status = 'idle' WHERE status IN ('running', 'dead')`);
 
-  saveDb();
+  flushDb();
   return db;
 }
 
-function saveDb(): void {
+// ── Persistence hardening (M4) ──────────────────────────────────────────────
+//
+// sql.js keeps the whole DB in memory; writes only matter for crash recovery.
+// Rather than rewrite the entire file synchronously on every statement (slow and
+// non-atomic), we:
+//   1. Debounce: coalesce writes into one flush ~500ms after the last write.
+//   2. Write atomically: export to a temp file, then rename over boof.db so a
+//      crash mid-write can never leave a truncated/corrupt DB.
+//   3. Keep a `.bak` of the last good file, rotated once per process boot, as a
+//      last-resort recovery copy.
+// A synchronous flushDb() escape hatch is called on shutdown/SIGTERM paths.
+
+const SAVE_DEBOUNCE_MS = 500;
+let saveTimer: NodeJS.Timeout | null = null;
+let backupTakenThisBoot = false;
+
+/** Atomically write the in-memory DB to disk (temp file + rename). */
+function writeDbFile(): void {
   if (!db) return;
-  const data = db.export();
-  const buffer = Buffer.from(data);
   const dbPath = getDbPath();
   const dir = path.dirname(dbPath);
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(dbPath, buffer);
+
+  // Rotate a single .bak per boot from the last good on-disk file.
+  if (!backupTakenThisBoot && fs.existsSync(dbPath)) {
+    try {
+      fs.copyFileSync(dbPath, `${dbPath}.bak`);
+    } catch (e: any) {
+      console.error('[db] backup rotation failed:', e?.message || e);
+    }
+    backupTakenThisBoot = true;
+  }
+
+  const buffer = Buffer.from(db.export());
+  const tmpPath = `${dbPath}.tmp`;
+  fs.writeFileSync(tmpPath, buffer);
+
+  // Rename over the existing file. Node maps rename to MoveFileEx w/
+  // REPLACE_EXISTING on Windows, but antivirus/indexers can briefly lock the
+  // target — retry a couple of times before falling back to unlink+rename.
+  try {
+    fs.renameSync(tmpPath, dbPath);
+  } catch (err: any) {
+    let renamed = false;
+    for (let attempt = 0; attempt < 3 && !renamed; attempt++) {
+      try {
+        if (fs.existsSync(dbPath)) fs.rmSync(dbPath, { force: true });
+        fs.renameSync(tmpPath, dbPath);
+        renamed = true;
+      } catch { /* retry */ }
+    }
+    if (!renamed) {
+      // Last resort: direct write so we don't lose the data entirely.
+      try { fs.writeFileSync(dbPath, buffer); } catch (e: any) {
+        console.error('[db] atomic write failed:', e?.message || err);
+      }
+      try { fs.rmSync(tmpPath, { force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** Cancel any pending debounced flush (used on synchronous flush + init). */
+function cancelPendingSave(): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+}
+
+/** Schedule a debounced flush ~500ms after the last write. */
+function scheduleSave(): void {
+  if (saveTimer) return; // already scheduled — coalesce
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    writeDbFile();
+  }, SAVE_DEBOUNCE_MS);
+  // Don't keep the event loop alive solely for a pending flush.
+  if (typeof saveTimer.unref === 'function') saveTimer.unref();
+}
+
+/**
+ * Synchronously flush pending writes to disk. Call before any process exit path
+ * (shutdown hooks, SIGTERM) so no debounced write is lost.
+ */
+export function flushDb(): void {
+  cancelPendingSave();
+  writeDbFile();
 }
 
 export function runQuery(sql: string, params: unknown[] = []): void {
   if (!db) throw new Error('Database not initialized');
   db.run(sql, params);
-  saveDb();
+  scheduleSave();
 }
 
 export function getOne<T>(sql: string, params: unknown[] = []): T | null {
