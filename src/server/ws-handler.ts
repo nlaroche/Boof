@@ -132,8 +132,11 @@ function maybePush(message: WSServerMessage): void {
       }
     }
 
-    if (payload) sendPushToAll(payload).catch(() => {});
-  } catch { /* never let push break a broadcast */ }
+    if (payload) sendPushToAll(payload).catch(e => console.error('[push] send failed:', e?.message || e));
+  } catch (e: any) {
+    // Never let push break a broadcast — log and continue.
+    console.error('[push] maybePush error:', e?.message || e);
+  }
 }
 
 function send(ws: WebSocket, message: WSServerMessage): void {

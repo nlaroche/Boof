@@ -15,16 +15,19 @@ Ranked, verified defects from a full server + client + production review.
 
 **Correction to the original review:** `reviewConfig:*`, `maintenance:*`, and `audit:summary` DO have server handlers (ws-handler.ts:706+); only `analytics:cost`/`analytics:performance` were dead and removed.
 
+## Fixed in Phase 2 (2026-07-05)
+
+- M4 sql.js persistence: atomic tmp+rename writes with `.bak` rotation, ~500ms debounced flush (was per-statement full rewrite), sync `flushDb()` on shutdown, daily retention pruning (raw_output truncation >14d, orphaned commands >30d, consolidated_diff capped 256KB; audit chain never pruned).
+- Web Push end-to-end: VAPID (env or generated `.vapid-keys.json` at first boot), DB-persisted subscriptions with 404/410 pruning, `push:subscribe/unsubscribe/vapid-key` WS messages, injectManifest service worker with push + click-through, 3-state NotificationToggle. Pushed events: warning/error notify, gate approved, agent-proposed goals. Kill switch `PUSH_DISABLED=1`. Requires HTTPS origin on the phone.
+- Review/research agents no longer run in the human's checkout: review runs in a disposable worktree at the goal branch tip; research runs in the agent's worktree.
+- Mobile approve loop (GateSheet: pipeline viz + findings + one-tap Merge/Abort), tasks on mobile (GoalCard), Assign Agent on GoalCard, goal create with project/budget/priority/assign-now (server wiring included), project repo/goal attachment, fleet Activity feed (Home + Dashboard), History API back-button, ContextPanel removed.
+
 ## Still open
 
-- [ ] **M4. sql.js persistence** — whole-DB synchronous rewrite per statement, non-atomic (db.ts:598-614). Needs tmp-file+rename (crash safety), debounced writes, and retention pruning for unbounded tables (commands.raw_output, merge_gates.consolidated_diff, goal_log, audit_records, run_metrics). *(assigned: Phase 2)*
-- [ ] **Push notifications end-to-end** — VAPID init, DB-persisted subscriptions, WS subscribe handler, service-worker push + click-through. Client-side in-app notify is done; push while the PWA is closed is not. *(assigned: Phase 2)*
-- [ ] **Review/research agents run in the main repo cwd with `--dangerously-skip-permissions`** (consolidation.ts, research.ts) — should run in a worktree. *(assigned: Phase 2)*
 - [ ] **Revision loop** — `healing`/`revising` now fail closed instead of wedging; the actual automated heal/revise drivers (recordHealSuccess/completeRevision hooks) are still future work.
 - [ ] **Residual git-lock gaps** — command-lifecycle's synchronous commit path and git-ops' `createWorktree`/`removeWorktree` (execSync) aren't routed through `withRepoLock` (low risk: agent-worktree-local ops; git fail-fast-locks refs).
-- [ ] **ContextPanel** is still an unopenable stub (`setContextPanel` never called) — wire or remove. *(assigned: Phase 2)*
-- [ ] **Projects are display-only** — no UI to add repos (`project:add-repo` unused) or attach goals. *(assigned: Phase 2)*
-- [ ] **GoalCard budget bar reads $0 until first expand** (spend summed from lazily-loaded goalLogs) — needs a server-side aggregate per goal.
-- [ ] **File-size limits still blown** (autopilot.ts ~1300/800, ws-handler ~900/800, review-agent 985/500, experiment-loop 958/500, consolidation/maintenance/command-lifecycle over 500) — refactor opportunistically, don't big-bang.
+- [ ] **Per-goal spend aggregate** — GoalCard budget bars sum client-loaded goal logs (capped at 15/goal), so long-running goals undercount. Proper fix: server-side SUM per goal in goal payloads or a `goals:spend` message.
+- [ ] **Merge-gate transition history** — Activity feed approximates gate transitions from `updated_at` + current status; a per-gate event log would give true history.
+- [ ] **File-size limits still blown** (autopilot.ts ~1300/800, ws-handler ~1000/800, review-agent 985/500, experiment-loop 958/500, consolidation/maintenance/command-lifecycle over 500) — refactor opportunistically, don't big-bang.
 - [ ] **Prod housekeeping** — untracked debug scripts in `~/projects/boof` (user's), no log rotation for logs/boof.log.
 - [ ] **Auto-proposed goal quality** — reflection-generated "Follow-up:" goals have truncated names and low value; needs a quality bar / length fix before agents churn on them.
