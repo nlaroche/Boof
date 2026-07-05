@@ -396,7 +396,7 @@ describe('commitAgentChanges', () => {
     assert.ok(commitMsg.startsWith('agent: This is a very long commit message'));
   });
 
-  it('escapes double quotes in commit message', () => {
+  it('preserves double quotes in commit message (execFile, no shell)', () => {
     fs.mkdirSync(path.join(tempDir, 'src', 'client'), { recursive: true });
     fs.writeFileSync(path.join(tempDir, 'src', 'client', 'App.tsx'), 'content');
 
@@ -407,7 +407,22 @@ describe('commitAgentChanges', () => {
     assert.equal(result, true);
 
     const log = execSync('git log -1 --pretty=%B', { cwd: tempDir, encoding: 'utf-8' });
-    assert.ok(log.includes("agent: Add 'fancy' component")); // Double quotes replaced with single
+    // execFile passes the message as argv, so quotes survive literally.
+    assert.ok(log.includes('agent: Add "fancy" component'));
+  });
+
+  it('does not execute shell metacharacters in commit message (M10)', () => {
+    fs.mkdirSync(path.join(tempDir, 'src', 'client'), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, 'src', 'client', 'App.tsx'), 'content');
+
+    const sentinel = path.join(tempDir, 'PWNED.txt');
+    // If the message were interpolated into `sh -c`, this would create the file.
+    const malicious = 'title $(touch "' + sentinel + '") `touch "' + sentinel + '"`';
+    const agentOutput = '✏️ Write src/client/App.tsx';
+    const result = commitAgentChanges(tempDir, malicious, agentOutput);
+
+    assert.equal(result, true);
+    assert.equal(fs.existsSync(sentinel), false); // command substitution never ran
   });
 
   it('returns false when staging succeeds but nothing to commit', () => {
