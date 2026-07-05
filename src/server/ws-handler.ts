@@ -54,6 +54,10 @@ import {
 import { Paths, Timeouts, AgentStatus, MergeGateStatus } from './engine/constants.js';
 import { bus } from './engine/event-bus.js';
 import { getMaintenanceConfig, updateMaintenanceConfig, getMaintenanceLog, runMaintenance } from './systems/maintenance.js';
+import {
+  addSubscription, removeSubscription, getVapidPublicKey, sendPushToAll,
+  type PushPayload,
+} from './notifications.js';
 
 // ── WebSocket Infrastructure ──
 
@@ -67,6 +71,69 @@ function broadcast(message: WSServerMessage): void {
       client.ws.send(data);
     }
   });
+  // Mirror important events to Web Push so the "walk away" loop works when the
+  // PWA is closed. Fire-and-forget — push must never block or break a broadcast.
+  maybePush(message);
+}
+
+/**
+ * Infer severity from a notify's wording (mirrors the client's notifySeverity)
+ * so only actionable (warning/error) notifications become a push.
+ */
+function notifySeverity(title: string, body: string): 'error' | 'warning' | 'info' {
+  const text = `${title} ${body}`.toLowerCase();
+  if (/fail|error|crash|exceed|dead|budget|blocked|conflict/.test(text)) return 'error';
+  if (/pause|review|warn|needs|attention|stuck|retry|revis/.test(text)) return 'warning';
+  return 'info';
+}
+
+/**
+ * Decide whether a broadcast should also fire a push, and with what payload.
+ * Pushed events: warning/error `notify` (covers budget/failure/goal-paused +
+ * merge-gate-failed, since those all broadcast a notify), merge gate reaching
+ * `approved`, and agent-proposed goals. Info-level noise is never pushed.
+ */
+function maybePush(message: WSServerMessage): void {
+  try {
+    let payload: PushPayload | null = null;
+
+    if (message.type === 'notify') {
+      const sev = notifySeverity(message.title, message.body);
+      if (sev === 'error' || sev === 'warning') {
+        payload = { title: message.title, body: message.body, tag: 'boof-notify', data: { url: '/' } };
+      }
+    } else if (message.type === 'mergeGate:updated') {
+      // `failed` already fires a notify (pushed above); only add `approved` here
+      // to avoid a duplicate push on failure.
+      if (message.gate.status === MergeGateStatus.APPROVED) {
+        payload = {
+          title: 'Merge gate approved',
+          body: `Goal branch ${message.gate.goal_branch} passed review + tests.`,
+          tag: 'boof-gate',
+          data: { url: '/pipeline' },
+        };
+      }
+    } else if (message.type === 'goal:proposed') {
+      payload = {
+        title: 'Agent proposed a goal',
+        body: message.goal.name,
+        tag: 'boof-goal',
+        data: { url: '/goals' },
+      };
+    } else if (message.type === 'goal:proposed-auto') {
+      const n = message.goals.length;
+      if (n > 0) {
+        payload = {
+          title: `Agent proposed ${n} goal${n === 1 ? '' : 's'}`,
+          body: message.goals.map(g => g.name).slice(0, 3).join('; '),
+          tag: 'boof-goal',
+          data: { url: '/goals' },
+        };
+      }
+    }
+
+    if (payload) sendPushToAll(payload).catch(() => {});
+  } catch { /* never let push break a broadcast */ }
 }
 
 function send(ws: WebSocket, message: WSServerMessage): void {
@@ -854,6 +921,26 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       send(ws, { type: 'maintenance:triggered' } as any);
       break;
     }
+
+    // ── Web Push ──
+    case 'push:vapid-key':
+      send(ws, { type: 'push:vapid-key', key: getVapidPublicKey() });
+      break;
+
+    case 'push:subscribe': {
+      const sub = message.subscription;
+      if (sub?.endpoint && sub.keys?.p256dh && sub.keys?.auth) {
+        addSubscription({
+          endpoint: sub.endpoint,
+          keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+        } as any);
+      }
+      break;
+    }
+
+    case 'push:unsubscribe':
+      removeSubscription(message.endpoint);
+      break;
 
     // ── Sync ──
     case 'sync:request': {
