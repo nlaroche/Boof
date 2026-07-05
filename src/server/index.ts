@@ -3,8 +3,9 @@ import { createServer } from 'http';
 import path from 'path';
 import { initDb } from './db.js';
 import { getOne, getAll } from './db.js';
-import { setupWebSocket } from './ws-handler.js';
+import { setupWebSocket, getBroadcast } from './ws-handler.js';
 import { startAutopilotLoop, stopAutopilotLoop, getAgentCwd } from './autopilot.js';
+import { initScheduler, stopScheduler } from './scheduler.js';
 import { startMaintenanceLoop, stopMaintenanceLoop } from './systems/maintenance.js';
 import { killAllAgents } from './pty-manager.js';
 import { proposeGoals, initBoofDir } from './agent-memory.js';
@@ -67,6 +68,7 @@ async function start() {
     console.log('Database initialized');
     startAutopilotLoop();
     startMaintenanceLoop();
+    initScheduler(getBroadcast()); // M3: cron scheduler was never wired in production
   } catch (error) {
     console.error('Failed to initialize database:', error);
   }
@@ -88,6 +90,7 @@ function cleanup() {
   console.log('[server] Shutting down — killing agent processes...');
   stopAutopilotLoop();
   stopMaintenanceLoop();
+  stopScheduler();
   killAllAgents();
   process.exit(0);
 }

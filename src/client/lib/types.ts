@@ -281,6 +281,8 @@ export interface GlobalStats {
   totalXp: number;
   totalTokensUsed: number;
   avgDurationMs: number;
+  /** Total real spend (run_metrics.cost_usd) for today, UTC. Populated by global:stats. */
+  costTodayUsd?: number;
 }
 
 export interface RecentLearning {
@@ -592,7 +594,7 @@ export type WSClientMessage =
   | { type: 'maintenance:trigger'; dryRun?: boolean };
 
 export type WSServerMessage =
-  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[] }
+  | { type: 'sync:state'; folders: Folder[]; tasks: Task[]; agents: Agent[]; goals: Goal[]; workflows: Workflow[]; projects: Project[]; commands?: Command[]; mergeGates?: MergeGate[] }
   | { type: 'agent:output'; agentId: string; chunk: string }
   | { type: 'agent:updated'; agent: Agent }
   | { type: 'agent:deleted'; agentId: string }

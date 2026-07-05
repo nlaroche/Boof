@@ -588,8 +588,9 @@ export async function initDb(): Promise<Database> {
     )
   `);
 
-  // Reset any agents stuck in 'running' from a previous server crash
-  db.run(`UPDATE agents SET status = 'idle' WHERE status = 'running'`);
+  // Reset agents stuck 'running' from a previous crash, and revive 'dead' agents
+  // so one bad manual command can't permanently drop an agent out of autopilot (M6).
+  db.run(`UPDATE agents SET status = 'idle' WHERE status IN ('running', 'dead')`);
 
   saveDb();
   return db;

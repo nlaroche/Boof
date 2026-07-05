@@ -664,6 +664,18 @@ export function listMergeGates(status?: string): MergeGate[] {
   return getAll<MergeGate>('SELECT * FROM merge_gates ORDER BY created_at DESC');
 }
 
+/**
+ * Merge gates the client needs to hydrate on connect: all non-terminal gates
+ * plus any gate updated in the last 24h. (WS contract: sync:state.mergeGates)
+ */
+export function listActiveMergeGates(): MergeGate[] {
+  const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  return getAll<MergeGate>(
+    "SELECT * FROM merge_gates WHERE status NOT IN ('merged', 'failed') OR updated_at >= ? ORDER BY created_at DESC",
+    [cutoff]
+  );
+}
+
 // ============================================================================
 // Review Config Helpers
 // ============================================================================
@@ -758,6 +770,10 @@ export function getUnresolvedFindings(mergeGateId: string): ReviewFinding[] {
 
 export function resolveReviewFinding(findingId: string, resolvedBy: string): void {
   runQuery('UPDATE review_findings SET resolved = 1, resolved_by = ? WHERE id = ?', [resolvedBy, findingId]);
+}
+
+export function getReviewFinding(findingId: string): ReviewFinding | null {
+  return getOne<ReviewFinding>('SELECT * FROM review_findings WHERE id = ?', [findingId]);
 }
 
 // ============================================================================
@@ -983,12 +999,28 @@ export function getAgentCost(agentId: string): number {
   return result?.total ?? 0;
 }
 
-/** Check if goal has exceeded its budget cap. Returns null if no cap, else { exceeded, spent, cap } */
+/**
+ * Check if a goal has exceeded its budget cap.
+ * Returns null when there is NO cap. By UX convention both NULL/undefined AND a
+ * numeric 0 mean "no cap" — but we test them explicitly (not via a falsy check)
+ * so a legitimate non-zero cap is never mistaken for "unset". (M1)
+ */
 export function checkGoalBudget(goalId: string): { exceeded: boolean; spent: number; cap: number } | null {
   const goal = getOne<{ budget_cap_usd: number | null }>('SELECT budget_cap_usd FROM goals WHERE id = ?', [goalId]);
-  if (!goal?.budget_cap_usd) return null;
+  if (goal == null || goal.budget_cap_usd == null) return null; // no cap set
+  if (goal.budget_cap_usd === 0) return null;                    // 0 = no cap (UX convention)
   const spent = getGoalCost(goalId);
   return { exceeded: spent >= goal.budget_cap_usd, spent, cap: goal.budget_cap_usd };
+}
+
+/** Sum of run_metrics.cost_usd for runs created today (UTC). Used by global:stats. */
+export function getCostTodayUsd(): number {
+  const startOfDayUtc = new Date().toISOString().slice(0, 10) + 'T00:00:00.000Z';
+  const result = getOne<{ total: number }>(
+    'SELECT COALESCE(SUM(cost_usd), 0) as total FROM run_metrics WHERE created_at >= ?',
+    [startOfDayUtc]
+  );
+  return result?.total ?? 0;
 }
 
 // ============================================================================

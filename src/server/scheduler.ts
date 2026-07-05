@@ -74,8 +74,14 @@ function matchField(field: string, value: number, min: number, max: number): boo
   return false;
 }
 
+/** Last minute-key a schedule fired for an agent — prevents double-fire within a minute. */
+const lastFiredMinute = new Map<string, string>();
+
 function checkSchedules(): void {
   const now = new Date();
+  // Minute-resolution key for dedup (cron ticks at ~60s, but the interval can
+  // drift and fire twice in the same wall-clock minute).
+  const minuteKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}-${now.getHours()}-${now.getMinutes()}`;
 
   const agents = getAll<Agent>(
     'SELECT * FROM agents WHERE schedule_enabled = 1 AND schedule IS NOT NULL AND schedule_prompt != ?',
@@ -86,6 +92,10 @@ function checkSchedules(): void {
     if (!agent.schedule) continue;
 
     if (matchesCron(agent.schedule, now)) {
+      if (lastFiredMinute.get(agent.id) === minuteKey) {
+        continue; // already fired this minute — don't double-fire
+      }
+      lastFiredMinute.set(agent.id, minuteKey);
       console.log(`Schedule fired for agent ${agent.id} (${agent.name})`);
       fireScheduledPrompt(agent);
     }
@@ -94,6 +104,13 @@ function checkSchedules(): void {
 
 function fireScheduledPrompt(agent: Agent): void {
   const now = new Date().toISOString();
+
+  // Never interrupt a busy agent — skip if it's not currently idle (M3).
+  const fresh = getOne<{ status: string }>('SELECT status FROM agents WHERE id = ?', [agent.id]);
+  if (fresh && fresh.status !== 'idle') {
+    console.log(`Scheduled prompt for agent ${agent.id} skipped — status is "${fresh.status}", not idle`);
+    return;
+  }
 
   // Create or reuse PTY
   if (!hasAgent(agent.id)) {
