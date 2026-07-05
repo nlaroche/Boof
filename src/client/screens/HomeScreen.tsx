@@ -1,6 +1,7 @@
 import { useStore } from '../stores/store';
 import { AgentCard } from '../components/AgentCard';
 import { NeedsAttention } from '../components/NeedsAttention';
+import { ActivityFeed } from '../components/ActivityFeed';
 import { NotificationToggle } from '../components/NotificationToggle';
 import { Button } from '../components/ui/button';
 import { formatCost } from '../lib/format';
@@ -46,9 +47,9 @@ export function HomeScreen({ onSend, onSendToAgent }: Props) {
       <div className="p-4 flex items-center justify-between">
         <div className="flex items-baseline gap-2">
           <h1 className="text-2xl font-bold text-foreground">Boof</h1>
-          {globalStats && globalStats.costTodayUsd > 0 && (
+          {globalStats && (globalStats.costTodayUsd ?? 0) > 0 && (
             <span className="text-xs text-muted-foreground font-mono">
-              {formatCost(globalStats.costTodayUsd)} today
+              {formatCost(globalStats.costTodayUsd ?? 0)} today
             </span>
           )}
         </div>
@@ -65,6 +66,10 @@ export function HomeScreen({ onSend, onSendToAgent }: Props) {
 
       <div className="px-3 mb-2">
         <NeedsAttention onSend={onSend} />
+      </div>
+
+      <div className="px-3 mb-2">
+        <ActivityFeed onSend={onSend} />
       </div>
 
       {sorted.length > 0 ? (

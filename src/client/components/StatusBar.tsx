@@ -40,9 +40,9 @@ export function StatusBar({ connected }: Props) {
       </div>
 
       {/* Cost today */}
-      {globalStats && globalStats.costTodayUsd > 0 && (
+      {globalStats && (globalStats.costTodayUsd ?? 0) > 0 && (
         <span className="font-mono" title="Estimated spend today">
-          {formatCost(globalStats.costTodayUsd)} today
+          {formatCost(globalStats.costTodayUsd ?? 0)} today
         </span>
       )}
 

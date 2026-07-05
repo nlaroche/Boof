@@ -7,6 +7,7 @@ import { SkillsList } from '../components/SkillsList';
 import { LearningItem } from '../components/LearningItem';
 import { CollapsibleSection } from '../components/CollapsibleSection';
 import { NeedsAttention } from '../components/NeedsAttention';
+import { ActivityFeed } from '../components/ActivityFeed';
 import { formatDuration } from '../lib/format';
 import type { WSClientMessage } from '../lib/types';
 
@@ -37,7 +38,10 @@ export function DashboardScreen({ onSend, onSendToAgent }: Props) {
     <div className="p-4 space-y-5 max-w-7xl pb-24">
       <h1 className="text-xl font-bold text-foreground">Dashboard</h1>
 
-      <NeedsAttention onSend={onSend} />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+        <NeedsAttention onSend={onSend} />
+        <ActivityFeed onSend={onSend} limit={30} />
+      </div>
 
       {/* Enhanced Stats Row */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
