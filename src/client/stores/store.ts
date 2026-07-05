@@ -1,18 +1,12 @@
 import { create } from 'zustand';
 import type { Folder, Task, Agent, Command, AgentStatus, RepoInfo, Goal, GoalLogEntry, GoalStats, Workflow, Assessment, Improvement, XpEvent, DashboardData, Skill, Experiment, TimelineRun, Project, AggregatedSkill, GlobalStats, RecentLearning, MergeGate, ReviewFinding, AuditRecord, TaskResearch, AgentPattern, AgentFix, ExperimentRecord, ExperimentRun, ReviewGuideline } from '../lib/types';
 
-interface ContextPanelState {
-  open: boolean;
-  content: { type: string; id: string } | null;
-}
-
 export interface UIState {
   activeScreen: 'home' | 'tasks' | 'agents' | 'history' | 'agent' | 'goals' | 'projects' | 'dashboard'
     | 'pipeline' | 'reviews' | 'audit' | 'research' | 'memory' | 'analytics';
   selectedAgentId: string | null;
   selectedFolderId: string | null;
   selectedProjectId: string | null;
-  contextPanel: ContextPanelState;
 }
 
 interface StoreState {
@@ -77,8 +71,6 @@ interface StoreState {
   setGuidelines: (repoPath: string, guidelines: ReviewGuideline[]) => void;
   updateGuideline: (guideline: ReviewGuideline) => void;
   removeGuideline: (guidelineId: string) => void;
-  setContextPanel: (content: ContextPanelState['content']) => void;
-  closeContextPanel: () => void;
 
   setProjects: (projects: Project[]) => void;
   updateProject: (project: Project) => void;
@@ -176,7 +168,6 @@ export const useStore = create<StoreState>((set) => ({
     selectedAgentId: null,
     selectedFolderId: null,
     selectedProjectId: null,
-    contextPanel: { open: false, content: null },
   },
 
   bumpNavAlert: (screen) =>
@@ -283,16 +274,6 @@ export const useStore = create<StoreState>((set) => ({
       }
       return { guidelines: newGuidelines };
     }),
-
-  setContextPanel: (content) =>
-    set((state) => ({
-      ui: { ...state.ui, contextPanel: { open: content !== null, content } },
-    })),
-
-  closeContextPanel: () =>
-    set((state) => ({
-      ui: { ...state.ui, contextPanel: { open: false, content: null } },
-    })),
 
   setProjects: (projects) => set({ projects }),
 

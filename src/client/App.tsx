@@ -1,11 +1,11 @@
 import { useEffect, Component, type ReactNode } from 'react';
 import { useStore } from './stores/store';
 import { useWebSocket } from './hooks/useWebSocket';
-import { useIsDesktop, useIsWideDesktop } from './hooks/useIsDesktop';
+import { useIsDesktop } from './hooks/useIsDesktop';
+import { useHistoryNav } from './hooks/useHistoryNav';
 import { BottomNav } from './components/BottomNav';
 import { SideNav } from './components/SideNav';
 import { StatusBar } from './components/StatusBar';
-import { ContextPanel } from './components/ContextPanel';
 import { Toaster } from './components/ui/sonner';
 import { TooltipProvider } from './components/ui/tooltip';
 import { CommandPalette } from './components/CommandPalette';
@@ -84,10 +84,9 @@ function ScreenRouter({ send, onSendToAgent, isDesktop }: { send: (msg: any) => 
 
 export function App() {
   const activeScreen = useStore((s) => s.ui.activeScreen);
-  const contextPanel = useStore((s) => s.ui.contextPanel);
   const { send, connected } = useWebSocket();
   const isDesktop = useIsDesktop();
-  const isWideDesktop = useIsWideDesktop();
+  useHistoryNav();
 
   const handleSendToAgent = (agentId: string, prompt: string) => {
     send({ type: 'agent:send', agentId, prompt });
@@ -122,8 +121,6 @@ export function App() {
                   <ScreenRouter send={send} onSendToAgent={handleSendToAgent} isDesktop={isDesktop} />
                 </ErrorBoundary>
               </div>
-              {/* Context panel on wide desktop */}
-              {isWideDesktop && contextPanel.open && <ContextPanel />}
             </div>
           </>
         ) : (
