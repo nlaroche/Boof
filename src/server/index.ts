@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer } from 'http';
 import path from 'path';
-import { initDb } from './db.js';
+import { initDb, flushDb } from './db.js';
 import { getOne, getAll } from './db.js';
 import { setupWebSocket, getBroadcast } from './ws-handler.js';
 import { startAutopilotLoop, stopAutopilotLoop, getAgentCwd } from './autopilot.js';
@@ -9,6 +9,8 @@ import { initScheduler, stopScheduler } from './scheduler.js';
 import { startMaintenanceLoop, stopMaintenanceLoop } from './systems/maintenance.js';
 import { killAllAgents } from './pty-manager.js';
 import { proposeGoals, initBoofDir } from './agent-memory.js';
+import { initNotifications } from './notifications.js';
+import { pruneRetention } from './db-helpers.js';
 import type { Agent } from '../client/lib/types.js';
 
 const PORT = process.env.PORT || 3456;
@@ -66,9 +68,11 @@ async function start() {
   try {
     await initDb();
     console.log('Database initialized');
+    initNotifications(); // VAPID keys + load persisted push subscriptions
     startAutopilotLoop();
     startMaintenanceLoop();
     initScheduler(getBroadcast()); // M3: cron scheduler was never wired in production
+    startRetentionLoop(); // M4: daily prune of unbounded tables
   } catch (error) {
     console.error('Failed to initialize database:', error);
   }
@@ -85,13 +89,34 @@ async function start() {
 
 start();
 
+// M4: run the retention prune once shortly after boot, then daily.
+let retentionTimer: NodeJS.Timeout | null = null;
+function startRetentionLoop() {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const run = () => {
+    try {
+      const result = pruneRetention();
+      if (result.truncatedOutputs || result.deletedCommands) {
+        console.log(`[retention] pruned: truncated ${result.truncatedOutputs} raw_output, deleted ${result.deletedCommands} orphan command(s)`);
+      }
+    } catch (e: any) {
+      console.error('[retention] prune failed:', e?.message || e);
+    }
+  };
+  setTimeout(run, 5 * 60 * 1000).unref?.(); // first pass 5 min after boot
+  retentionTimer = setInterval(run, DAY_MS);
+  retentionTimer.unref?.();
+}
+
 // Kill all agent child processes on shutdown to prevent orphans
 function cleanup() {
   console.log('[server] Shutting down — killing agent processes...');
   stopAutopilotLoop();
   stopMaintenanceLoop();
   stopScheduler();
+  if (retentionTimer) clearInterval(retentionTimer);
   killAllAgents();
+  flushDb(); // M4: synchronous flush so no debounced write is lost on exit
   process.exit(0);
 }
 
