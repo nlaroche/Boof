@@ -163,9 +163,30 @@ async function handleMessage(ws: WebSocket, message: WSClientMessage): Promise<v
       break;
 
     // ── CRUD: Goals ──
-    case 'goal:create':
-      createGoal({ name: message.name, description: message.description, repoId: message.repoId, projectId: (message as any).projectId, mergeTarget: (message as any).mergeTarget }, (goal) => broadcast({ type: 'goal:updated', goal }));
+    case 'goal:create': {
+      const created = createGoal({
+        name: message.name,
+        description: message.description,
+        repoId: message.repoId,
+        projectId: (message as any).projectId,
+        mergeTarget: (message as any).mergeTarget,
+        budgetCapUsd: (message as any).budgetCapUsd,
+        priority: (message as any).priority,
+      }, (goal) => broadcast({ type: 'goal:updated', goal }));
+      // Optional one-step assignment: pin an agent's autopilot to the new goal.
+      const assignAgentId = (message as any).assignAgentId;
+      if (created && assignAgentId) {
+        const assignee = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [assignAgentId]);
+        if (assignee) {
+          runQuery('UPDATE agents SET autopilot = 1, autopilot_goal_id = ? WHERE id = ?', [created.id, assignAgentId]);
+          const updated = getOne<Agent>('SELECT * FROM agents WHERE id = ?', [assignAgentId]);
+          if (updated) broadcast({ type: 'agent:updated', agent: updated });
+        } else {
+          console.warn(`[ws] goal:create assignAgentId ${assignAgentId} not found — skipping assignment`);
+        }
+      }
       break;
+    }
 
     case 'goal:propose':
       createGoal(
