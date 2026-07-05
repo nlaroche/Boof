@@ -3,16 +3,64 @@
  *
  * Extracted from autopilot.ts to keep git operations in one focused module.
  * These are internal to the autopilot system (not exported to ws-handler).
+ *
+ * All operations that MUTATE the shared working tree / refs go through
+ * `withRepoLock` (H6) so concurrent agents / consolidation / maintenance can
+ * never race on `.git/index.lock` or check out the wrong branch underneath
+ * each other.
  */
-import { execSync } from 'child_process';
+import { execSync, exec, execFile } from 'child_process';
 import { promisify } from 'util';
-import { exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { isProtectedBranch } from '../branch-guard.js';
 import { Timeouts, Limits } from '../engine/constants.js';
+import { healMergeConflict } from './self-heal.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
+
+// ── Per-repo async mutex (H6) ──────────────────────────────────────────────
+//
+// Keyed by the git *common* directory so every worktree of the same repo
+// shares one lock (worktrees share refs + object store). A simple promise
+// chain serializes callers; failures in one holder never reject the next.
+
+const repoLockKeyCache = new Map<string, string>();
+const repoLocks = new Map<string, Promise<unknown>>();
+
+function repoLockKey(cwd: string): string {
+  const resolved = path.resolve(cwd);
+  const cached = repoLockKeyCache.get(resolved);
+  if (cached) return cached;
+  let key = resolved;
+  try {
+    const common = execSync('git rev-parse --git-common-dir', {
+      cwd, encoding: 'utf-8', timeout: Timeouts.GIT_QUICK,
+    }).trim();
+    key = path.isAbsolute(common) ? path.resolve(common) : path.resolve(cwd, common);
+  } catch {
+    // Not a git repo yet, or git unavailable — fall back to the path itself.
+  }
+  repoLockKeyCache.set(resolved, key);
+  return key;
+}
+
+/**
+ * Run `fn` with exclusive access to the repo's working tree/refs.
+ * Exported so other modules (autopilot, ws-handler, command-lifecycle) can
+ * route their own raw git mutations through the same lock.
+ */
+export function withRepoLock<T>(repoPath: string, fn: () => Promise<T>): Promise<T> {
+  const key = repoLockKey(repoPath);
+  const prev = repoLocks.get(key) ?? Promise.resolve();
+  // Run fn regardless of whether the previous holder resolved or rejected.
+  const run = prev.then(fn, fn);
+  // Keep a settled-swallowing tail so waiters never see a prior rejection and
+  // we never emit an unhandled rejection for the bookkeeping promise.
+  repoLocks.set(key, run.then(() => {}, () => {}));
+  return run;
+}
 
 /**
  * Detect the default branch for a repo (main, develop, master, etc.)
@@ -33,6 +81,56 @@ export function getDefaultBranch(cwd: string): string {
 }
 
 /**
+ * Resolve the base ref to branch from. Prefers the remote-tracking ref
+ * (`origin/<branch>`) when it exists, but falls back to the local branch for
+ * repos with no `origin` remote (M9) instead of hard-failing.
+ */
+async function resolveBaseRef(cwd: string, branch: string): Promise<string> {
+  // If the caller already handed us a fully-qualified ref, trust it.
+  if (branch.includes('/')) return branch;
+  try {
+    await execFileAsync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', `origin/${branch}`], {
+      timeout: Timeouts.GIT_QUICK,
+    });
+    return `origin/${branch}`;
+  } catch {
+    return branch;
+  }
+}
+
+/**
+ * Find the worktree path that currently has `branch` checked out, if any.
+ * Used to run rebases where the branch lives and to remove the worktree
+ * before deleting a merged branch (H5).
+ */
+async function findWorktreeForBranch(mainRepoDir: string, branch: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['-C', mainRepoDir, 'worktree', 'list', '--porcelain'], {
+      timeout: Timeouts.GIT_QUICK,
+    });
+    let currentPath: string | null = null;
+    for (const line of stdout.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        currentPath = line.slice('worktree '.length).trim();
+      } else if (line.startsWith('branch ')) {
+        const name = line.slice('branch '.length).trim().replace(/^refs\/heads\//, '');
+        if (name === branch && currentPath) return currentPath;
+      }
+    }
+    return null;
+  } catch (err: any) {
+    console.error(`[git-ops] findWorktreeForBranch failed: ${err.message || err}`);
+    return null;
+  }
+}
+
+/** Best-effort restore of the main repo to a known branch. */
+async function restoreBranch(mainRepoDir: string, branch: string): Promise<void> {
+  await execFileAsync('git', ['-C', mainRepoDir, 'checkout', branch], { timeout: Timeouts.GIT_CHECKOUT })
+    .catch(e => console.error(`[git-ops] Failed to restore branch ${branch}: ${e.message || e}`));
+}
+
+/**
  * Check if a working directory has uncommitted changes.
  * Ignores .boof/ and boof.db (our own files).
  */
@@ -47,7 +145,8 @@ export async function hasUncommittedChanges(workingDirectory: string): Promise<b
       .filter((line) => line.trim() && !line.includes('.boof/'))
       .filter((line) => line.trim() && !line.includes('boof.db'));
     return significant.length > 0;
-  } catch {
+  } catch (err: any) {
+    console.error(`[git-ops] hasUncommittedChanges failed: ${err.message || err}`);
     return false;
   }
 }
@@ -75,7 +174,7 @@ export function slugify(text: string): string {
 }
 
 /**
- * Create a new agent branch in a worktree, branching from main.
+ * Create a new agent branch in a worktree, branching from the default branch.
  * Returns the new branch name.
  */
 export async function createAgentBranch(
@@ -84,42 +183,43 @@ export async function createAgentBranch(
   goalSlug: string,
   baseBranch?: string,
 ): Promise<string> {
-  const timestamp = Date.now();
-  const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
-  const base = baseBranch || `origin/${getDefaultBranch(worktreePath)}`;
+  return withRepoLock(worktreePath, async () => {
+    const timestamp = Date.now();
+    const branchName = `agent/${slugify(agentName)}/${goalSlug}-${timestamp}`;
+    const base = baseBranch || await resolveBaseRef(worktreePath, getDefaultBranch(worktreePath));
 
-  // Clean up any dirty state from a previous agent run.
-  // Agent worktrees are disposable — uncommitted changes are leftovers from
-  // a failed or interrupted run and safe to discard.
-  try {
-    const { stdout: status } = await execAsync('git status --porcelain', {
+    // Clean up any dirty state from a previous agent run.
+    // Agent worktrees are disposable — uncommitted changes are leftovers from
+    // a failed or interrupted run and safe to discard.
+    try {
+      const { stdout: status } = await execAsync('git status --porcelain', {
+        cwd: worktreePath,
+        timeout: Timeouts.GIT_QUICK,
+      });
+      if (status.trim()) {
+        console.log(`[git-ops] Cleaning dirty worktree before branch creation (${status.trim().split('\n').length} files)`);
+        await execAsync('git checkout -- .', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
+        await execAsync('git clean -fd', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
+      }
+    } catch (cleanErr: any) {
+      console.warn(`[git-ops] Worktree cleanup warning: ${cleanErr.message || cleanErr}`);
+    }
+
+    await execFileAsync('git', ['-C', worktreePath, 'checkout', '-b', branchName, base], {
+      timeout: Timeouts.GIT_CHECKOUT,
+    });
+    // Verify we're on the new branch
+    const { stdout } = await execAsync('git branch --show-current', {
       cwd: worktreePath,
       timeout: Timeouts.GIT_QUICK,
     });
-    if (status.trim()) {
-      console.log(`[git-ops] Cleaning dirty worktree before branch creation (${status.trim().split('\n').length} files)`);
-      await execAsync('git checkout -- .', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
-      await execAsync('git clean -fd', { cwd: worktreePath, timeout: Timeouts.GIT_CHECKOUT });
+    const actual = stdout.trim();
+    if (actual !== branchName) {
+      throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
     }
-  } catch (cleanErr) {
-    console.warn(`[git-ops] Worktree cleanup warning: ${cleanErr}`);
-  }
-
-  await execAsync(`git checkout -b "${branchName}" "${base}"`, {
-    cwd: worktreePath,
-    timeout: Timeouts.GIT_CHECKOUT,
+    console.log(`[git-ops] Created branch: ${branchName} (from ${base}) in worktree ${worktreePath}`);
+    return branchName;
   });
-  // Verify we're on the new branch
-  const { stdout } = await execAsync('git branch --show-current', {
-    cwd: worktreePath,
-    timeout: Timeouts.GIT_QUICK,
-  });
-  const actual = stdout.trim();
-  if (actual !== branchName) {
-    throw new Error(`Branch creation failed: expected "${branchName}", got "${actual}"`);
-  }
-  console.log(`[git-ops] Created branch: ${branchName} (from origin/${base}) in worktree ${worktreePath}`);
-  return branchName;
 }
 
 /** Log that we're abandoning a branch. Does not delete it. */
@@ -137,37 +237,41 @@ export async function mergeToMain(
   worktreePath: string,
   branchName: string
 ): Promise<{ success: boolean; output: string }> {
-  try {
-    // Commit any uncommitted agent work
-    await execAsync('git add -A && git diff --cached --quiet || git commit -m "WIP: uncommitted agent work"', {
-      cwd: worktreePath,
-      timeout: Timeouts.GIT_CHECKOUT,
-    }).catch(() => {});
+  return withRepoLock(mainRepoDir, async () => {
+    // Commit any uncommitted agent work in the worktree.
+    await execFileAsync('git', ['-C', worktreePath, 'add', '-A'], { timeout: Timeouts.GIT_CHECKOUT })
+      .catch(e => console.warn(`[git-ops] mergeToMain: git add failed: ${e.message || e}`));
+    try {
+      // Exit 0 → nothing staged; exit 1 → staged changes to commit.
+      await execFileAsync('git', ['-C', worktreePath, 'diff', '--cached', '--quiet'], { timeout: Timeouts.GIT_QUICK });
+    } catch {
+      await execFileAsync('git', ['-C', worktreePath, 'commit', '-m', 'WIP: uncommitted agent work'], { timeout: Timeouts.GIT_CHECKOUT })
+        .catch(e => console.warn(`[git-ops] mergeToMain: WIP commit failed: ${e.message || e}`));
+    }
 
     const base = getDefaultBranch(mainRepoDir);
-    // Merge from the main repo dir
-    const { stdout, stderr } = await execAsync(
-      `git checkout ${base} && git merge --no-ff "${branchName}" -m "Merge ${branchName}"`,
-      { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
-    );
+    try {
+      await execFileAsync('git', ['-C', mainRepoDir, 'checkout', base], { timeout: Timeouts.GIT_CHECKOUT });
+      const { stdout, stderr } = await execFileAsync(
+        'git', ['-C', mainRepoDir, 'merge', '--no-ff', branchName, '-m', `Merge ${branchName}`],
+        { timeout: Timeouts.GIT_MERGE }
+      );
 
-    // Delete the merged branch
-    await execAsync(`git branch -d "${branchName}"`, {
-      cwd: mainRepoDir,
-      timeout: Timeouts.GIT_QUICK,
-    }).catch(() => {});
+      // Delete the merged branch
+      await execFileAsync('git', ['-C', mainRepoDir, 'branch', '-d', branchName], { timeout: Timeouts.GIT_QUICK })
+        .catch(e => console.warn(`[git-ops] mergeToMain: could not delete ${branchName}: ${e.message || e}`));
 
-    // Return worktree to detached HEAD at base
-    await execAsync(`git checkout --detach ${base}`, {
-      cwd: worktreePath,
-      timeout: Timeouts.GIT_CHECKOUT,
-    }).catch(() => {});
+      // Return worktree to detached HEAD at base
+      await execFileAsync('git', ['-C', worktreePath, 'checkout', '--detach', base], { timeout: Timeouts.GIT_CHECKOUT })
+        .catch(e => console.warn(`[git-ops] mergeToMain: could not detach worktree: ${e.message || e}`));
 
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
+      return { success: true, output: stdout + stderr };
+    } catch (err: any) {
+      await execFileAsync('git', ['-C', mainRepoDir, 'merge', '--abort'], { timeout: Timeouts.GIT_QUICK })
+        .catch(e => console.error(`[git-ops] mergeToMain: merge --abort failed: ${e.message || e}`));
+      return { success: false, output: err.stderr || err.stdout || String(err) };
+    }
+  });
 }
 
 // ── Goal Branch Operations ──
@@ -181,89 +285,144 @@ export async function createGoalBranch(
   goalSlug: string,
   targetBranch?: string,
 ): Promise<string> {
-  const base = targetBranch || getDefaultBranch(cwd);
-  const branchName = `goal/${slugify(goalSlug)}`;
+  return withRepoLock(cwd, async () => {
+    const baseName = targetBranch || getDefaultBranch(cwd);
+    const branchName = `goal/${slugify(goalSlug)}`;
 
-  // Check if branch already exists
-  try {
-    await execAsync(`git rev-parse --verify "${branchName}"`, {
-      cwd,
-      timeout: Timeouts.GIT_QUICK,
+    // Check if branch already exists
+    try {
+      await execFileAsync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', branchName], {
+        timeout: Timeouts.GIT_QUICK,
+      });
+      console.log(`[git-ops] Goal branch already exists: ${branchName}`);
+      return branchName;
+    } catch {
+      // Branch doesn't exist — create it
+    }
+
+    const base = await resolveBaseRef(cwd, baseName);
+    await execFileAsync('git', ['-C', cwd, 'branch', branchName, base], {
+      timeout: Timeouts.GIT_CHECKOUT,
     });
-    // Branch exists — just checkout
-    console.log(`[git-ops] Goal branch already exists: ${branchName}`);
+
+    console.log(`[git-ops] Created goal branch: ${branchName} (from ${base})`);
     return branchName;
-  } catch {
-    // Branch doesn't exist — create it
-  }
-
-  await execAsync(`git branch "${branchName}" origin/${base}`, {
-    cwd,
-    timeout: Timeouts.GIT_CHECKOUT,
   });
+}
 
-  console.log(`[git-ops] Created goal branch: ${branchName} (from origin/${base})`);
-  return branchName;
+/** Remove a merged task branch, first removing its worktree if it has one (H5). */
+async function deleteMergedTaskBranch(
+  mainRepoDir: string,
+  taskBranch: string,
+  taskWorktree: string | null,
+): Promise<void> {
+  if (taskWorktree) {
+    // The branch is merged into the goal branch (its work is safe), so we can
+    // free the worktree to allow deletion. Maintenance would otherwise never be
+    // able to clean it either (branch checked out → `git branch -d` refuses).
+    console.log(`[git-ops] Removing worktree ${taskWorktree} so merged branch ${taskBranch} can be deleted`);
+    removeWorktree(mainRepoDir, taskWorktree);
+  }
+  await execFileAsync('git', ['-C', mainRepoDir, 'branch', '-d', taskBranch], { timeout: Timeouts.GIT_QUICK })
+    .catch(e => console.warn(`[git-ops] Could not delete merged branch ${taskBranch} (maintenance will retry): ${e.message || e}`));
 }
 
 /**
  * Merge a task/agent branch into a goal branch.
  * Operates from the main repo dir (not a worktree).
+ *
+ * On merge conflict the merge is left in place so self-heal can inspect and
+ * resolve the actual conflicted files (C4). Only if healing fails do we abort
+ * and report failure — the branch's commits are never silently dropped.
  */
 export async function mergeToGoalBranch(
   mainRepoDir: string,
   taskBranch: string,
   goalBranch: string,
-): Promise<{ success: boolean; output: string }> {
-  try {
+): Promise<{ success: boolean; output: string; conflict?: boolean }> {
+  return withRepoLock(mainRepoDir, async () => {
     // Save current branch to restore later
     let originalBranch: string;
     try {
       const { stdout } = await execAsync('git branch --show-current', {
         cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
       });
-      originalBranch = stdout.trim();
+      originalBranch = stdout.trim() || getDefaultBranch(mainRepoDir);
     } catch {
       originalBranch = getDefaultBranch(mainRepoDir);
     }
 
-    // Rebase the task branch onto the goal branch first to avoid conflicts.
-    // This brings the agent branch up-to-date with any work merged since it branched.
+    // ── Rebase task branch onto goal branch (H5) ──
+    // Run the rebase where the branch actually lives. When the branch is checked
+    // out in an agent worktree, checking it out in the main repo fails, so rebase
+    // inside that worktree instead. Log loudly if the rebase is skipped.
+    const taskWorktree = await findWorktreeForBranch(mainRepoDir, taskBranch);
     try {
-      await execAsync(
-        `git checkout "${taskBranch}" && git rebase "${goalBranch}"`,
-        { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
-      );
-    } catch {
-      // Rebase failed — abort and fall through to normal merge
-      await execAsync('git rebase --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
+      const rebaseCwd = taskWorktree || mainRepoDir;
+      if (!taskWorktree) {
+        await execFileAsync('git', ['-C', mainRepoDir, 'checkout', taskBranch], { timeout: Timeouts.GIT_CHECKOUT });
+      }
+      await execFileAsync('git', ['-C', rebaseCwd, 'rebase', goalBranch], { timeout: Timeouts.GIT_MERGE });
+    } catch (rebaseErr: any) {
+      console.warn(`[git-ops] Rebase of ${taskBranch} onto ${goalBranch} failed; aborting rebase and merging directly: ${rebaseErr.message || rebaseErr}`);
+      const abortCwd = taskWorktree || mainRepoDir;
+      await execFileAsync('git', ['-C', abortCwd, 'rebase', '--abort'], { timeout: Timeouts.GIT_QUICK })
+        .catch(e => console.warn(`[git-ops] rebase --abort failed: ${e.message || e}`));
     }
 
-    const { stdout, stderr } = await execAsync(
-      `git checkout "${goalBranch}" && git merge --no-ff "${taskBranch}" -m "Merge task ${taskBranch} into ${goalBranch}"`,
-      { cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE }
-    );
+    // ── Merge task branch into goal branch ──
+    // Goal branches are never checked out in a worktree, so this checkout is safe.
+    try {
+      await execFileAsync('git', ['-C', mainRepoDir, 'checkout', goalBranch], { timeout: Timeouts.GIT_CHECKOUT });
+    } catch (coErr: any) {
+      console.error(`[git-ops] Failed to checkout goal branch ${goalBranch}: ${coErr.message || coErr}`);
+      await restoreBranch(mainRepoDir, originalBranch);
+      return { success: false, output: `checkout ${goalBranch} failed: ${coErr.message || coErr}` };
+    }
 
-    // Delete the merged task branch
-    await execAsync(`git branch -d "${taskBranch}"`, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
-    }).catch(() => {});
+    let mergeOutput = '';
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        'git', ['-C', mainRepoDir, 'merge', '--no-ff', taskBranch, '-m', `Merge task ${taskBranch} into ${goalBranch}`],
+        { timeout: Timeouts.GIT_MERGE }
+      );
+      mergeOutput = stdout + stderr;
+    } catch (mergeErr: any) {
+      // Merge failed — most likely a conflict. Do NOT abort yet: leave the
+      // conflict in the working tree so self-heal can genuinely inspect and
+      // resolve the conflicted files (C4). We still hold the repo lock here, so
+      // the conflicted state is safe from concurrent operations.
+      const conflictOutput = (mergeErr.stdout || '') + (mergeErr.stderr || '') || String(mergeErr);
+      console.warn(`[git-ops] Merge conflict merging ${taskBranch} into ${goalBranch}; attempting self-heal`);
+      const heal = await healMergeConflict(mainRepoDir, conflictOutput);
+      if (heal.success) {
+        console.log(`[git-ops] Self-healed merge conflict for ${taskBranch}: ${heal.description}`);
+        mergeOutput = `${conflictOutput}\n[self-heal] ${heal.description}`;
+      } else {
+        // Heal failed — abort the merge (don't leave the repo conflicted) and
+        // report failure so the gate fails loudly. The branch is NOT dropped
+        // silently; its commits remain on the task branch for manual handling.
+        console.error(`[git-ops] Self-heal failed for ${taskBranch}: ${heal.description}`);
+        await execFileAsync('git', ['-C', mainRepoDir, 'merge', '--abort'], { timeout: Timeouts.GIT_QUICK })
+          .catch(e => console.error(`[git-ops] merge --abort failed: ${e.message || e}`));
+        await restoreBranch(mainRepoDir, originalBranch);
+        return {
+          success: false,
+          conflict: true,
+          output: `Merge conflict in ${taskBranch} could not be auto-resolved: ${heal.description}\n${conflictOutput}`,
+        };
+      }
+    }
+
+    // ── Delete the merged task branch (H5) ──
+    await deleteMergedTaskBranch(mainRepoDir, taskBranch, taskWorktree);
 
     // Return to original branch
-    await execAsync(`git checkout "${originalBranch}"`, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
-    }).catch(() => {});
+    await restoreBranch(mainRepoDir, originalBranch);
 
     console.log(`[git-ops] Merged ${taskBranch} → ${goalBranch}`);
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
-    // Try to return to a safe branch
-    await execAsync(`git checkout ${getDefaultBranch(mainRepoDir)}`, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
-    }).catch(() => {});
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
+    return { success: true, output: mergeOutput };
+  });
 }
 
 /**
@@ -276,37 +435,39 @@ export async function mergeGoalToTarget(
   targetBranch: string,
   strategy: 'squash' | 'no-ff' = 'squash',
 ): Promise<{ success: boolean; output: string }> {
-  try {
-    let mergeCmd: string;
-    if (strategy === 'squash') {
-      mergeCmd = `git checkout "${targetBranch}" && git merge --squash "${goalBranch}" && git commit -m "Merge goal ${goalBranch}"`;
-    } else {
-      mergeCmd = `git checkout "${targetBranch}" && git merge --no-ff "${goalBranch}" -m "Merge goal ${goalBranch}"`;
+  return withRepoLock(mainRepoDir, async () => {
+    try {
+      await execFileAsync('git', ['-C', mainRepoDir, 'checkout', targetBranch], { timeout: Timeouts.GIT_CHECKOUT });
+
+      let output = '';
+      if (strategy === 'squash') {
+        const m = await execFileAsync('git', ['-C', mainRepoDir, 'merge', '--squash', goalBranch], { timeout: Timeouts.GIT_MERGE });
+        const c = await execFileAsync('git', ['-C', mainRepoDir, 'commit', '-m', `Merge goal ${goalBranch}`], { timeout: Timeouts.GIT_CHECKOUT });
+        output = m.stdout + m.stderr + c.stdout + c.stderr;
+      } else {
+        const m = await execFileAsync('git', ['-C', mainRepoDir, 'merge', '--no-ff', goalBranch, '-m', `Merge goal ${goalBranch}`], { timeout: Timeouts.GIT_MERGE });
+        output = m.stdout + m.stderr;
+      }
+
+      // Delete the goal branch after successful merge
+      await execFileAsync('git', ['-C', mainRepoDir, 'branch', '-d', goalBranch], { timeout: Timeouts.GIT_QUICK })
+        .catch(async () => {
+          // Squash merges don't register as merged — force-delete.
+          console.warn(`[git-ops] Goal branch ${goalBranch} not registered as merged (squash); force-deleting`);
+          await execFileAsync('git', ['-C', mainRepoDir, 'branch', '-D', goalBranch], { timeout: Timeouts.GIT_QUICK })
+            .catch(e => console.error(`[git-ops] force-delete ${goalBranch} failed: ${e.message || e}`));
+        });
+
+      console.log(`[git-ops] Merged ${goalBranch} → ${targetBranch} (strategy: ${strategy})`);
+      return { success: true, output };
+    } catch (err: any) {
+      await execFileAsync('git', ['-C', mainRepoDir, 'merge', '--abort'], { timeout: Timeouts.GIT_QUICK })
+        .catch(e => console.error(`[git-ops] mergeGoalToTarget: merge --abort failed: ${e.message || e}`));
+      await execFileAsync('git', ['-C', mainRepoDir, 'checkout', targetBranch], { timeout: Timeouts.GIT_CHECKOUT })
+        .catch(e => console.error(`[git-ops] mergeGoalToTarget: checkout ${targetBranch} failed: ${e.message || e}`));
+      return { success: false, output: err.stderr || err.stdout || String(err) };
     }
-
-    const { stdout, stderr } = await execAsync(mergeCmd, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_MERGE,
-    });
-
-    // Delete the goal branch after successful merge
-    await execAsync(`git branch -d "${goalBranch}"`, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
-    }).catch(() => {
-      // Force delete if not fully merged (squash merges don't register as merged)
-      execAsync(`git branch -D "${goalBranch}"`, {
-        cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK,
-      }).catch(() => {});
-    });
-
-    console.log(`[git-ops] Merged ${goalBranch} → ${targetBranch} (strategy: ${strategy})`);
-    return { success: true, output: stdout + stderr };
-  } catch (err: any) {
-    await execAsync('git merge --abort', { cwd: mainRepoDir, timeout: Timeouts.GIT_QUICK }).catch(() => {});
-    await execAsync(`git checkout ${targetBranch}`, {
-      cwd: mainRepoDir, timeout: Timeouts.GIT_CHECKOUT,
-    }).catch(() => {});
-    return { success: false, output: err.stderr || err.stdout || String(err) };
-  }
+  });
 }
 
 /**
@@ -344,41 +505,38 @@ export async function getGoalBranchFiles(
       { cwd, timeout: Timeouts.GIT_QUICK }
     );
     return stdout.split('\n').filter(Boolean);
-  } catch {
+  } catch (err: any) {
+    console.error(`[git-ops] getGoalBranchFiles failed: ${err.message || err}`);
+    return [];
+  }
+}
+
+/**
+ * List branches matching a pattern.
+ * Uses `--format=%(refname:short)` so worktree markers (`*` current, `+`
+ * checked-out-elsewhere) are never included in the branch name (H2).
+ */
+async function listBranches(workingDirectory: string, pattern: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git', ['-C', workingDirectory, 'branch', '--list', pattern, '--format=%(refname:short)'],
+      { timeout: Timeouts.GIT_QUICK }
+    );
+    return stdout.split('\n').map(b => b.trim()).filter(Boolean);
+  } catch (err: any) {
+    console.error(`[git-ops] listBranches(${pattern}) failed: ${err.message || err}`);
     return [];
   }
 }
 
 /** List all goal branches for a given working directory. */
 export async function listGoalBranches(workingDirectory: string): Promise<string[]> {
-  try {
-    const { stdout } = await execAsync('git branch --list "goal/*"', {
-      cwd: workingDirectory,
-      timeout: Timeouts.GIT_QUICK,
-    });
-    return stdout
-      .split('\n')
-      .map(b => b.trim().replace(/^\*\s*/, ''))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  return listBranches(workingDirectory, 'goal/*');
 }
 
 /** List all agent branches for a given working directory. */
 export async function listAgentBranches(workingDirectory: string): Promise<string[]> {
-  try {
-    const { stdout } = await execAsync('git branch --list "agent/*"', {
-      cwd: workingDirectory,
-      timeout: Timeouts.GIT_QUICK,
-    });
-    return stdout
-      .split('\n')
-      .map(b => b.trim().replace(/^\*\s*/, ''))
-      .filter(Boolean);
-  } catch {
-    return [];
-  }
+  return listBranches(workingDirectory, 'agent/*');
 }
 
 // ── Worktree Management ──
@@ -462,6 +620,9 @@ export function removeWorktree(
  * Auto-commit changes on an agent branch.
  * Refuses to commit on protected or non-agent branches.
  * Returns diff stats on success, empty string on failure.
+ *
+ * Uses execFile arg arrays so agent-authored summaries with backticks / $() /
+ * quotes cannot be interpreted by a shell (M10).
  */
 export async function autoCommit(
   workingDirectory: string,
@@ -482,18 +643,15 @@ export async function autoCommit(
       console.error(`[git-ops] Refusing to commit on non-agent branch: ${currentBranch}`);
       return '';
     }
-    await execAsync('git add -A', { cwd: workingDirectory, timeout: Timeouts.GIT_CHECKOUT });
-    const msg = `agent(${goalSlug}): ${summary.slice(0, Limits.MAX_COMMIT_MSG_LENGTH)}`.replace(/"/g, '\\"');
-    await execAsync(`git commit -m "${msg}"`, {
-      cwd: workingDirectory,
-      timeout: Timeouts.GIT_CHECKOUT,
-    });
-    const { stdout } = await execAsync('git diff --stat HEAD~1', {
-      cwd: workingDirectory,
+    await execFileAsync('git', ['-C', workingDirectory, 'add', '-A'], { timeout: Timeouts.GIT_CHECKOUT });
+    const msg = `agent(${goalSlug}): ${summary.slice(0, Limits.MAX_COMMIT_MSG_LENGTH)}`;
+    await execFileAsync('git', ['-C', workingDirectory, 'commit', '-m', msg], { timeout: Timeouts.GIT_CHECKOUT });
+    const { stdout } = await execFileAsync('git', ['-C', workingDirectory, 'diff', '--stat', 'HEAD~1'], {
       timeout: Timeouts.GIT_CHECKOUT,
     });
     return stdout.trim();
   } catch (err: any) {
+    console.error(`[git-ops] autoCommit failed: ${err.message || err}`);
     return err.stdout || '';
   }
 }

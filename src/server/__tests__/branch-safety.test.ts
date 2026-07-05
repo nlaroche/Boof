@@ -69,40 +69,45 @@ describe('autopilot branch safety', () => {
     );
   });
 
-  it('createAgentBranch should always branch from main', () => {
-    // Function is now in git-ops.ts
+  it('createAgentBranch should branch from the resolved default branch', () => {
+    // Function is now in git-ops.ts. Git ops use execFile arg arrays (M10), so
+    // the branch is created with a `checkout -b` on a base derived from the
+    // repo's default branch (resolveBaseRef falls back to a local branch when
+    // there is no origin remote — M9), not a hardcoded `origin/main`.
     const funcStart = gitOpsSource.indexOf('export async function createAgentBranch');
     assert.ok(funcStart >= 0, 'createAgentBranch not found in git-ops.ts');
 
     const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
-    const checkoutMatch = funcBody.match(/git checkout -b.*?main/);
     assert.ok(
-      checkoutMatch,
-      'createAgentBranch should use `git checkout -b "..." main` to branch from main'
+      /'checkout',\s*'-b'/.test(funcBody),
+      'createAgentBranch should use `checkout -b` (execFile arg array) to create the branch'
+    );
+    assert.ok(
+      funcBody.includes('getDefaultBranch(worktreePath)') && funcBody.includes('resolveBaseRef'),
+      'createAgentBranch should derive its base from the default branch via resolveBaseRef'
     );
   });
 
-  it('mergeToMain should commit uncommitted work before checkout', () => {
-    // Function is now in git-ops.ts
+  it('mergeToMain should commit uncommitted work before detaching', () => {
+    // Function is now in git-ops.ts (execFile arg arrays — M10).
     const funcStart = gitOpsSource.indexOf('export async function mergeToMain');
     assert.ok(funcStart >= 0, 'mergeToMain not found in git-ops.ts');
 
     const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
-    const commitBeforeCheckout = funcBody.indexOf('git add -A') < funcBody.indexOf('git checkout --detach main');
-    assert.ok(
-      commitBeforeCheckout,
-      'mergeToMain should commit before returning to detached HEAD at main'
-    );
+    const addIdx = funcBody.indexOf("'add', '-A'");
+    const detachIdx = funcBody.indexOf("'checkout', '--detach'");
+    assert.ok(addIdx >= 0 && detachIdx >= 0 && addIdx < detachIdx,
+      'mergeToMain should stage/commit work before returning the worktree to detached HEAD');
   });
 
-  it('mergeToMain should return to agent branch on merge failure', () => {
-    // Function is now in git-ops.ts
+  it('mergeToMain should abort the merge on failure', () => {
+    // Function is now in git-ops.ts (execFile arg arrays — M10).
     const funcStart = gitOpsSource.indexOf('export async function mergeToMain');
     assert.ok(funcStart >= 0, 'mergeToMain not found in git-ops.ts');
 
     const funcBody = gitOpsSource.slice(funcStart, funcStart + 2000);
     assert.ok(
-      funcBody.includes('git merge --abort'),
+      /'merge',\s*'--abort'/.test(funcBody),
       'mergeToMain should abort the merge on failure'
     );
   });

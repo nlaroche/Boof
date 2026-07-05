@@ -2,8 +2,8 @@
  * Git utilities for agent operations.
  * Extracts git-related functions from ws-handler.ts.
  */
-import { execSync } from 'child_process';
-import { isProtectedBranch } from './branch-guard.js';
+import { execSync, execFileSync } from 'child_process';
+import { canCommitTo } from './branch-guard.js';
 
 /** Cache entry with TTL */
 interface CacheEntry<T> {
@@ -116,10 +116,16 @@ export function generateSummary(rawOutput: string, prompt: string): string {
 /** Commit agent changes — only stages files the agent actually touched */
 export function commitAgentChanges(workingDirectory: string, prompt: string, agentOutput: string): boolean {
   try {
-    // Guard: refuse to commit on protected branches
+    // Guard (M5): refuse to commit on detached HEAD, protected, or goal branches.
+    // `canCommitTo` allows agent branches (and revision/healing on goal branches
+    // when explicitly requested — not the case here).
     const currentBranch = execSync('git branch --show-current', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
-    if (isProtectedBranch(currentBranch)) {
-      console.error(`[git-utils] Refusing to commit on protected branch: ${currentBranch}`);
+    if (!currentBranch) {
+      console.error('[git-utils] Refusing to commit: detached HEAD (no branch)');
+      return false;
+    }
+    if (!canCommitTo(currentBranch)) {
+      console.error(`[git-utils] Refusing to commit on non-committable branch: ${currentBranch}`);
       return false;
     }
 
@@ -161,18 +167,21 @@ export function commitAgentChanges(workingDirectory: string, prompt: string, age
 
     if (filesToStage.length === 0) return false;
 
+    // Use execFileSync so filenames and messages are passed as argv, never
+    // interpreted by a shell (M10 — filenames/prompt may contain metacharacters).
     for (const f of filesToStage) {
-      execSync(`git add "${f}"`, { cwd: workingDirectory, timeout: 5000 });
+      execFileSync('git', ['-C', workingDirectory, 'add', f], { timeout: 5000 });
     }
 
     // Check if anything was actually staged
     const staged = execSync('git diff --cached --stat', { cwd: workingDirectory, encoding: 'utf-8', timeout: 5000 }).trim();
     if (!staged) return false;
 
-    const msg = prompt.slice(0, 72).replace(/"/g, "'");
-    execSync(`git commit -m "agent: ${msg}"`, { cwd: workingDirectory, timeout: 10000 });
+    const msg = `agent: ${prompt.slice(0, 72)}`;
+    execFileSync('git', ['-C', workingDirectory, 'commit', '-m', msg], { timeout: 10000 });
     return true;
-  } catch {
+  } catch (err: any) {
+    console.error(`[git-utils] commitAgentChanges failed: ${err?.message || err}`);
     return false;
   }
 }
