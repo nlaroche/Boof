@@ -137,4 +137,4 @@ REMOTE
 echo ""
 echo "[deploy] ✓ Deployment complete"
 echo "[deploy] Tail logs:  tailscale ssh $MAC_HOST 'tail -f $LOG_PATH'"
-echo "[deploy] Web UI:     http://bcbuils-mac-mini-2:3456  (via Tailscale)"
+echo "[deploy] Web UI:     https://boof.nlaroche.io  (Cloudflare Access; server binds 127.0.0.1)"

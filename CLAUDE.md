@@ -46,7 +46,7 @@ The dev server (Vite HMR + autopilot) watches files and can revert or stomp edit
 git push origin main
 bash scripts/deploy-mac-mini.sh
 ```
-- Service: `com.nlaroche.boof` (launchd), port 3456
+- Service: `com.nlaroche.boof` (launchd), port 3456, bound to 127.0.0.1 (`HOST` env overrides). Reach it at https://boof.nlaroche.io (Cloudflare Access) — not via Tailscale IP.
 - Repo: `~/projects/boof`, Node: `~/.nvm/versions/node/v22.22.2/bin/node`
 - Logs: `~/projects/boof/logs/boof.log`
 - `npm install` needs `--legacy-peer-deps` (tsx/vite peer conflicts)

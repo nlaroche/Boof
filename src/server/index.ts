@@ -14,6 +14,11 @@ import { pruneRetention } from './db-helpers.js';
 import type { Agent } from '../client/lib/types.js';
 
 const PORT = process.env.PORT || 3456;
+// Boof has no auth and drives real terminals, so never listen on every
+// interface by default. Production is reached through Cloudflare Access
+// (boof.nlaroche.io → tunnel → 127.0.0.1). Set HOST to a Tailscale IP to
+// expose it on the tailnet only.
+const HOST = process.env.HOST || '127.0.0.1';
 
 // Always resolve from project root
 const projectRoot = process.cwd();
@@ -81,9 +86,8 @@ async function start() {
     res.sendFile(path.join(clientDir, 'index.html'));
   });
 
-  server.listen(Number(PORT), '0.0.0.0', () => {
-    console.log(`Boof server running on http://0.0.0.0:${PORT}`);
-    console.log(`Access via Tailscale at http://<tailscale-ip>:${PORT}`);
+  server.listen(Number(PORT), HOST, () => {
+    console.log(`Boof server running on http://${HOST}:${PORT}`);
   });
 }
 
